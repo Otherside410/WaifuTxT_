@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #0b0b14;
+  --color-bg-secondary: #12121f;
+  --color-bg-tertiary: #1a1a2e;
+  --color-bg-hover: #252540;
+  --color-bg-active: #2e2e50;
+
+  --color-accent-pink: #ff2d78;
+  --color-accent-pink-hover: #ff4d93;
+  --color-accent-pink-dim: #ff2d7833;
+
+  --color-text-primary: #e8e8f0;
+  --color-text-secondary: #8888a8;
+  --color-text-muted: #555570;
+
+  --color-success: #3ddc84;
+  --color-danger: #ff4458;
+  --color-warning: #ffb347;
+  --color-info: #4dabf7;
+
+  --color-border: #2a2a40;
+  --color-border-strong: #3a3a58;
+
+  --color-scrollbar-thumb: #2a2a40;
+  --color-scrollbar-track: transparent;
+}
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+  }
+
+  body {
+    @apply bg-bg-primary text-text-primary;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+
+  ::selection {
+    background: var(--color-accent-pink-dim);
+    color: var(--color-text-primary);
+  }
+
+  input, textarea {
+    @apply bg-bg-tertiary border border-border rounded-md px-3 py-2 text-text-primary outline-none transition-colors;
+  }
+  input:focus, textarea:focus {
+    @apply border-accent-pink;
+  }
+  input::placeholder, textarea::placeholder {
+    @apply text-text-muted;
+  }
+}
