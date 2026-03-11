@@ -3,7 +3,86 @@ import { fr } from 'date-fns/locale'
 import { useState, useEffect, useCallback } from 'react'
 import type { MessageEvent, EncryptedFileInfo } from '../../types/matrix'
 import { Avatar } from '../common/Avatar'
-import { decryptMediaUrl } from '../../lib/matrix'
+import { decryptMediaUrl, getUrlPreview, type UrlPreviewData } from '../../lib/matrix'
+
+const URL_REGEX = /(https?:\/\/[^\s<]+[^\s<.,;:!?"'\])}>])/g
+
+function Linkify({ text }: { text: string }) {
+  const parts = text.split(URL_REGEX)
+  if (parts.length === 1) return <>{text}</>
+  return (
+    <>
+      {parts.map((part, i) =>
+        URL_REGEX.test(part) ? (
+          <a
+            key={i}
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-accent-pink hover:underline break-all"
+          >
+            {part}
+          </a>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  )
+}
+
+function extractUrls(text: string): string[] {
+  return text.match(URL_REGEX) || []
+}
+
+function LinkPreviewCard({ url }: { url: string }) {
+  const [preview, setPreview] = useState<UrlPreviewData | null>(null)
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    getUrlPreview(url).then((data) => {
+      if (!cancelled) { setPreview(data); setLoaded(true) }
+    })
+    return () => { cancelled = true }
+  }, [url])
+
+  if (!loaded || !preview) return null
+
+  const hostname = (() => { try { return new URL(url).hostname } catch { return '' } })()
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mt-1.5 flex rounded-lg overflow-hidden border border-border bg-bg-tertiary hover:border-accent-pink/50 transition-colors max-w-md cursor-pointer"
+    >
+      {preview.imageUrl && (
+        <img
+          src={preview.imageUrl}
+          alt=""
+          className="w-20 h-20 object-cover shrink-0"
+          loading="lazy"
+        />
+      )}
+      <div className="p-2.5 min-w-0 flex-1">
+        {preview.siteName && (
+          <p className="text-[10px] text-text-muted uppercase tracking-wide truncate">{preview.siteName}</p>
+        )}
+        {preview.title && (
+          <p className="text-xs font-semibold text-accent-pink truncate leading-snug">{preview.title}</p>
+        )}
+        {preview.description && (
+          <p className="text-[11px] text-text-secondary line-clamp-2 leading-snug mt-0.5">{preview.description}</p>
+        )}
+        {!preview.siteName && hostname && (
+          <p className="text-[10px] text-text-muted truncate mt-0.5">{hostname}</p>
+        )}
+      </div>
+    </a>
+  )
+}
 
 interface MessageItemProps {
   message: MessageEvent
@@ -187,25 +266,35 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
         )}
 
         {(message.type === 'm.text' || message.type === 'm.notice' || message.type === 'm.emote') && (
-          <p className={`text-sm leading-relaxed break-words ${
-            message.type === 'm.notice' ? 'text-text-muted italic' : 'text-text-primary'
-          }`}>
-            {message.type === 'm.emote' && (
-              <span className="text-text-secondary italic">* {message.senderName} </span>
-            )}
-            {message.content.startsWith('🔒') ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-bg-tertiary rounded text-text-muted text-xs italic">
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                </svg>
-                Message chiffré — clé de récupération requise
-              </span>
-            ) : message.content}
-          </p>
+          <>
+            <p className={`text-sm leading-relaxed break-words ${
+              message.type === 'm.notice' ? 'text-text-muted italic' : 'text-text-primary'
+            }`}>
+              {message.type === 'm.emote' && (
+                <span className="text-text-secondary italic">* {message.senderName} </span>
+              )}
+              {message.content.startsWith('🔒') ? (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-bg-tertiary rounded text-text-muted text-xs italic">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                  </svg>
+                  Message chiffré — clé de récupération requise
+                </span>
+              ) : <Linkify text={message.content} />}
+            </p>
+            {extractUrls(message.content).slice(0, 3).map((linkUrl) => (
+              <LinkPreviewCard key={linkUrl} url={linkUrl} />
+            ))}
+          </>
         )}
 
         {!isMediaType && message.type !== 'm.text' && message.type !== 'm.notice' && message.type !== 'm.emote' && message.content && (
-          <p className="text-sm text-text-primary leading-relaxed break-words">{message.content}</p>
+          <>
+            <p className="text-sm text-text-primary leading-relaxed break-words"><Linkify text={message.content} /></p>
+            {extractUrls(message.content).slice(0, 3).map((linkUrl) => (
+              <LinkPreviewCard key={linkUrl} url={linkUrl} />
+            ))}
+          </>
         )}
       </div>
     </div>

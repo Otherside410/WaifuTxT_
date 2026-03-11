@@ -116,16 +116,31 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
       const type = event.getType()
       if (type !== 'm.room.message' && type !== 'm.room.encrypted') return
 
-      if (type === 'm.room.encrypted' && event.isDecryptionFailure?.()) {
-        const msg = encryptedFallbackMessage(event, room.roomId)
-        if (msg) {
-          useMessageStore.getState().addMessage(room.roomId, msg)
-          updateRoomLastMessage(room.roomId, msg)
+      if (type === 'm.room.encrypted') {
+        if (event.isDecryptionFailure?.()) {
+          const msg = encryptedFallbackMessage(event, room.roomId)
+          if (msg) {
+            useMessageStore.getState().addMessage(room.roomId, msg)
+            updateRoomLastMessage(room.roomId, msg)
+          }
         }
+
+        event.once(matrixSdk.MatrixEventEvent.Decrypted, () => {
+          try {
+            if (event.getType() !== 'm.room.message') return
+            const msg = eventToMessage(event, room.roomId)
+            if (msg) {
+              const store = useMessageStore.getState()
+              store.replaceMessage(room.roomId, msg.eventId, msg)
+              store.addMessage(room.roomId, msg)
+              updateRoomLastMessage(room.roomId, msg)
+            }
+          } catch (err) {
+            console.error('[WaifuTxT] Decrypted event error:', err)
+          }
+        })
         return
       }
-
-      if (type === 'm.room.encrypted') return
 
       const msg = eventToMessage(event, room.roomId)
       if (msg) {
@@ -134,21 +149,6 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
       }
     } catch (err) {
       console.error('[WaifuTxT] Timeline event error:', err)
-    }
-  })
-
-  client.on(matrixSdk.RoomEvent.Decrypted, (event: MatrixEvent) => {
-    try {
-      if (event.getType() !== 'm.room.message') return
-      const roomId = event.getRoomId()
-      if (!roomId) return
-
-      const msg = eventToMessage(event, roomId)
-      if (msg) {
-        useMessageStore.getState().replaceMessage(roomId, msg.eventId, msg)
-      }
-    } catch (err) {
-      console.error('[WaifuTxT] Decrypted event error:', err)
     }
   })
 
@@ -691,6 +691,47 @@ export async function decryptMediaUrl(file: EncryptedFileInfo): Promise<string> 
   decryptPromiseCache.set(cacheKey, promise)
   promise.finally(() => decryptPromiseCache.delete(cacheKey))
   return promise
+}
+
+export interface UrlPreviewData {
+  title?: string
+  description?: string
+  imageUrl?: string
+  siteName?: string
+}
+
+const previewCache = new Map<string, UrlPreviewData | null>()
+
+export async function getUrlPreview(url: string): Promise<UrlPreviewData | null> {
+  const cached = previewCache.get(url)
+  if (cached !== undefined) return cached
+
+  if (!client) return null
+
+  try {
+    const data = await client.getUrlPreview(url, Date.now())
+    if (!data) { previewCache.set(url, null); return null }
+
+    const ogData = data as Record<string, unknown>
+    const title = ogData['og:title'] as string | undefined
+    const description = ogData['og:description'] as string | undefined
+    const siteName = ogData['og:site_name'] as string | undefined
+    const mxcImage = ogData['og:image'] as string | undefined
+
+    if (!title && !description) { previewCache.set(url, null); return null }
+
+    let imageUrl: string | undefined
+    if (mxcImage && mxcImage.startsWith('mxc://')) {
+      imageUrl = client.mxcUrlToHttp(mxcImage, 400, 200, 'scale') || undefined
+    }
+
+    const result: UrlPreviewData = { title, description, imageUrl, siteName }
+    previewCache.set(url, result)
+    return result
+  } catch {
+    previewCache.set(url, null)
+    return null
+  }
 }
 
 export function resolveAvatarUrl(mxcUrl: string | null, size = 48): string | null {
