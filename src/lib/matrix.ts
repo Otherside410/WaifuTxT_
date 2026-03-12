@@ -293,9 +293,11 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
       encryptedFile = content.file as EncryptedFileInfo
       if (content.info?.thumbnail_file) encryptedThumbnailFile = content.info.thumbnail_file as EncryptedFileInfo
     } else if (content.url) {
-      imageUrl = client?.mxcUrlToHttp(content.url, 900, 900, 'scale', false, true) || undefined
+      // Prefer direct media download over thumbnail endpoints for better compatibility.
+      // Some homeservers/proxies fail thumbnail generation or auth on thumbnails.
+      imageUrl = client?.mxcUrlToHttp(content.url, undefined, undefined, undefined, false, true, true) || undefined
       if (content.info?.thumbnail_url) {
-        thumbnailUrl = client?.mxcUrlToHttp(content.info.thumbnail_url, 400, 300, 'scale', false, true) || undefined
+        thumbnailUrl = client?.mxcUrlToHttp(content.info.thumbnail_url, 400, 300, 'scale', false, true, true) || undefined
       }
     }
   }
@@ -513,6 +515,8 @@ export async function loadMediaWithAuth(url: string): Promise<string | null> {
   if (inflight) return inflight
 
   const promise = (async () => {
+    if (!client) return null
+    const token = client.getAccessToken()
     const tokenUrl = getMediaUrlWithAccessToken(url)
     const candidates = [tokenUrl, url].filter((u): u is string => !!u)
     for (const candidate of candidates) {
@@ -525,6 +529,22 @@ export async function loadMediaWithAuth(url: string): Promise<string | null> {
         return blobUrl
       } catch {
         // continue
+      }
+
+      // Some homeservers disallow access_token query auth and require Bearer token.
+      if (token) {
+        try {
+          const res = await fetch(candidate, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+          if (!res.ok) continue
+          const blob = await res.blob()
+          const blobUrl = URL.createObjectURL(blob)
+          mediaBlobCache.set(url, blobUrl)
+          return blobUrl
+        } catch {
+          // continue
+        }
       }
     }
     return null

@@ -88,6 +88,23 @@ src/
 - **Statut**: non resolu a ce stade, plusieurs fallbacks d'auth media sont deja en place, mais le cas persiste selon le homeserver/client emetteur.
 - **Piste de correction**: tracer precisement les URLs media recues (`url`, `file.url`, `thumbnail_url`) et les codes HTTP au moment du rendu pour harmoniser le chargement avec le comportement d'Element.
 
+## Versioning automatique sur commit
+
+Le projet incremente automatiquement la version (`package.json`) a chaque commit via Husky.
+
+- `feat: ...` -> bump **minor**
+- `fix: ...` -> bump **patch**
+- `feat!: ...` ou `BREAKING CHANGE:` -> bump **major**
+- tout autre type de commit -> bump **patch**
+
+Exemples:
+
+```bash
+git commit -m "feat(chat): add fullscreen image viewer"
+git commit -m "fix(media): improve authenticated image loading"
+git commit -m "feat!: replace legacy room store API"
+```
+
 ## Licence
 
 Projet personnel — pas de licence definie pour le moment.

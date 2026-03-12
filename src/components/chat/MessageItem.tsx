@@ -1,8 +1,9 @@
 import { format, isToday, isYesterday } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import type { EncryptedFileInfo, MessageEvent } from '../../types/matrix'
 import { Avatar } from '../common/Avatar'
+import { useRoomStore } from '../../stores/roomStore'
 import {
   decryptMediaUrl,
   getMediaUrlWithAccessToken,
@@ -193,6 +194,101 @@ interface MessageItemProps {
   showHeader: boolean
 }
 
+function UserProfileCard({
+  open,
+  anchorRef,
+  onClose,
+  displayName,
+  userId,
+  avatarUrl,
+  presence,
+  powerLevel,
+}: {
+  open: boolean
+  anchorRef: RefObject<HTMLElement | null>
+  onClose: () => void
+  displayName: string
+  userId: string
+  avatarUrl: string | null
+  presence: 'online' | 'offline' | 'unavailable'
+  powerLevel: number
+}) {
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    const updatePosition = () => {
+      const anchor = anchorRef.current
+      if (!anchor) return
+      const rect = anchor.getBoundingClientRect()
+      const width = 320
+      const margin = 12
+      const left = Math.min(rect.left, window.innerWidth - width - margin)
+      const top = rect.bottom + 8
+      setCoords({ top, left: Math.max(margin, left) })
+    }
+
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = e.target as Node
+      const inCard = cardRef.current?.contains(target)
+      const inAnchor = anchorRef.current?.contains(target)
+      if (!inCard && !inAnchor) onClose()
+    }
+
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    document.addEventListener('mousedown', handleDocumentClick)
+    document.addEventListener('keydown', handleEsc)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+      document.removeEventListener('mousedown', handleDocumentClick)
+      document.removeEventListener('keydown', handleEsc)
+    }
+  }, [open, anchorRef, onClose])
+
+  if (!open || !coords) return null
+
+  const role =
+    powerLevel >= 100 ? 'Admin' : powerLevel >= 50 ? 'Modérateur' : 'Membre'
+  const statusLabel =
+    presence === 'online' ? 'En ligne' : presence === 'unavailable' ? 'Absent' : 'Hors ligne'
+
+  return (
+    <div
+      ref={cardRef}
+      className="fixed z-50 w-80 rounded-xl border border-border bg-bg-secondary shadow-2xl overflow-hidden"
+      style={{ top: coords.top, left: coords.left }}
+    >
+      <div className="h-16 bg-gradient-to-r from-purple-500/80 to-accent-pink/70" />
+      <div className="px-4 pb-4">
+        <div className="-mt-8 mb-3">
+          <Avatar src={avatarUrl} name={displayName} size={64} />
+        </div>
+        <p className="text-2xl font-bold leading-none text-text-primary">{displayName}</p>
+        <p className="text-sm text-text-secondary mt-1">{userId}</p>
+        <div className="mt-3 flex items-center gap-2">
+          <span
+            className={`w-2.5 h-2.5 rounded-full ${
+              presence === 'online' ? 'bg-success' : presence === 'unavailable' ? 'bg-warning' : 'bg-text-muted'
+            }`}
+          />
+          <span className="text-xs text-text-secondary">{statusLabel}</span>
+          <span className="text-xs text-text-muted">•</span>
+          <span className="text-xs text-text-secondary">{role}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function formatTimestamp(ts: number): string {
   const date = new Date(ts)
   if (isToday(date)) return format(date, 'HH:mm')
@@ -269,6 +365,35 @@ function ImageWithFallback({
       onClick={onClick}
       onError={handleError}
     />
+  )
+}
+
+function PlainImage({ message }: { message: MessageEvent }) {
+  const [fullscreen, setFullscreen] = useState(false)
+  if (!message.imageUrl) return null
+
+  return (
+    <>
+      <div className="mt-1 max-w-lg">
+        <ImageWithFallback
+          src={message.imageUrl}
+          alt={message.content}
+          className="rounded-lg max-h-80 object-contain cursor-pointer hover:opacity-90 transition-opacity"
+          loading="lazy"
+          onClick={() => setFullscreen(true)}
+        />
+      </div>
+      {fullscreen && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-pointer" onClick={() => setFullscreen(false)}>
+          <ImageWithFallback
+            src={message.imageUrl}
+            alt={message.content}
+            className="max-w-[90vw] max-h-[90vh] object-contain"
+            loading="eager"
+          />
+        </div>
+      )}
+    </>
   )
 }
 
@@ -366,6 +491,13 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const isMediaType = message.type === 'm.image' || message.type === 'm.video' || message.type === 'm.audio' || message.type === 'm.file'
   const urls = extractUrls(message.content)
   const contentWithoutUrls = removeUrlsFromText(message.content)
+  const membersMap = useRoomStore((s) => s.members)
+  const senderMember = useMemo(
+    () => membersMap.get(message.roomId)?.find((m) => m.userId === message.sender),
+    [membersMap, message.roomId, message.sender],
+  )
+  const [showProfile, setShowProfile] = useState(false)
+  const senderNameRef = useRef<HTMLSpanElement | null>(null)
 
   return (
     <div className={`group flex gap-4 px-4 py-0.5 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''}`}>
@@ -382,7 +514,13 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
       <div className="flex-1 min-w-0">
         {showHeader && (
           <div className="flex items-baseline gap-2">
-            <span className="font-semibold text-sm text-text-primary hover:underline cursor-pointer">{message.senderName}</span>
+            <span
+              ref={senderNameRef}
+              className="font-semibold text-sm text-text-primary hover:underline cursor-pointer"
+              onClick={() => setShowProfile((v) => !v)}
+            >
+              {message.senderName}
+            </span>
             <span className="text-[11px] text-text-muted">{formatTimestamp(message.timestamp)}</span>
             {message.isEdited && <span className="text-[10px] text-text-muted">(modifié)</span>}
           </div>
@@ -392,14 +530,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
           message.encryptedFile ? (
             <EncryptedImage message={message} />
           ) : (
-            <div className="mt-1 max-w-lg">
-              <ImageWithFallback
-                src={message.imageUrl!}
-                alt={message.content}
-                className="rounded-lg max-h-80 object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                loading="lazy"
-              />
-            </div>
+            <PlainImage message={message} />
           )
         )}
 
@@ -442,6 +573,16 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
           </>
         )}
       </div>
+      <UserProfileCard
+        open={showProfile}
+        anchorRef={senderNameRef}
+        onClose={() => setShowProfile(false)}
+        displayName={senderMember?.displayName || message.senderName}
+        userId={senderMember?.userId || message.sender}
+        avatarUrl={senderMember?.avatarUrl || message.senderAvatar}
+        presence={senderMember?.presence || 'offline'}
+        powerLevel={senderMember?.powerLevel || 0}
+      />
     </div>
   )
 }
