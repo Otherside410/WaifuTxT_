@@ -1,1 +1,2 @@
-npm run version:auto -- "$1"
+# Version bump now runs in prepare-commit-msg so it's included in the same commit.
+:
