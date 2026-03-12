@@ -9,6 +9,8 @@ export interface RoomSummary {
   roomId: string
   name: string
   avatarUrl: string | null
+  roomType?: string
+  isVoice?: boolean
   topic: string
   lastMessage: string
   lastMessageTs: number

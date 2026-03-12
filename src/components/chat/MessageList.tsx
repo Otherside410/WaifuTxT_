@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useMessageStore } from '../../stores/messageStore'
 import { useRoomStore } from '../../stores/roomStore'
-import { loadRoomHistory, loadInitialMessages } from '../../lib/matrix'
+import { loadRoomHistory, loadInitialMessages, sendReadReceipt } from '../../lib/matrix'
 import { MessageItem } from './MessageItem'
 
 const EMPTY_MESSAGES: import('../../types/matrix').MessageEvent[] = []
@@ -27,6 +27,9 @@ export function MessageList() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+    if (activeRoomId) {
+      sendReadReceipt(activeRoomId)
+    }
   }, [messages.length, activeRoomId])
 
   const handleScroll = useCallback(() => {

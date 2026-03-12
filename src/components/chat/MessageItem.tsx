@@ -4,8 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import type { EncryptedFileInfo, MessageEvent } from '../../types/matrix'
 import { Avatar } from '../common/Avatar'
 import { useRoomStore } from '../../stores/roomStore'
+import { useAuthStore } from '../../stores/authStore'
+import { useMessageStore } from '../../stores/messageStore'
 import {
   decryptMediaUrl,
+  getMessageReadersAtEvent,
   getMediaUrlWithAccessToken,
   getUrlPreview,
   loadMediaWithAuth,
@@ -491,16 +494,36 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const isMediaType = message.type === 'm.image' || message.type === 'm.video' || message.type === 'm.audio' || message.type === 'm.file'
   const urls = extractUrls(message.content)
   const contentWithoutUrls = removeUrlsFromText(message.content)
+  const session = useAuthStore((s) => s.session)
+  const receiptsVersion = useMessageStore((s) => s.receiptsVersion)
   const membersMap = useRoomStore((s) => s.members)
+  const roomMembers = useMemo(() => membersMap.get(message.roomId) || [], [membersMap, message.roomId])
   const senderMember = useMemo(
-    () => membersMap.get(message.roomId)?.find((m) => m.userId === message.sender),
-    [membersMap, message.roomId, message.sender],
+    () => roomMembers.find((m) => m.userId === message.sender),
+    [roomMembers, message.sender],
+  )
+  const isOwnMessage = !!session?.userId && message.sender === session.userId
+  const readersUserIds = useMemo(
+    () => (isOwnMessage ? getMessageReadersAtEvent(message.roomId, message.eventId, message.sender) : []),
+    [isOwnMessage, message.roomId, message.eventId, message.sender, receiptsVersion],
+  )
+  const readers = useMemo(
+    () =>
+      readersUserIds.map((userId) => {
+        const member = roomMembers.find((m) => m.userId === userId)
+        return {
+          userId,
+          displayName: member?.displayName || userId,
+          avatarUrl: member?.avatarUrl || null,
+        }
+      }),
+    [readersUserIds, roomMembers],
   )
   const [showProfile, setShowProfile] = useState(false)
   const senderNameRef = useRef<HTMLSpanElement | null>(null)
 
   return (
-    <div className={`group flex gap-4 px-4 py-0.5 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''}`}>
+    <div className={`group relative flex items-start gap-4 px-4 py-0.5 pr-12 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''}`}>
       {showHeader ? (
         <Avatar src={message.senderAvatar} name={message.senderName} size={40} className="mt-0.5" />
       ) : (
@@ -572,7 +595,24 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
             ))}
           </>
         )}
+
       </div>
+      {isOwnMessage && readers.length > 0 && (
+        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-0.5">
+          {readers.slice(0, 3).map((reader) => (
+            <Avatar
+              key={reader.userId}
+              src={reader.avatarUrl}
+              name={reader.displayName}
+              size={14}
+              className="ring-1 ring-bg-primary/80"
+            />
+          ))}
+          {readers.length > 3 && (
+            <span className="text-[10px] text-text-muted leading-none">+{readers.length - 3}</span>
+          )}
+        </div>
+      )}
       <UserProfileCard
         open={showProfile}
         anchorRef={senderNameRef}

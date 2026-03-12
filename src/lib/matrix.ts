@@ -157,6 +157,7 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
 
   client.on(matrixSdk.RoomEvent.Receipt, () => {
     syncRooms()
+    useMessageStore.getState().bumpReceiptsVersion()
   })
 }
 
@@ -169,6 +170,13 @@ function syncRooms() {
   for (const room of matrixRooms) {
     const createEvent = room.currentState.getStateEvents('m.room.create')?.[0]
     const isSpace = createEvent?.getContent()?.type === 'm.space'
+    const roomType = (room.getType?.() || createEvent?.getContent()?.type || '') as string
+    const hasCallState =
+      room.currentState.getStateEvents('org.matrix.msc3401.call')?.length > 0 ||
+      room.currentState.getStateEvents('org.matrix.msc3401.call.member')?.length > 0 ||
+      room.currentState.getStateEvents('m.call.member')?.length > 0 ||
+      room.currentState.getStateEvents('org.matrix.msc4143.rtc.member')?.length > 0
+    const isVoice = /call|voice/i.test(roomType) || hasCallState
 
     const children: string[] = []
     if (isSpace) {
@@ -209,6 +217,8 @@ function syncRooms() {
       roomId: room.roomId,
       name: room.name || 'Sans nom',
       avatarUrl,
+      roomType,
+      isVoice,
       topic,
       lastMessage: lastMessageText,
       lastMessageTs: lastEvent?.getTs() || 0,
@@ -441,6 +451,57 @@ export function sendTyping(roomId: string, typing: boolean): void {
   } catch {
     // ignore
   }
+}
+
+export async function sendReadReceipt(roomId: string): Promise<void> {
+  if (!client) return
+  const room = client.getRoom(roomId)
+  if (!room) return
+  const events = room.getLiveTimeline().getEvents()
+  const lastReadable = [...events]
+    .reverse()
+    .find((e) => e.getType() === 'm.room.message' || e.getType() === 'm.room.encrypted')
+  if (!lastReadable) return
+  try {
+    await client.sendReadReceipt(lastReadable)
+  } catch {
+    // ignore read receipt errors
+  }
+}
+
+export function isMessageReadByOthers(roomId: string, eventId: string, senderId: string): boolean {
+  if (!client) return false
+  const me = client.getUserId()
+  if (!me || senderId !== me) return false
+  const room = client.getRoom(roomId)
+  if (!room) return false
+
+  const timelineEvents = room.getLiveTimeline().getEvents()
+  const timelineIds = timelineEvents.map((e) => e.getId()).filter((id): id is string => !!id)
+  const messageIndex = timelineIds.indexOf(eventId)
+  if (messageIndex === -1) return false
+
+  const members = room.getJoinedMembers()
+  for (const member of members) {
+    if (!member.userId || member.userId === me) continue
+    const readUpToId = room.getEventReadUpTo(member.userId)
+    if (!readUpToId) continue
+    const readIndex = timelineIds.indexOf(readUpToId)
+    if (readIndex >= messageIndex) return true
+  }
+  return false
+}
+
+export function getMessageReadersAtEvent(roomId: string, eventId: string, senderId: string): string[] {
+  if (!client) return []
+  const me = client.getUserId()
+  if (!me || senderId !== me) return []
+  const room = client.getRoom(roomId)
+  if (!room) return []
+  const targetEvent = room.findEventById(eventId)
+  if (!targetEvent) return []
+  const readers = room.getUsersReadUpTo(targetEvent)
+  return readers.filter((userId) => userId !== me)
 }
 
 export async function restoreKeyBackup(recoveryKey: string): Promise<{ imported: number; total: number }> {

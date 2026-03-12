@@ -5,12 +5,14 @@ interface MessageState {
   messages: Map<string, MessageEvent[]>
   typing: Map<string, string[]>
   isLoadingHistory: boolean
+  receiptsVersion: number
 
   addMessage: (roomId: string, message: MessageEvent) => void
   replaceMessage: (roomId: string, eventId: string, message: MessageEvent) => void
   setMessages: (roomId: string, messages: MessageEvent[]) => void
   prependMessages: (roomId: string, messages: MessageEvent[]) => void
   setTyping: (typing: TypingState) => void
+  bumpReceiptsVersion: () => void
   setLoadingHistory: (loading: boolean) => void
   getMessages: (roomId: string) => MessageEvent[]
   getTypingUsers: (roomId: string) => string[]
@@ -21,6 +23,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   messages: new Map(),
   typing: new Map(),
   isLoadingHistory: false,
+  receiptsVersion: 0,
 
   addMessage: (roomId, message) => {
     const allMessages = new Map(get().messages)
@@ -68,11 +71,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set({ typing })
   },
 
+  bumpReceiptsVersion: () => set((state) => ({ receiptsVersion: state.receiptsVersion + 1 })),
+
   setLoadingHistory: (isLoadingHistory) => set({ isLoadingHistory }),
 
   getMessages: (roomId) => get().messages.get(roomId) || [],
 
   getTypingUsers: (roomId) => get().typing.get(roomId) || [],
 
-  reset: () => set({ messages: new Map(), typing: new Map() }),
+  reset: () => set({ messages: new Map(), typing: new Map(), receiptsVersion: 0 }),
 }))

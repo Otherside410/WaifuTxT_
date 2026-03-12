@@ -4,6 +4,15 @@ import { Avatar } from '../common/Avatar'
 import { useAuthStore } from '../../stores/authStore'
 import { logout } from '../../lib/matrix'
 
+function isVoiceRoom(room: { roomType?: string; name: string; topic: string }): boolean {
+  const maybeVoice = room as { isVoice?: boolean; roomType?: string; name: string; topic: string }
+  if (maybeVoice.isVoice) return true
+  const type = (room.roomType || '').toLowerCase()
+  if (type.includes('voice') || type.includes('call')) return true
+  const label = `${room.name} ${room.topic}`.toLowerCase()
+  return /\b(vocal|voice|audio)\b/.test(label)
+}
+
 export function RoomSidebar() {
   const [search, setSearch] = useState('')
   const rooms = useRoomStore((s) => s.rooms)
@@ -63,6 +72,16 @@ export function RoomSidebar() {
                 : 'text-text-secondary hover:bg-bg-hover/50 hover:text-text-primary'
             }`}
           >
+            <span className="mr-1.5 text-text-muted/90 shrink-0" aria-hidden>
+              {isVoiceRoom(room) ? (
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 14a3 3 0 003-3V7a3 3 0 10-6 0v4a3 3 0 003 3z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 11-14 0m7 7v3" />
+                </svg>
+              ) : (
+                <span className="text-base leading-none">#</span>
+              )}
+            </span>
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium truncate">{room.name}</span>
