@@ -1,6 +1,7 @@
 import type { MatrixSession, MessageEvent, RoomSummary, RoomMember, EncryptedFileInfo } from '../types/matrix'
 import { useMessageStore } from '../stores/messageStore'
 import { useRoomStore } from '../stores/roomStore'
+import { setupVerificationListeners } from './verification'
 
 type MatrixClient = import('matrix-js-sdk').MatrixClient
 type MatrixEvent = import('matrix-js-sdk').MatrixEvent
@@ -66,7 +67,20 @@ export async function initClient(session: MatrixSession): Promise<void> {
   try {
     await client.initRustCrypto()
   } catch (err) {
-    console.warn('[WaifuTxT] Crypto init failed:', err)
+    const msg = err instanceof Error ? err.message : ''
+    if (msg.includes("doesn't match the account in the constructor")) {
+      // The IndexedDB crypto store contains a different device's data (e.g. after
+      // a re-login that produced a new deviceId). Clear the stale stores and retry.
+      console.warn('[WaifuTxT] Crypto store mismatch — clearing stale stores and retrying')
+      await purgeRustCryptoStores()
+      try {
+        await client.initRustCrypto()
+      } catch (retryErr) {
+        console.warn('[WaifuTxT] Crypto init failed after store purge:', retryErr)
+      }
+    } else {
+      console.warn('[WaifuTxT] Crypto init failed:', err)
+    }
   }
 
   setupEventListeners(matrixSdk)
@@ -75,6 +89,24 @@ export async function initClient(session: MatrixSession): Promise<void> {
     initialSyncLimit: 30,
     lazyLoadMembers: true,
   })
+}
+
+// The two IndexedDB databases created by @matrix-org/matrix-sdk-crypto-wasm via matrix-js-sdk.
+// Source: node_modules/matrix-js-sdk/lib/client.js + rust-crypto/constants.js
+const RUST_CRYPTO_DB_NAMES = ['matrix-js-sdk::matrix-sdk-crypto', 'matrix-js-sdk::matrix-sdk-crypto-meta']
+
+async function purgeRustCryptoStores(): Promise<void> {
+  await Promise.allSettled(
+    RUST_CRYPTO_DB_NAMES.map(
+      (name) =>
+        new Promise<void>((resolve) => {
+          const req = indexedDB.deleteDatabase(name)
+          req.onsuccess = () => resolve()
+          req.onerror = () => resolve()
+          req.onblocked = () => resolve()
+        }),
+    ),
+  )
 }
 
 export async function logout(): Promise<void> {
@@ -110,20 +142,21 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
       if (type !== 'm.room.message' && type !== 'm.room.encrypted') return
 
       if (type === 'm.room.encrypted') {
-        if (event.isDecryptionFailure?.()) {
-          const fallback = encryptedFallbackMessage(event, room.roomId)
-          if (fallback) {
-            useMessageStore.getState().addMessage(room.roomId, fallback)
-            updateRoomLastMessage(room.roomId, fallback)
-          }
+        // Always show a placeholder immediately — Rust crypto is async so
+        // isDecryptionFailure() may still be false at this point.
+        const fallback = encryptedFallbackMessage(event, room.roomId)
+        if (fallback) {
+          useMessageStore.getState().addMessage(room.roomId, fallback)
+          updateRoomLastMessage(room.roomId, fallback)
         }
 
+        // Replace with real content once decryption completes (success or failure).
         event.once(matrixSdk.MatrixEventEvent.Decrypted, () => {
           const msg = eventToMessage(event, room.roomId)
           if (!msg) return
           const store = useMessageStore.getState()
+          // replaceMessage also appends when the event is not yet in the list.
           store.replaceMessage(room.roomId, msg.eventId, msg)
-          store.addMessage(room.roomId, msg)
           updateRoomLastMessage(room.roomId, msg)
         })
         return
@@ -159,6 +192,8 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
     syncRooms()
     useMessageStore.getState().bumpReceiptsVersion()
   })
+
+  setupVerificationListeners(client)
 }
 
 function syncRooms() {
@@ -267,10 +302,17 @@ function updateRoomLastMessage(roomId: string, msg: MessageEvent) {
 }
 
 function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null {
-  const content = event.getContent()
-  if (!content.body && !content.msgtype) return null
+  // Check encrypted states BEFORE inspecting content:
+  // • type still 'm.room.encrypted' → decryption pending or not yet attempted
+  // • isDecryptionFailure → attempted but failed (no keys)
+  // In both cases getContent() returns either the raw ciphertext payload (no body/msgtype)
+  // or the synthetic { msgtype: 'm.bad.encrypted' } object — show a placeholder either way.
+  if (event.getType() === 'm.room.encrypted') return encryptedFallbackMessage(event, roomId)
   if (event.isEncrypted?.() && event.isDecryptionFailure?.()) return encryptedFallbackMessage(event, roomId)
+
+  const content = event.getContent()
   if (content.msgtype === 'm.bad.encrypted' || content.body?.includes?.('Unable to decrypt')) return encryptedFallbackMessage(event, roomId)
+  if (!content.body && !content.msgtype) return null
 
   const sender = event.getSender()
   if (!sender) return null
@@ -408,6 +450,7 @@ export async function loadRoomHistory(roomId: string): Promise<boolean> {
 
 export async function loadInitialMessages(roomId: string): Promise<void> {
   if (!client) return
+  const matrixSdk = await getSDK()
   const room = client.getRoom(roomId)
   if (!room) return
   const events = room.getLiveTimeline().getEvents()
@@ -416,6 +459,16 @@ export async function loadInitialMessages(roomId: string): Promise<void> {
     if (event.getType() !== 'm.room.message' && event.getType() !== 'm.room.encrypted') continue
     const msg = eventToMessage(event, roomId)
     if (msg) messages.push(msg)
+    // Attach a decryption listener on history events so they update when keys
+    // become available (e.g. after session verification or key backup restore).
+    if (event.getType() === 'm.room.encrypted') {
+      event.once(matrixSdk.MatrixEventEvent.Decrypted, () => {
+        const decrypted = eventToMessage(event, roomId)
+        if (!decrypted) return
+        useMessageStore.getState().replaceMessage(roomId, decrypted.eventId, decrypted)
+        updateRoomLastMessage(roomId, decrypted)
+      })
+    }
   }
   useMessageStore.getState().setMessages(roomId, messages)
 }
@@ -523,11 +576,77 @@ export async function restoreKeyBackup(recoveryKey: string): Promise<{ imported:
   return { imported: result?.imported ?? 0, total: result?.total ?? 0 }
 }
 
+export interface DeviceInfo {
+  deviceId: string
+  displayName: string
+  lastSeenIp: string | null
+  lastSeenTs: number | null
+  isCurrentDevice: boolean
+}
+
+export async function getSessions(): Promise<DeviceInfo[]> {
+  if (!client) return []
+  const myDeviceId = client.getDeviceId()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const response = await (client as any).getDevices()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (response.devices ?? []).map((d: any) => ({
+    deviceId: d.device_id,
+    displayName: d.display_name || d.device_id,
+    lastSeenIp: d.last_seen_ip ?? null,
+    lastSeenTs: d.last_seen_ts ?? null,
+    isCurrentDevice: d.device_id === myDeviceId,
+  }))
+}
+
+export async function renameSession(deviceId: string, name: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  await client.setDeviceDetails(deviceId, { display_name: name })
+}
+
+export async function deleteSession(deviceId: string, password: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  const userId = client.getUserId()
+  if (!userId) throw new Error('Utilisateur non identifié')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = client as any
+  try {
+    await c.deleteDevice(deviceId)
+  } catch (err: unknown) {
+    const e = err as { httpStatus?: number; status?: number; data?: { session?: string } }
+    if (e?.httpStatus !== 401 && e?.status !== 401) throw err
+    await c.deleteDevice(deviceId, {
+      type: 'm.login.password',
+      identifier: { type: 'm.id.user', user: userId },
+      password,
+      session: e?.data?.session,
+    })
+  }
+}
+
+export async function isSessionVerified(): Promise<boolean> {
+  if (!client) return false
+  const crypto = client.getCrypto()
+  if (!crypto) return false
+  try {
+    const userId = client.getUserId()
+    const deviceId = client.getDeviceId()
+    if (!userId || !deviceId) return false
+    const status = await crypto.getDeviceVerificationStatus(userId, deviceId)
+    return status?.crossSigningVerified === true
+  } catch {
+    return false
+  }
+}
+
 export async function shouldShowKeyBackupBanner(): Promise<boolean> {
   if (!client) return false
   const crypto = client.getCrypto()
   if (!crypto) return false
   try {
+    // If this device is cross-signing verified it can already read encrypted
+    // messages — no need to prompt for key backup or verification.
+    if (await isSessionVerified()) return false
     const activeBackupVersion = await crypto.getActiveSessionBackupVersion()
     if (!activeBackupVersion) return true
     const status = await crypto.getSecretStorageStatus()

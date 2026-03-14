@@ -4,6 +4,7 @@ import { RoomSidebar } from './RoomSidebar'
 import { MemberPanel } from './MemberPanel'
 import { SettingsModal } from './SettingsModal'
 import { ChatArea } from '../chat/ChatArea'
+import { VerificationModal } from '../verification/VerificationModal'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
 import { loadRoomMembers } from '../../lib/matrix'
@@ -26,6 +27,7 @@ export function AppShell() {
       <ChatArea />
       {showMemberPanel && activeRoomId && <MemberPanel />}
       {showSettingsModal && <SettingsModal />}
+      <VerificationModal />
     </div>
   )
 }
