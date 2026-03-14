@@ -3,7 +3,14 @@ import { useRoomStore } from '../../stores/roomStore'
 import { Avatar } from '../common/Avatar'
 import { useAuthStore } from '../../stores/authStore'
 import { useUiStore } from '../../stores/uiStore'
-import { getOwnAvatarUrl } from '../../lib/matrix'
+import { getOwnAvatarUrl, setOwnPresence } from '../../lib/matrix'
+import type { PresenceValue } from '../../stores/uiStore'
+
+const PRESENCE_OPTIONS: { value: PresenceValue; label: string; color: string }[] = [
+  { value: 'online',      label: 'En ligne',   color: 'bg-success' },
+  { value: 'unavailable', label: 'Absent',      color: 'bg-warning' },
+  { value: 'offline',     label: 'Hors-ligne',  color: 'bg-text-muted' },
+]
 
 function isVoiceRoom(room: { roomType?: string; name: string; topic: string }): boolean {
   const maybeVoice = room as { isVoice?: boolean; roomType?: string; name: string; topic: string }
@@ -25,18 +32,38 @@ export function RoomSidebar() {
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
   const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(null)
+  const [showPresenceMenu, setShowPresenceMenu] = useState(false)
+  const preferredPresence = useUiStore((s) => s.ownPresence)
+  const setOwnPresenceStore = useUiStore((s) => s.setOwnPresence)
+  const presenceMap = useRoomStore((s) => s.presenceMap)
+  const updatePresence = useRoomStore((s) => s.updatePresence)
+  const myUserId = session?.userId
+  const ownPresence = (myUserId ? presenceMap[myUserId] : null) ?? preferredPresence
+  const presenceMenuRef = useRef<HTMLDivElement>(null)
   const avatarFetched = useRef(false)
 
-  // Re-run on every rooms update until we find a URL (member data arrives
-  // progressively during sync — stop as soon as we get one).
   useEffect(() => {
     if (avatarFetched.current) return
     const url = getOwnAvatarUrl()
-    if (url) {
-      setOwnAvatarUrl(url)
-      avatarFetched.current = true
-    }
+    if (url) { setOwnAvatarUrl(url); avatarFetched.current = true }
   }, [rooms])
+
+  // Close presence menu on outside click
+  useEffect(() => {
+    if (!showPresenceMenu) return
+    const handler = (e: MouseEvent) => {
+      if (!presenceMenuRef.current?.contains(e.target as Node)) setShowPresenceMenu(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showPresenceMenu])
+
+  const handleSetPresence = async (presence: PresenceValue) => {
+    setOwnPresenceStore(presence)
+    if (myUserId) updatePresence(myUserId, presence)
+    setShowPresenceMenu(false)
+    await setOwnPresence(presence)
+  }
 
   const displayRooms = useMemo(() => {
     const allRooms = Array.from(rooms.values())
@@ -121,18 +148,44 @@ export function RoomSidebar() {
       </div>
 
       <div className="relative -left-[72px] w-[calc(100%+72px)] h-14 pl-[80px] pr-2 flex items-center gap-2 bg-bg-tertiary/95 border-t border-border">
+        {/* Presence menu */}
+        {showPresenceMenu && (
+          <div
+            ref={presenceMenuRef}
+            className="absolute bottom-16 left-[80px] w-44 bg-bg-tertiary border border-border rounded-lg shadow-xl p-1 z-50"
+          >
+            {PRESENCE_OPTIONS.map(({ value, label, color }) => (
+              <button
+                key={value}
+                onClick={() => handleSetPresence(value)}
+                className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
+              >
+                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${color}`} />
+                <span className="flex-1 text-left">{label}</span>
+                {ownPresence === value && (
+                  <svg className="w-3.5 h-3.5 text-accent-pink shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                  </svg>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
         <button
-          onClick={() => setSettingsModal(true)}
+          onClick={() => setShowPresenceMenu((v) => !v)}
           className="flex items-center gap-2 min-w-0 flex-1 px-1.5 py-1 rounded-md hover:bg-bg-hover/70 transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-pink"
-          title="Ouvrir les paramètres"
-          aria-label="Ouvrir les paramètres"
+          title="Changer de statut"
+          aria-label="Changer de statut"
         >
-          <Avatar src={ownAvatarUrl} name={session?.userId || '?'} size={32} status="online" />
+          <Avatar src={ownAvatarUrl} name={session?.userId || '?'} size={32} status={ownPresence} />
           <div className="min-w-0 text-left">
             <div className="text-sm font-semibold truncate text-text-primary leading-tight">
               {session?.userId?.split(':')[0]?.replace('@', '') || ''}
             </div>
-            <div className="text-[11px] text-text-muted truncate leading-tight">En ligne</div>
+            <div className="text-[11px] text-text-muted truncate leading-tight">
+              {PRESENCE_OPTIONS.find((o) => o.value === ownPresence)?.label ?? 'Hors-ligne'}
+            </div>
           </div>
         </button>
 

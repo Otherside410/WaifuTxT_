@@ -4,6 +4,7 @@ import { Avatar } from '../common/Avatar'
 export function MemberPanel() {
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const members = useRoomStore((s) => (activeRoomId ? s.members.get(activeRoomId) : undefined))
+  const presenceMap = useRoomStore((s) => s.presenceMap)
 
   if (!members) return null
 
@@ -27,7 +28,7 @@ export function MemberPanel() {
               src={member.avatarUrl}
               name={member.displayName}
               size={32}
-              status={member.presence}
+              status={presenceMap[member.userId] ?? member.presence}
             />
             <div className="min-w-0">
               <div className="text-sm truncate text-text-primary">{member.displayName}</div>
