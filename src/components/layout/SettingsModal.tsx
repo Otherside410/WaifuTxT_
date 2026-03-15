@@ -85,6 +85,8 @@ function SecuritySection({ onClose }: { onClose: () => void }) {
 export function SettingsModal() {
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
+  const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
+  const setRoomMessagePreview = useUiStore((s) => s.setRoomMessagePreview)
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('profile')
 
   const username = useMemo(
@@ -158,8 +160,34 @@ export function SettingsModal() {
           )}
 
           {activeSection === 'appearance' && (
-            <div className="mt-6 p-4 rounded-lg border border-border bg-bg-primary/40 text-sm text-text-secondary">
-              Les options d'apparence seront ajoutées ici (thèmes, couleurs, CSS custom, etc.).
+            <div className="mt-6 space-y-3">
+              <div className="p-4 rounded-lg border border-border bg-bg-primary/40 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Aperçu des messages des salons</p>
+                  <p className="text-xs text-text-secondary mt-1">
+                    Affiche ou masque la ligne de prévisualisation sous le nom du salon dans la sidebar.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={showRoomMessagePreview}
+                  onClick={() => setRoomMessagePreview(!showRoomMessagePreview)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
+                    showRoomMessagePreview ? 'bg-accent-pink' : 'bg-bg-hover'
+                  }`}
+                  title="Activer ou désactiver l'aperçu des messages"
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      showRoomMessagePreview ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="p-4 rounded-lg border border-border bg-bg-primary/40 text-sm text-text-secondary">
+                Les options d'apparence avancées seront ajoutées ici (thèmes, couleurs, CSS custom, etc.).
+              </div>
             </div>
           )}
 

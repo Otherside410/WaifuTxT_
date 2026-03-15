@@ -23,6 +23,7 @@ export function RoomSidebar() {
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
+  const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
 
   const displayRooms = useMemo(() => {
     const allRooms = Array.from(rooms.values())
@@ -94,7 +95,7 @@ export function RoomSidebar() {
                   </span>
                 )}
               </div>
-              {room.lastMessage && (
+              {showRoomMessagePreview && room.lastMessage && (
                 <p className="text-xs text-text-muted truncate">{room.lastMessage}</p>
               )}
             </div>
