@@ -31,22 +31,7 @@ export function RoomSidebar() {
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
-  const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(null)
-  const [showPresenceMenu, setShowPresenceMenu] = useState(false)
-  const preferredPresence = useUiStore((s) => s.ownPresence)
-  const setOwnPresenceStore = useUiStore((s) => s.setOwnPresence)
-  const presenceMap = useRoomStore((s) => s.presenceMap)
-  const updatePresence = useRoomStore((s) => s.updatePresence)
-  const myUserId = session?.userId
-  const ownPresence = (myUserId ? presenceMap[myUserId] : null) ?? preferredPresence
-  const presenceMenuRef = useRef<HTMLDivElement>(null)
-  const avatarFetched = useRef(false)
-
-  useEffect(() => {
-    if (avatarFetched.current) return
-    const url = getOwnAvatarUrl()
-    if (url) { setOwnAvatarUrl(url); avatarFetched.current = true }
-  }, [rooms])
+  const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
 
   // Close presence menu on outside click
   useEffect(() => {
@@ -135,7 +120,7 @@ export function RoomSidebar() {
                   </span>
                 )}
               </div>
-              {room.lastMessage && (
+              {showRoomMessagePreview && room.lastMessage && (
                 <p className="text-xs text-text-muted truncate">{room.lastMessage}</p>
               )}
             </div>
