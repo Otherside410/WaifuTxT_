@@ -8,6 +8,7 @@ import {
   type ClipboardEvent,
 } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
+import { useUiStore } from '../../stores/uiStore'
 import { sendMessage, sendFile, sendImage, sendTyping } from '../../lib/matrix'
 
 interface PendingImage {
@@ -21,9 +22,20 @@ export function MessageInput() {
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
   const [isSending, setIsSending] = useState(false)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
+  const pendingMention = useUiStore((s) => s.pendingMention)
+  const setPendingMention = useUiStore((s) => s.setPendingMention)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingImagesRef = useRef<PendingImage[]>([])
+
+  // Inject mention from UserProfileCard / MemberPanel
+  useEffect(() => {
+    if (!pendingMention) return
+    setText((prev) => (prev ? `${prev} ${pendingMention} ` : `${pendingMention} `))
+    setPendingMention(null)
+    textareaRef.current?.focus()
+  }, [pendingMention, setPendingMention])
 
   const handleSend = useCallback(async () => {
     if (isSending || !activeRoomId) return
@@ -184,6 +196,7 @@ export function MessageInput() {
           onChange={handleFileUpload}
         />
         <textarea
+          ref={textareaRef}
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}

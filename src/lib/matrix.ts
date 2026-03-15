@@ -77,6 +77,35 @@ export async function initClient(session: MatrixSession): Promise<void> {
   })
 }
 
+export async function getOrCreateDmRoom(targetUserId: string): Promise<string> {
+  if (!client) throw new Error('Client non initialisé')
+
+  // Look for an existing joined DM room with this user
+  const directEvent = client.getAccountData('m.direct')
+  const directContent = (directEvent?.getContent() ?? {}) as Record<string, string[]>
+  const existingIds = directContent[targetUserId] ?? []
+  for (const roomId of existingIds) {
+    const room = client.getRoom(roomId)
+    if (room && room.getMyMembership() === 'join') return roomId
+  }
+
+  // Create a new DM room
+  const { room_id } = await client.createRoom({
+    is_direct: true,
+    invite: [targetUserId],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    preset: 'trusted_private_chat' as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    visibility: 'private' as any,
+  })
+
+  // Register it in m.direct account data
+  const updated = { ...directContent, [targetUserId]: [...existingIds, room_id] }
+  await client.setAccountData('m.direct', updated)
+
+  return room_id
+}
+
 export async function logout(): Promise<void> {
   if (!client) return
   try {
