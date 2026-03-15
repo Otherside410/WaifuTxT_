@@ -10,15 +10,19 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 
 ## Fonctionnalites
 
-- **Authentification** — login par identifiant/mot de passe, persistance de session
-- **Salons & Spaces** — navigation par espaces, salons, et messages directs
-- **Messagerie** — envoi/reception de messages texte en temps reel
+- **Authentification Matrix** — login identifiant/mot de passe + persistance de session
+- **Salons, Spaces et DMs** — navigation inspiree de Discord (serveurs, channels, messages directs)
+- **Messagerie temps reel** — timeline, historique, envoi/reception des messages
 - **Chiffrement de bout en bout (E2EE)** — via `matrix-sdk-crypto-wasm` (Rust crypto)
 - **Restauration de cles** — dechiffrement de l'historique via la cle de recuperation (Secret Storage / 4S)
-- **Medias chiffres** — dechiffrement et affichage des images, videos, fichiers dans les salons E2EE
+- **Medias Matrix** — upload et affichage d'images/videos/fichiers, y compris contenus chiffres
+- **Edition de messages** — support Matrix `m.replace` avec indicateur `(modifie)`
+- **Reponses de messages** — support Matrix `m.in_reply_to` avec preview style Discord
+- **Read receipts** — avatars des lecteurs sur les messages envoyes
 - **Markdown** — rendu avec `react-markdown`, support GFM et coloration syntaxique
-- **Upload** — envoi d'images et fichiers
-- **Indicateurs de frappe** — affichage en temps reel
+- **Mentions** — mise en avant des mentions et aide a la saisie
+- **Indicateurs de frappe** — affichage en temps reel, mode `3 points` ou `waifu`
+- **Personnalisation waifu (opt-in)** — choix local de waifu (Miku / Airi) dans l'apparence
 - **Notifications** — via l'API Notification du navigateur
 
 ## Stack technique
@@ -34,6 +38,7 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 | Routage | React Router |
 | Markdown | `react-markdown` + `remark-gfm` + `rehype-highlight` |
 | Dates | `date-fns` |
+| Qualite dev | ESLint + Husky |
 
 ## Installation
 
@@ -62,18 +67,26 @@ npm run preview
 
 ```
 src/
+├── assets/
+│   └── waifu/         # PNG waifu (Miku, Airi)
 ├── components/
 │   ├── auth/          # LoginScreen
 │   ├── chat/          # ChatArea, MessageList, MessageItem, MessageInput,
 │   │                  # KeyBackupBanner, TypingIndicator
 │   ├── common/        # Avatar, composants reutilisables
-│   └── layout/        # AppShell, SpaceSidebar, RoomSidebar, MemberList
+│   ├── layout/        # AppShell, SpaceSidebar, RoomSidebar, SettingsModal
+│   ├── settings/      # ThemePicker, AccentColorPicker
+│   └── verification/  # UI de verification cross-signing
 ├── lib/
-│   └── matrix.ts      # Interface avec matrix-js-sdk (init, events, crypto, media)
+│   ├── matrix.ts      # Interface avec matrix-js-sdk (init, events, crypto, media)
+│   ├── waifu.ts       # Catalogue waifu et helpers
+│   └── verification.ts# Logique de verification E2EE
 ├── stores/
 │   ├── authStore.ts   # Session & authentification (Zustand)
 │   ├── roomStore.ts   # Salons & espaces
-│   └── messageStore.ts# Messages & indicateurs de frappe
+│   ├── messageStore.ts# Messages, receipts, indicateurs de frappe
+│   ├── uiStore.ts     # Etat UI (settings, waifu, reply preview, etc.)
+│   └── verificationStore.ts # Etat de verification E2EE
 ├── types/
 │   └── matrix.ts      # Types TypeScript (Session, Message, Room, etc.)
 ├── styles/
