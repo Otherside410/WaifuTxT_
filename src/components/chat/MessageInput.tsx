@@ -7,6 +7,20 @@ import {
   type ChangeEvent,
   type ClipboardEvent,
 } from 'react'
+
+function highlightInputText(text: string): string {
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+  return (
+    escaped.replace(
+      /@[\w._\-=+/]+/g,
+      '<mark style="background:var(--color-mention-bg);color:transparent;border-radius:3px;padding:1px 2px">$&</mark>',
+    ) + '\u200b'
+  )
+}
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
 import { sendMessage, sendFile, sendImage, sendTyping } from '../../lib/matrix'
@@ -26,6 +40,7 @@ export function MessageInput() {
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const backdropRef = useRef<HTMLDivElement>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingImagesRef = useRef<PendingImage[]>([])
 
@@ -115,6 +130,12 @@ export function MessageInput() {
     setPendingImages((prev) => [...prev, ...addedImages])
   }
 
+  const syncScroll = useCallback(() => {
+    if (backdropRef.current && textareaRef.current) {
+      backdropRef.current.scrollTop = textareaRef.current.scrollTop
+    }
+  }, [])
+
   const removePendingImage = (id: string) => {
     setPendingImages((prev) => {
       const img = prev.find((p) => p.id === id)
@@ -195,17 +216,27 @@ export function MessageInput() {
           className="hidden"
           onChange={handleFileUpload}
         />
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={`Envoyer un message dans #${room?.name || '...'}`}
-          rows={1}
-          className="flex-1 bg-transparent !border-0 resize-none py-3 px-0 text-sm text-text-primary outline-none max-h-40"
-          style={{ minHeight: '24px' }}
-        />
+        <div className="relative flex-1 min-w-0">
+          {/* Highlight backdrop — renders behind the textarea */}
+          <div
+            ref={backdropRef}
+            aria-hidden="true"
+            className="absolute inset-0 py-3 px-0 text-sm overflow-hidden pointer-events-none whitespace-pre-wrap break-words"
+            dangerouslySetInnerHTML={{ __html: highlightInputText(text) }}
+          />
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onScroll={syncScroll}
+            placeholder={`Envoyer un message dans #${room?.name || '...'}`}
+            rows={1}
+            className="relative z-10 w-full bg-transparent !border-0 resize-none py-3 px-0 text-sm text-text-primary outline-none max-h-40"
+            style={{ minHeight: '24px', caretColor: 'var(--color-text-primary)' }}
+          />
+        </div>
         <button
           onClick={handleSend}
           disabled={isSending || (!text.trim() && pendingImages.length === 0)}
