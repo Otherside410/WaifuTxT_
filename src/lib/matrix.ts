@@ -125,12 +125,19 @@ export async function logout(): Promise<void> {
 function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
   if (!client) return
 
+  let presenceInitialized = false
   client.on(matrixSdk.ClientEvent.Sync, (state: string) => {
     if (state === 'PREPARED' || state === 'SYNCING') {
       try {
         syncRooms()
       } catch (err) {
         console.error('[WaifuTxT] syncRooms error:', err)
+      }
+      if (!presenceInitialized) {
+        presenceInitialized = true
+        // Seed presenceMap with whatever the SDK already knows from the initial sync.
+        seedPresenceFromUsers()
+        initOwnPresence().catch(() => {})
       }
     }
   })
@@ -191,6 +198,19 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
   client.on(matrixSdk.RoomEvent.Receipt, () => {
     syncRooms()
     useMessageStore.getState().bumpReceiptsVersion()
+  })
+
+  // Real-time presence updates emitted by the SDK on User objects.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  client.on('User.presence' as any, (_event: unknown, user: any) => {
+    applyPresence(user?.userId, user?.presence)
+  })
+
+  // Fallback: raw m.presence events arriving in the sync stream.
+  // Covers homeservers where the SDK reEmitter is not wired for User events.
+  client.on(matrixSdk.ClientEvent.Event, (event: MatrixEvent) => {
+    if (event.getType() !== 'm.presence') return
+    applyPresence(event.getSender(), event.getContent()?.presence)
   })
 
   setupVerificationListeners(client)
@@ -477,6 +497,7 @@ export function loadRoomMembers(roomId: string): void {
   if (!client) return
   const room = client.getRoom(roomId)
   if (!room) return
+  const myUserId = client.getUserId()
   const matrixMembers = room.getJoinedMembers()
   const baseUrl = client.baseUrl
   const members: RoomMember[] = matrixMembers.map((m) => {
@@ -486,13 +507,17 @@ export function loadRoomMembers(roomId: string): void {
     } catch {
       // ignore
     }
+    const p = client!.getUser(m.userId)?.presence
+    let presence: RoomMember['presence'] = 'offline'
+    if (p === 'online') presence = 'online'
+    else if (p === 'unavailable') presence = 'unavailable'
     return {
       userId: m.userId,
       displayName: m.name || m.userId,
       avatarUrl,
       membership: m.membership || 'join',
       powerLevel: room.currentState.getStateEvents('m.room.power_levels')?.[0]?.getContent()?.users?.[m.userId] || 0,
-      presence: 'offline',
+      presence,
     }
   })
   useRoomStore.getState().setMembers(roomId, members)
@@ -582,6 +607,45 @@ export interface DeviceInfo {
   lastSeenIp: string | null
   lastSeenTs: number | null
   isCurrentDevice: boolean
+}
+
+function applyPresence(userId: string | undefined | null, raw: string | undefined | null): void {
+  if (!userId) return
+  const presence = raw === 'online' ? 'online' : raw === 'unavailable' ? 'unavailable' : 'offline'
+  useRoomStore.getState().updatePresence(userId, presence)
+}
+
+function seedPresenceFromUsers(): void {
+  if (!client) return
+  for (const user of client.getUsers()) {
+    if (user.presence) applyPresence(user.userId, user.presence)
+  }
+}
+
+export function getOwnPresence(): 'online' | 'unavailable' | 'offline' {
+  if (!client) return 'offline'
+  const userId = client.getUserId()
+  if (!userId) return 'offline'
+  const p = client.getUser(userId)?.presence
+  if (p === 'online') return 'online'
+  if (p === 'unavailable') return 'unavailable'
+  return 'offline'
+}
+
+export async function setOwnPresence(presence: 'online' | 'unavailable' | 'offline'): Promise<void> {
+  if (!client) return
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (client as any).sendPresence({ presence })
+}
+
+export async function initOwnPresence(): Promise<void> {
+  const { useUiStore } = await import('../stores/uiStore')
+  const presence = useUiStore.getState().ownPresence
+  // Optimistically push into presenceMap so the UI reflects it immediately,
+  // before the server echoes the User.presence event back.
+  const userId = client?.getUserId()
+  if (userId) useRoomStore.getState().updatePresence(userId, presence)
+  await setOwnPresence(presence)
 }
 
 export function getOwnAvatarUrl(): string | null {

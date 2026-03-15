@@ -1,17 +1,20 @@
 import { create } from 'zustand'
 import type { RoomSummary, RoomMember } from '../types/matrix'
+import type { PresenceValue } from './uiStore'
 
 interface RoomState {
   rooms: Map<string, RoomSummary>
   activeRoomId: string | null
   activeSpaceId: string | null
   members: Map<string, RoomMember[]>
+  presenceMap: Record<string, PresenceValue>
 
   setRooms: (rooms: Map<string, RoomSummary>) => void
   updateRoom: (roomId: string, update: Partial<RoomSummary>) => void
   setActiveRoom: (roomId: string | null) => void
   setActiveSpace: (spaceId: string | null) => void
   setMembers: (roomId: string, members: RoomMember[]) => void
+  updatePresence: (userId: string, presence: PresenceValue) => void
   getSpaces: () => RoomSummary[]
   getRoomsForSpace: (spaceId: string | null) => RoomSummary[]
   getDirectMessages: () => RoomSummary[]
@@ -23,6 +26,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   activeRoomId: null,
   activeSpaceId: null,
   members: new Map(),
+  presenceMap: {},
 
   setRooms: (rooms) => set({ rooms }),
 
@@ -42,6 +46,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     const allMembers = new Map(get().members)
     allMembers.set(roomId, members)
     set({ members: allMembers })
+  },
+
+  updatePresence: (userId, presence) => {
+    set({ presenceMap: { ...get().presenceMap, [userId]: presence } })
   },
 
   getSpaces: () => {
@@ -77,5 +85,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       activeRoomId: null,
       activeSpaceId: null,
       members: new Map(),
+      presenceMap: {},
     }),
 }))

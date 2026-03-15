@@ -1,5 +1,15 @@
 import { create } from 'zustand'
 
+export type PresenceValue = 'online' | 'unavailable' | 'offline'
+
+const PRESENCE_STORAGE_KEY = 'waifutxt_presence'
+
+function loadStoredPresence(): PresenceValue {
+  const stored = localStorage.getItem(PRESENCE_STORAGE_KEY)
+  if (stored === 'online' || stored === 'unavailable' || stored === 'offline') return stored
+  return 'online'
+}
+
 interface UiState {
   showMemberPanel: boolean
   showSettingsModal: boolean
