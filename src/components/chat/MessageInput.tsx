@@ -3,27 +3,16 @@ import {
   useRef,
   useCallback,
   useEffect,
+  useMemo,
   type KeyboardEvent,
   type ChangeEvent,
   type ClipboardEvent,
 } from 'react'
-
-function highlightInputText(text: string): string {
-  const escaped = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
-  return (
-    escaped.replace(
-      /@[\w._\-=+/]+/g,
-      '<mark style="display:inline-flex;align-items:center;border-radius:0.25rem;padding:1px 4px;background:var(--color-mention-bg);color:var(--color-mention)">$&</mark>',
-    ) + '\u200b'
-  )
-}
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
 import { sendMessage, sendFile, sendImage, sendTyping } from '../../lib/matrix'
+import { Avatar } from '../common/Avatar'
+import type { RoomMember } from '../../types/matrix'
 
 interface PendingImage {
   id: string
@@ -31,10 +20,33 @@ interface PendingImage {
   previewUrl: string
 }
 
+function highlightInputText(text: string, validLocalparts: Set<string>): string {
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+  return (
+    escaped.replace(/@[\w._\-=+/]+/g, (match) => {
+      const localpart = match.slice(1).toLowerCase()
+      if (validLocalparts.has(localpart)) {
+        return `<mark style="border-radius:0.25rem;background:var(--color-mention-bg);color:var(--color-mention)">${match}</mark>`
+      }
+      return match
+    }) + '\u200b'
+  )
+}
+
+const MENTION_TOKEN_RE = /@[\w._\-=+/]+/g
+
 export function MessageInput() {
   const [text, setText] = useState('')
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
   const [isSending, setIsSending] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
+  const [mentionStart, setMentionStart] = useState(0)
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
+
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const pendingMention = useUiStore((s) => s.pendingMention)
   const setPendingMention = useUiStore((s) => s.setPendingMention)
@@ -45,6 +57,15 @@ export function MessageInput() {
   const backdropRef = useRef<HTMLDivElement>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingImagesRef = useRef<PendingImage[]>([])
+  const nextCursorRef = useRef<number | null>(null)
+
+  // Restore cursor position after a mention insertion/deletion re-render
+  useEffect(() => {
+    if (nextCursorRef.current !== null) {
+      textareaRef.current?.setSelectionRange(nextCursorRef.current, nextCursorRef.current)
+      nextCursorRef.current = null
+    }
+  })
 
   // Inject mention from UserProfileCard / MemberPanel
   useEffect(() => {
@@ -53,6 +74,60 @@ export function MessageInput() {
     setPendingMention(null)
     textareaRef.current?.focus()
   }, [pendingMention, setPendingMention])
+
+  // Set of localparts for valid mention highlighting
+  const validLocalparts = useMemo(() => {
+    const set = new Set<string>()
+    for (const m of roomMembers) {
+      set.add(m.userId.split(':')[0].slice(1).toLowerCase())
+    }
+    return set
+  }, [roomMembers])
+
+  // Filtered autocomplete suggestions
+  const suggestions = useMemo((): RoomMember[] => {
+    if (mentionQuery === null) return []
+    const q = mentionQuery.toLowerCase()
+    return roomMembers
+      .filter((m) => {
+        const localpart = m.userId.split(':')[0].slice(1).toLowerCase()
+        return m.displayName.toLowerCase().includes(q) || localpart.includes(q)
+      })
+      .slice(0, 8)
+  }, [roomMembers, mentionQuery])
+
+  // Detect active @mention query at cursor position
+  const detectMention = useCallback((newText: string, cursorPos: number) => {
+    const before = newText.slice(0, cursorPos)
+    const atIdx = before.lastIndexOf('@')
+    if (atIdx !== -1) {
+      const query = before.slice(atIdx + 1)
+      const charBefore = atIdx > 0 ? before[atIdx - 1] : ' '
+      if (!query.includes(' ') && !query.includes('\n') && (/\s/.test(charBefore) || atIdx === 0)) {
+        setMentionQuery(query)
+        setMentionStart(atIdx)
+        setSuggestionIndex(0)
+        return
+      }
+    }
+    setMentionQuery(null)
+  }, [])
+
+  const selectSuggestion = useCallback(
+    (member: RoomMember) => {
+      const localpart = member.userId.split(':')[0].slice(1)
+      const cursorPos =
+        textareaRef.current?.selectionStart ?? mentionStart + (mentionQuery?.length ?? 0) + 1
+      const before = text.slice(0, mentionStart)
+      const after = text.slice(cursorPos)
+      const newText = `${before}@${localpart} ${after}`
+      setText(newText)
+      setMentionQuery(null)
+      nextCursorRef.current = before.length + localpart.length + 2 // @ + localpart + space
+      textareaRef.current?.focus()
+    },
+    [text, mentionStart, mentionQuery],
+  )
 
   const handleSend = useCallback(async () => {
     if (isSending || !activeRoomId) return
@@ -82,14 +157,67 @@ export function MessageInput() {
   }, [activeRoomId, isSending, pendingImages, pendingReply, setPendingReply, text])
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    // Autocomplete navigation takes priority
+    if (mentionQuery !== null && suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSuggestionIndex((i) => (i + 1) % suggestions.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSuggestionIndex((i) => (i - 1 + suggestions.length) % suggestions.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        selectSuggestion(suggestions[suggestionIndex])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMentionQuery(null)
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
+      return
+    }
+
+    // Whole-token deletion — only when NOT actively typing a mention query
+    if (mentionQuery === null && (e.key === 'Backspace' || e.key === 'Delete')) {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      const { selectionStart, selectionEnd } = textarea
+      if (selectionStart !== selectionEnd) return
+
+      MENTION_TOKEN_RE.lastIndex = 0
+      let match: RegExpExecArray | null
+      while ((match = MENTION_TOKEN_RE.exec(text)) !== null) {
+        const start = match.index
+        const end = match.index + match[0].length
+        const hit =
+          e.key === 'Backspace'
+            ? selectionStart > start && selectionStart <= end
+            : selectionStart >= start && selectionStart < end
+        if (hit) {
+          e.preventDefault()
+          const newText = text.slice(0, start) + text.slice(end)
+          nextCursorRef.current = start
+          setText(newText)
+          return
+        }
+      }
     }
   }
 
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
-    setText(e.target.value)
+    const newText = e.target.value
+    setText(newText)
+    detectMention(newText, e.target.selectionStart ?? newText.length)
     if (!activeRoomId) return
 
     sendTyping(activeRoomId, true)
@@ -205,7 +333,8 @@ export function MessageInput() {
         <div className="mb-2 rounded-lg border border-border bg-bg-tertiary/70 p-2">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs text-text-secondary">
-              {pendingImages.length} image{pendingImages.length > 1 ? 's' : ''} prête{pendingImages.length > 1 ? 's' : ''} à envoyer
+              {pendingImages.length} image{pendingImages.length > 1 ? 's' : ''} prête
+              {pendingImages.length > 1 ? 's' : ''} à envoyer
             </p>
             <button
               onClick={clearPendingImages}
@@ -265,6 +394,9 @@ export function MessageInput() {
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             onScroll={syncScroll}
+            onSelect={(e) =>
+              detectMention(text, (e.target as HTMLTextAreaElement).selectionStart)
+            }
             placeholder={`Envoyer un message dans #${room?.name || '...'}`}
             rows={1}
             className="relative z-10 w-full bg-transparent !border-0 resize-none py-0 px-0 text-sm outline-none max-h-40 placeholder:text-text-muted"
