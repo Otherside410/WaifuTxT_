@@ -1,6 +1,20 @@
 import { format, isToday, isYesterday } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react'
+import ReactMarkdown from 'react-markdown'
+import rehypeHighlight from 'rehype-highlight'
+import remarkGfm from 'remark-gfm'
 import type { EncryptedFileInfo, MessageEvent } from '../../types/matrix'
 import { Avatar } from '../common/Avatar'
 import { useRoomStore } from '../../stores/roomStore'
@@ -20,6 +34,7 @@ import { useRoomStore as useRoomStoreGlobal } from '../../stores/roomStore'
 
 const URL_REGEX = /https?:\/\/[^\s<>"']+/g
 const TOKEN_REGEX = /(https?:\/\/[^\s<>"']+|<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?)/g
+const MENTION_REGEX = /(<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?)/g
 
 function mxidToMentionLabel(raw: string): string {
   const mxid = raw.replace(/^<@/, '').replace(/>$/, '').replace(/^@/, '')
@@ -73,6 +88,92 @@ function RichText({ text }: { text: string }) {
         return <span key={i}>{part}</span>
       })}
     </>
+  )
+}
+
+function MentionText({ text }: { text: string }) {
+  const parts = text.split(MENTION_REGEX)
+  if (parts.length === 1) return <>{text}</>
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (!part) return null
+        if (part.startsWith('<@') || /^@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?$/.test(part)) {
+          return (
+            <span
+              key={i}
+              className="inline-flex items-center rounded px-1 py-0.5 bg-mention-bg text-mention hover:bg-mention-hover-bg transition-colors"
+            >
+              {mxidToMentionLabel(part)}
+            </span>
+          )
+        }
+        return <span key={i}>{part}</span>
+      })}
+    </>
+  )
+}
+
+function decorateMentions(children: ReactNode): ReactNode {
+  return Children.map(children, (child) => {
+    if (typeof child === 'string') return <MentionText text={child} />
+    if (!isValidElement<{ children?: ReactNode }>(child)) return child
+    const childChildren = child.props.children
+    if (childChildren == null) return child
+    return cloneElement(child, { children: decorateMentions(childChildren) })
+  })
+}
+
+function hasMarkdownSyntax(text: string): boolean {
+  return /(^|\s)([#>*-]|\d+\.)|(\*\*|__|~~|`)|\[[^\]]+\]\([^)]+\)/m.test(text)
+}
+
+function MarkdownText({
+  text,
+  className,
+}: {
+  text: string
+  className?: string
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={{
+        p: ({ children }) => <p className={className || 'text-sm leading-relaxed break-words text-text-primary'}>{decorateMentions(children)}</p>,
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-link hover:text-link-hover hover:underline break-all"
+          >
+            {children}
+          </a>
+        ),
+        ul: ({ children }) => <ul className="list-disc pl-5 my-1 space-y-0.5">{decorateMentions(children)}</ul>,
+        ol: ({ children }) => <ol className="list-decimal pl-5 my-1 space-y-0.5">{decorateMentions(children)}</ol>,
+        li: ({ children }) => <li className="text-sm leading-relaxed text-text-primary">{decorateMentions(children)}</li>,
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-border-strong pl-3 text-text-secondary italic my-1">
+            {decorateMentions(children)}
+          </blockquote>
+        ),
+        code: ({ className: codeClassName, children }) => {
+          const isBlock = !!codeClassName
+          if (isBlock) {
+            return (
+              <code className={`${codeClassName} block bg-bg-tertiary border border-border rounded-md p-2 text-xs overflow-x-auto`}>
+                {children}
+              </code>
+            )
+          }
+          return <code className="bg-bg-tertiary border border-border rounded px-1 py-0.5 text-xs">{children}</code>
+        },
+      }}
+    >
+      {text}
+    </ReactMarkdown>
   )
 }
 
@@ -556,6 +657,10 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const isMediaType = message.type === 'm.image' || message.type === 'm.video' || message.type === 'm.audio' || message.type === 'm.file'
   const urls = extractUrls(message.content)
   const contentWithoutUrls = removeUrlsFromText(message.content)
+  const renderContent = useMemo(
+    () => (hasMarkdownSyntax(message.content) ? message.content : contentWithoutUrls),
+    [message.content, contentWithoutUrls],
+  )
   const session = useAuthStore((s) => s.session)
   const receiptsVersion = useMessageStore((s) => s.receiptsVersion)
   const membersMap = useRoomStore((s) => s.members)
@@ -627,19 +732,24 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
         {(message.type === 'm.text' || message.type === 'm.notice' || message.type === 'm.emote') && (
           <>
             {(message.content.startsWith('🔒') || contentWithoutUrls.length > 0) && (
-              <p className={`text-sm leading-relaxed break-words ${message.type === 'm.notice' ? 'text-text-muted italic' : 'text-text-primary'}`}>
-                {message.type === 'm.emote' && <span className="text-text-secondary italic">* {message.senderName} </span>}
+              <>
+                {message.type === 'm.emote' && <p className="text-sm leading-relaxed text-text-secondary italic">* {message.senderName}</p>}
                 {message.content.startsWith('🔒') ? (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-bg-tertiary rounded text-text-muted text-xs italic">
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                    </svg>
-                    Message chiffré — clé de récupération requise
-                  </span>
+                  <p className="text-sm leading-relaxed break-words text-text-primary">
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-bg-tertiary rounded text-text-muted text-xs italic">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                      </svg>
+                      Message chiffré — clé de récupération requise
+                    </span>
+                  </p>
                 ) : (
-                  <RichText text={contentWithoutUrls} />
+                  <MarkdownText
+                    text={renderContent}
+                    className={`text-sm leading-relaxed break-words ${message.type === 'm.notice' ? 'text-text-muted italic' : 'text-text-primary'}`}
+                  />
                 )}
-              </p>
+              </>
             )}
             {urls.slice(0, 3).map((linkUrl) => (
               <LinkPreviewCard key={linkUrl} url={linkUrl} />

@@ -1,27 +1,61 @@
 import { create } from 'zustand'
 
+export type PresenceValue = 'online' | 'unavailable' | 'offline'
+
+const PRESENCE_STORAGE_KEY = 'waifutxt_presence'
+
+function loadStoredPresence(): PresenceValue {
+  const stored = localStorage.getItem(PRESENCE_STORAGE_KEY)
+  if (stored === 'online' || stored === 'unavailable' || stored === 'offline') return stored
+  return 'online'
+}
+
 interface UiState {
   showMemberPanel: boolean
   showSettingsModal: boolean
   isMobileMenuOpen: boolean
-  pendingMention: string | null
+  showRoomMessagePreview: boolean
 
   toggleMemberPanel: () => void
   toggleSettingsModal: () => void
   setSettingsModal: (open: boolean) => void
   toggleMobileMenu: () => void
-  setPendingMention: (mention: string | null) => void
+  toggleRoomMessagePreview: () => void
+  setRoomMessagePreview: (show: boolean) => void
+}
+
+const ROOM_PREVIEW_STORAGE_KEY = 'waifutxt_show_room_message_preview'
+
+function readRoomPreviewPreference(): boolean {
+  if (typeof window === 'undefined') return true
+  const saved = window.localStorage.getItem(ROOM_PREVIEW_STORAGE_KEY)
+  if (saved == null) return true
+  return saved === 'true'
+}
+
+function persistRoomPreviewPreference(show: boolean): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(ROOM_PREVIEW_STORAGE_KEY, String(show))
 }
 
 export const useUiStore = create<UiState>((set) => ({
   showMemberPanel: true,
   showSettingsModal: false,
   isMobileMenuOpen: false,
-  pendingMention: null,
+  showRoomMessagePreview: readRoomPreviewPreference(),
 
   toggleMemberPanel: () => set((s) => ({ showMemberPanel: !s.showMemberPanel })),
   toggleSettingsModal: () => set((s) => ({ showSettingsModal: !s.showSettingsModal })),
   setSettingsModal: (open) => set({ showSettingsModal: open }),
   toggleMobileMenu: () => set((s) => ({ isMobileMenuOpen: !s.isMobileMenuOpen })),
-  setPendingMention: (mention) => set({ pendingMention: mention }),
+  toggleRoomMessagePreview: () =>
+    set((s) => {
+      const next = !s.showRoomMessagePreview
+      persistRoomPreviewPreference(next)
+      return { showRoomMessagePreview: next }
+    }),
+  setRoomMessagePreview: (show) => {
+    persistRoomPreviewPreference(show)
+    set({ showRoomMessagePreview: show })
+  },
 }))
