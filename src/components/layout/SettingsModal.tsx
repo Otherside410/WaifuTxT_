@@ -7,6 +7,7 @@ import { getSessions, getOwnAvatarUrl, isSessionVerified, logout, renameSession,
 import type { DeviceInfo } from '../../lib/matrix'
 import { startSelfVerification } from '../../lib/verification'
 import { AccentColorPicker } from '../settings/AccentColorPicker'
+import { ThemePicker } from '../settings/ThemePicker'
 
 const SETTINGS_SECTIONS = [
   { id: 'profile', label: 'Profil' },
@@ -490,6 +491,15 @@ export function SettingsModal() {
                     }`}
                   />
                 </button>
+              </div>
+
+              {/* Theme picker */}
+              <div className="p-4 rounded-lg border border-border bg-bg-primary/40">
+                <p className="text-sm font-medium text-text-primary mb-1">Thème</p>
+                <p className="text-xs text-text-secondary mb-4">
+                  Change l'apparence globale de l'interface. S'applique immédiatement.
+                </p>
+                <ThemePicker />
               </div>
 
               {/* Accent color picker */}

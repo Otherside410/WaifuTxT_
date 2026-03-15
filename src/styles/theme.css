@@ -170,6 +170,46 @@
   }
 }
 
+/* ── Theme overrides ────────────────────────────────────────────────────── */
+
+/* Light theme */
+:root[data-theme="light"] {
+  --color-bg-primary:    #f0f2f5;
+  --color-bg-secondary:  #ffffff;
+  --color-bg-tertiary:   #e8eaed;
+  --color-bg-hover:      #dde1e7;
+  --color-bg-active:     #c9cdd5;
+
+  --color-text-primary:   #1a1b1e;
+  --color-text-secondary: #4e5058;
+  --color-text-muted:     #8a8b8f;
+
+  --color-border:        #d5d7dc;
+  --color-border-strong: #b5b7bc;
+
+  --color-scrollbar-thumb: #c0c2c8;
+  --color-scrollbar-track: transparent;
+}
+
+/* OLED / AMOLED theme — true black to save pixels */
+:root[data-theme="oled"] {
+  --color-bg-primary:    #000000;
+  --color-bg-secondary:  #080808;
+  --color-bg-tertiary:   #111111;
+  --color-bg-hover:      #1c1c1c;
+  --color-bg-active:     #242424;
+
+  --color-text-primary:   #f0f0f0;
+  --color-text-secondary: #888888;
+  --color-text-muted:     #444444;
+
+  --color-border:        #1c1c1c;
+  --color-border-strong: #2c2c2c;
+
+  --color-scrollbar-thumb: #1c1c1c;
+  --color-scrollbar-track: transparent;
+}
+
 /* Hue range slider thumb */
 .hue-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
