@@ -25,23 +25,27 @@ export function RoomSidebar() {
   const [search, setSearch] = useState('')
   const [isMuted, setIsMuted] = useState(false)
   const [isDeafened, setIsDeafened] = useState(false)
+  const [showPresenceMenu, setShowPresenceMenu] = useState(false)
+  const [ownPresence, setOwnPresenceStore] = useState<PresenceValue>(() => {
+    const stored = localStorage.getItem('waifutxt_presence')
+    return stored === 'online' || stored === 'unavailable' || stored === 'offline' ? stored : 'online'
+  })
+  const presenceMenuRef = useRef<HTMLDivElement>(null)
   const rooms = useRoomStore((s) => s.rooms)
   const activeSpaceId = useRoomStore((s) => s.activeSpaceId)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
+  const updatePresence = useRoomStore((s) => s.updatePresence)
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
   const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
-  const updatePresence = useRoomStore((s) => s.updatePresence)
-  const [showPresenceMenu, setShowPresenceMenu] = useState(false)
-  const [ownPresence, setOwnPresenceStore] = useState<PresenceValue>(() => {
-    const stored = localStorage.getItem('waifutxt_presence')
-    if (stored === 'online' || stored === 'unavailable' || stored === 'offline') return stored
-    return 'online'
-  })
-  const presenceMenuRef = useRef<HTMLDivElement>(null)
-  const myUserId = session?.userId
-  const ownAvatarUrl = getOwnAvatarUrl()
+  const myUserId = session?.userId ?? null
+
+  const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(null)
+  useEffect(() => {
+    const url = getOwnAvatarUrl()
+    if (url) setOwnAvatarUrl(url)
+  }, [rooms])
 
   // Close presence menu on outside click
   useEffect(() => {
@@ -60,12 +64,6 @@ export function RoomSidebar() {
     setShowPresenceMenu(false)
     await setOwnPresence(presence)
   }
-
-  const ownAvatarUrl = useMemo(() => {
-    if (!session?.userId) return null
-    const mxcUrl = getClient()?.getUser(session.userId)?.avatarUrl ?? null
-    return resolveAvatarUrl(mxcUrl, 32)
-  }, [session?.userId])
 
   const displayRooms = useMemo(() => {
     const allRooms = Array.from(rooms.values())
