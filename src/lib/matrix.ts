@@ -69,15 +69,22 @@ export async function initClient(session: MatrixSession): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : ''
     if (msg.includes("doesn't match the account in the constructor")) {
-      // The IndexedDB crypto store contains a different device's data (e.g. after
-      // a re-login that produced a new deviceId). Clear the stale stores and retry.
-      console.warn('[WaifuTxT] Crypto store mismatch — clearing stale stores and retrying')
+      // The IndexedDB crypto store belongs to a different account/device. Purging
+      // locally is not enough — the server still holds one-time keys for the old
+      // device, which causes "already exists" 400 errors on key upload and breaks
+      // to-device messaging (and therefore emoji verification). The only clean
+      // recovery is to remove the device from the server (which flushes its keys)
+      // and force a fresh login that gets a new deviceId.
+      console.warn('[WaifuTxT] Crypto store mismatch — purging local stores and logging out for clean re-login')
       await purgeRustCryptoStores()
       try {
-        await client.initRustCrypto()
-      } catch (retryErr) {
-        console.warn('[WaifuTxT] Crypto init failed after store purge:', retryErr)
+        await client.logout(true)
+      } catch {
+        // ignore — server may already have invalidated the token
       }
+      client.stopClient()
+      client = null
+      throw new Error('Données de chiffrement corrompues. Veuillez vous reconnecter.')
     } else {
       console.warn('[WaifuTxT] Crypto init failed:', err)
     }
@@ -470,9 +477,17 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
   }
 }
 
-export async function sendMessage(roomId: string, body: string): Promise<void> {
+export async function sendMessage(roomId: string, body: string, replyToEventId?: string): Promise<void> {
   if (!client) return
-  await client.sendMessage(roomId, { msgtype: 'm.text', body } as any)
+  const content: Record<string, unknown> = { msgtype: 'm.text', body }
+  if (replyToEventId) {
+    content['m.relates_to'] = {
+      'm.in_reply_to': {
+        event_id: replyToEventId,
+      },
+    }
+  }
+  await client.sendMessage(roomId, content as any)
 }
 
 export async function sendEditMessage(roomId: string, eventId: string, body: string): Promise<void> {
