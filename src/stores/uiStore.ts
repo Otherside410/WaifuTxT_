@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 
 export type PresenceValue = 'online' | 'unavailable' | 'offline'
+export interface PendingReply {
+  roomId: string
+  eventId: string
+  senderName: string
+  preview: string
+}
 
 const PRESENCE_STORAGE_KEY = 'waifutxt_presence'
 
@@ -16,6 +22,7 @@ interface UiState {
   isMobileMenuOpen: boolean
   showRoomMessagePreview: boolean
   pendingMention: string | null
+  pendingReply: PendingReply | null
 
   toggleMemberPanel: () => void
   toggleSettingsModal: () => void
@@ -24,6 +31,7 @@ interface UiState {
   toggleRoomMessagePreview: () => void
   setRoomMessagePreview: (show: boolean) => void
   setPendingMention: (mention: string | null) => void
+  setPendingReply: (reply: PendingReply | null) => void
 }
 
 const ROOM_PREVIEW_STORAGE_KEY = 'waifutxt_show_room_message_preview'
@@ -46,6 +54,7 @@ export const useUiStore = create<UiState>((set) => ({
   isMobileMenuOpen: false,
   showRoomMessagePreview: readRoomPreviewPreference(),
   pendingMention: null,
+  pendingReply: null,
 
   toggleMemberPanel: () => set((s) => ({ showMemberPanel: !s.showMemberPanel })),
   toggleSettingsModal: () => set((s) => ({ showSettingsModal: !s.showSettingsModal })),
@@ -62,4 +71,5 @@ export const useUiStore = create<UiState>((set) => ({
     set({ showRoomMessagePreview: show })
   },
   setPendingMention: (mention) => set({ pendingMention: mention }),
+  setPendingReply: (reply) => set({ pendingReply: reply }),
 }))

@@ -470,9 +470,17 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
   }
 }
 
-export async function sendMessage(roomId: string, body: string): Promise<void> {
+export async function sendMessage(roomId: string, body: string, replyToEventId?: string): Promise<void> {
   if (!client) return
-  await client.sendMessage(roomId, { msgtype: 'm.text', body } as any)
+  const content: Record<string, unknown> = { msgtype: 'm.text', body }
+  if (replyToEventId) {
+    content['m.relates_to'] = {
+      'm.in_reply_to': {
+        event_id: replyToEventId,
+      },
+    }
+  }
+  await client.sendMessage(roomId, content as any)
 }
 
 export async function sendEditMessage(roomId: string, eventId: string, body: string): Promise<void> {

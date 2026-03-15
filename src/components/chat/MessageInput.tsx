@@ -38,6 +38,8 @@ export function MessageInput() {
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const pendingMention = useUiStore((s) => s.pendingMention)
   const setPendingMention = useUiStore((s) => s.setPendingMention)
+  const pendingReply = useUiStore((s) => s.pendingReply)
+  const setPendingReply = useUiStore((s) => s.setPendingReply)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const backdropRef = useRef<HTMLDivElement>(null)
@@ -69,12 +71,15 @@ export function MessageInput() {
       }
       if (msg) {
         setText('')
-        await sendMessage(activeRoomId, msg)
+        await sendMessage(activeRoomId, msg, pendingReply?.roomId === activeRoomId ? pendingReply.eventId : undefined)
+        if (pendingReply?.roomId === activeRoomId) {
+          setPendingReply(null)
+        }
       }
     } finally {
       setIsSending(false)
     }
-  }, [activeRoomId, isSending, pendingImages, text])
+  }, [activeRoomId, isSending, pendingImages, pendingReply, setPendingReply, text])
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -161,12 +166,41 @@ export function MessageInput() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!pendingReply || !activeRoomId) return
+    if (pendingReply.roomId !== activeRoomId) {
+      setPendingReply(null)
+    }
+  }, [activeRoomId, pendingReply, setPendingReply])
+
   if (!activeRoomId) return null
 
   const room = useRoomStore.getState().rooms.get(activeRoomId)
 
   return (
     <div className="px-4 pb-4">
+      {pendingReply?.roomId === activeRoomId && (
+        <div className="mb-2 rounded-md border-l-2 border-accent-pink/70 bg-gradient-to-r from-accent-pink/12 to-transparent px-2 py-1.5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="flex items-center gap-1.5 text-xs text-text-secondary">
+                <svg className="h-3.5 w-3.5 text-accent-pink/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a5 5 0 015 5v4m0 0l-3-3m3 3l3-3" />
+                </svg>
+                Réponse à <span className="font-medium text-accent-pink">{pendingReply.senderName}</span>
+              </p>
+              <p className="mt-0.5 text-sm text-text-primary truncate leading-snug">{pendingReply.preview || 'Message'}</p>
+            </div>
+            <button
+              onClick={() => setPendingReply(null)}
+              className="text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
       {pendingImages.length > 0 && (
         <div className="mb-2 rounded-lg border border-border bg-bg-tertiary/70 p-2">
           <div className="mb-2 flex items-center justify-between">

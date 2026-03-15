@@ -297,6 +297,12 @@ function LinkPreviewCard({ url }: { url: string }) {
   )
 }
 
+function compactPreview(text: string, max = 90): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= max) return normalized
+  return `${normalized.slice(0, max - 1)}...`
+}
+
 interface MessageItemProps {
   message: MessageEvent
   showHeader: boolean
@@ -665,14 +671,22 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const session = useAuthStore((s) => s.session)
   const receiptsVersion = useMessageStore((s) => s.receiptsVersion)
   const replaceMessage = useMessageStore((s) => s.replaceMessage)
+  const messagesMap = useMessageStore((s) => s.messages)
   const membersMap = useRoomStore((s) => s.members)
+  const setPendingReply = useUiStore((s) => s.setPendingReply)
   const roomMembers = useMemo(() => membersMap.get(message.roomId) || [], [membersMap, message.roomId])
+  const repliedMessage = useMemo(() => {
+    if (!message.replyTo) return null
+    const roomMessages = messagesMap.get(message.roomId) || []
+    return roomMessages.find((m) => m.eventId === message.replyTo) || null
+  }, [message.replyTo, message.roomId, messagesMap])
   const senderMember = useMemo(
     () => roomMembers.find((m) => m.userId === message.sender),
     [roomMembers, message.sender],
   )
   const isOwnMessage = !!session?.userId && message.sender === session.userId
   const canEditMessage = isOwnMessage && message.type === 'm.text' && !message.content.startsWith('🔒')
+  const canReplyMessage = !message.content.startsWith('🔒')
   const readersUserIds = useMemo(
     () => (isOwnMessage ? getMessageReadersAtEvent(message.roomId, message.eventId, message.sender) : []),
     [isOwnMessage, message.roomId, message.eventId, message.sender, receiptsVersion],
@@ -738,6 +752,26 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
       )}
 
       <div className="flex-1 min-w-0">
+        {canReplyMessage && !isEditing && (
+          <button
+            onClick={() =>
+              setPendingReply({
+                roomId: message.roomId,
+                eventId: message.eventId,
+                senderName: message.senderName,
+                preview: compactPreview(message.content || '(message)'),
+              })
+            }
+            className="absolute right-14 top-1.5 opacity-0 group-hover:opacity-100 text-text-muted hover:text-text-primary transition-opacity cursor-pointer"
+            title="Répondre au message"
+            aria-label="Répondre au message"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5l-7.5-7.5 7.5-7.5M3 12h12a6 6 0 016 6v1.5" />
+            </svg>
+          </button>
+        )}
+
         {canEditMessage && !isEditing && (
           <button
             onClick={() => {
@@ -764,6 +798,21 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
               {message.senderName}
             </span>
             <span className="text-[11px] text-text-muted">{formatTimestamp(message.timestamp)}</span>
+          </div>
+        )}
+
+        {message.replyTo && (
+          <div className="relative mb-1 mt-0.5 w-full rounded-md border border-accent-pink/35 border-l-[3px] border-l-accent-pink bg-accent-pink/12 px-2.5 py-1.5">
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute left-2.5 top-1.5 h-3.5 w-4 rounded-bl-md border-b-2 border-l-2 border-accent-pink/85"
+            />
+            <p className="flex items-center gap-1.5 pl-5 text-xs text-text-secondary">
+              Réponse à <span className="font-semibold text-accent-pink">{repliedMessage?.senderName || 'message'}</span>
+            </p>
+            <p className="mt-0.5 text-sm text-text-primary truncate leading-snug">
+              {compactPreview(repliedMessage?.content || 'Message de référence')}
+            </p>
           </div>
         )}
 
