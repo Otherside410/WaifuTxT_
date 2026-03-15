@@ -1,8 +1,9 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
 import { Avatar } from '../common/Avatar'
 import { useAuthStore } from '../../stores/authStore'
 import { useUiStore } from '../../stores/uiStore'
+import { getOwnAvatarUrl } from '../../lib/matrix'
 
 function isVoiceRoom(room: { roomType?: string; name: string; topic: string }): boolean {
   const maybeVoice = room as { isVoice?: boolean; roomType?: string; name: string; topic: string }
@@ -114,7 +115,7 @@ export function RoomSidebar() {
           title="Ouvrir les paramètres"
           aria-label="Ouvrir les paramètres"
         >
-          <Avatar src={null} name={session?.userId || '?'} size={32} status="online" />
+          <Avatar src={ownAvatarUrl} name={session?.userId || '?'} size={32} status="online" />
           <div className="min-w-0 text-left">
             <div className="text-sm font-semibold truncate text-text-primary leading-tight">
               {session?.userId?.split(':')[0]?.replace('@', '') || ''}

@@ -584,6 +584,25 @@ export interface DeviceInfo {
   isCurrentDevice: boolean
 }
 
+export function getOwnAvatarUrl(): string | null {
+  if (!client) return null
+  const userId = client.getUserId()
+  if (!userId) return null
+  // Use the same RoomMember.getAvatarUrl() path as message avatars — it reads
+  // from sync state already in memory, no network call needed.
+  for (const room of client.getRooms()) {
+    const member = room.getMember(userId)
+    if (!member) continue
+    try {
+      const url = member.getAvatarUrl(client.baseUrl, 40, 40, 'crop', false, false, true)
+      if (url) return url
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
 export async function getSessions(): Promise<DeviceInfo[]> {
   if (!client) return []
   const myDeviceId = client.getDeviceId()

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuthStore } from '../../stores/authStore'
 import { useUiStore } from '../../stores/uiStore'
+import { useRoomStore } from '../../stores/roomStore'
 import { Avatar } from '../common/Avatar'
-import { getSessions, isSessionVerified, logout, renameSession, deleteSession } from '../../lib/matrix'
+import { getSessions, getOwnAvatarUrl, isSessionVerified, logout, renameSession, deleteSession } from '../../lib/matrix'
 import type { DeviceInfo } from '../../lib/matrix'
 import { startSelfVerification } from '../../lib/verification'
 
@@ -379,6 +380,18 @@ export function SettingsModal() {
   const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
   const setRoomMessagePreview = useUiStore((s) => s.setRoomMessagePreview)
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('profile')
+  const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(null)
+  const avatarFetched = useRef(false)
+  const rooms = useRoomStore((s) => s.rooms)
+
+  useEffect(() => {
+    if (avatarFetched.current) return
+    const url = getOwnAvatarUrl()
+    if (url) {
+      setOwnAvatarUrl(url)
+      avatarFetched.current = true
+    }
+  }, [rooms])
 
   const username = useMemo(
     () => session?.userId?.split(':')[0]?.replace('@', '') || 'Utilisateur',
@@ -437,7 +450,7 @@ export function SettingsModal() {
           {activeSection === 'profile' && (
             <div className="mt-6 space-y-4">
               <div className="p-4 rounded-lg border border-border bg-bg-primary/40 flex items-center gap-4">
-                <Avatar src={null} name={session?.userId || '?'} size={56} status="online" />
+                <Avatar src={ownAvatarUrl} name={session?.userId || '?'} size={56} status="online" />
                 <div className="min-w-0">
                   <p className="text-lg font-semibold text-text-primary truncate">{username}</p>
                   <p className="text-sm text-text-muted truncate">{session?.userId || 'Non connecté'}</p>
