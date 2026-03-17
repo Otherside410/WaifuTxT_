@@ -1080,6 +1080,10 @@ export interface UrlPreviewData {
   description?: string
   imageUrl?: string
   siteName?: string
+  videoUrl?: string     // og:video direct URL (mp4 or embed)
+  videoType?: string    // og:video:type mime or "text/html"
+  imageWidth?: number
+  imageHeight?: number
 }
 
 const previewCache = new Map<string, UrlPreviewData | null>()
@@ -1123,11 +1127,23 @@ export async function getUrlPreview(url: string): Promise<UrlPreviewData | null>
       pickFirstString(og['twitter:image:src']) ||
       pickFirstString(og['image'])
 
+    const videoCandidate =
+      pickFirstString(og['og:video:secure_url']) ||
+      pickFirstString(og['og:video:url']) ||
+      pickFirstString(og['og:video'])
+
+    const imageWidthRaw = pickFirstString(og['og:image:width']) || pickFirstString(og['matrix:image:width'])
+    const imageHeightRaw = pickFirstString(og['og:image:height']) || pickFirstString(og['matrix:image:height'])
+
     const result: UrlPreviewData = {
       title: pickFirstString(og['og:title']) || pickFirstString(og.title),
       description: pickFirstString(og['og:description']) || pickFirstString(og.description),
       siteName: pickFirstString(og['og:site_name']) || pickFirstString(og.site_name),
       imageUrl: imageCandidate ? normalizePreviewImageUrl(imageCandidate, url) : undefined,
+      videoUrl: videoCandidate || undefined,
+      videoType: pickFirstString(og['og:video:type']) || undefined,
+      imageWidth: imageWidthRaw ? parseInt(imageWidthRaw, 10) || undefined : undefined,
+      imageHeight: imageHeightRaw ? parseInt(imageHeightRaw, 10) || undefined : undefined,
     }
     if (!result.title && !result.description) {
       previewCache.set(url, null)

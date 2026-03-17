@@ -197,12 +197,266 @@ function getFaviconUrl(url: string): string | null {
   }
 }
 
-function LinkPreviewCard({ url }: { url: string }) {
+function getYouTubeVideoId(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname.includes('youtube.com')) {
+      const v = parsed.searchParams.get('v')
+      if (v) return v
+      const m = parsed.pathname.match(/\/(?:shorts|embed)\/([a-zA-Z0-9_-]+)/)
+      if (m) return m[1]
+    }
+    if (parsed.hostname === 'youtu.be') {
+      const id = parsed.pathname.slice(1).split('/')[0]
+      return id || null
+    }
+  } catch {}
+  return null
+}
+
+type SocialPlatform = 'twitter' | 'instagram' | 'tiktok' | null
+
+function detectSocialPlatform(url: string): SocialPlatform {
+  try {
+    const h = new URL(url).hostname.replace(/^www\./, '')
+    if (h === 'twitter.com' || h === 'x.com') return 'twitter'
+    if (h === 'instagram.com') return 'instagram'
+    if (h === 'tiktok.com' || h === 'vm.tiktok.com') return 'tiktok'
+  } catch {}
+  return null
+}
+
+function getTikTokVideoId(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    const h = parsed.hostname.replace(/^www\./, '')
+    if (h === 'tiktok.com') {
+      const m = parsed.pathname.match(/\/video\/(\d+)/)
+      if (m) return m[1]
+    }
+  } catch {}
+  return null
+}
+
+const DIRECT_IMAGE_EXT = /\.(jpe?g|png|gif|webp|avif)(\?.*)?$/i
+const DIRECT_VIDEO_EXT = /\.(mp4|webm|ogg|mov)(\?.*)?$/i
+
+function isDirectImageUrl(url: string): boolean {
+  try { return DIRECT_IMAGE_EXT.test(new URL(url).pathname) } catch { return false }
+}
+
+function isDirectVideoUrl(url: string): boolean {
+  try { return DIRECT_VIDEO_EXT.test(new URL(url).pathname) } catch { return false }
+}
+
+function YouTubeEmbed({ url, videoId }: { url: string; videoId: string }) {
+  const [playing, setPlaying] = useState(false)
+  const thumb = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
+
+  return (
+    <div className="mt-1.5 max-w-xl rounded-lg overflow-hidden border border-border">
+      {playing ? (
+        <div className="relative" style={{ paddingTop: '56.25%' }}>
+          <iframe
+            className="absolute inset-0 w-full h-full"
+            src={`https://www.youtube.com/embed/${videoId}?autoplay=1`}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            title="YouTube"
+          />
+        </div>
+      ) : (
+        <div
+          className="relative cursor-pointer group"
+          style={{ paddingTop: '56.25%' }}
+          onClick={() => setPlaying(true)}
+        >
+          <img
+            src={thumb}
+            alt="YouTube"
+            className="absolute inset-0 w-full h-full object-cover"
+            referrerPolicy="no-referrer"
+          />
+          <div className="absolute inset-0 bg-black/30 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+            <div className="w-16 h-11 rounded-xl bg-red-600 group-hover:bg-red-500 transition-colors flex items-center justify-center shadow-xl">
+              <svg className="w-6 h-6 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </div>
+          </div>
+        </div>
+      )}
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 px-3 py-2 bg-bg-tertiary border-t border-border hover:bg-bg-hover transition-colors"
+      >
+        <svg className="w-4 h-4 shrink-0 text-red-500" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z" />
+        </svg>
+        <span className="text-xs text-text-muted truncate">{url}</span>
+      </a>
+    </div>
+  )
+}
+
+function TikTokEmbed({ url, videoId }: { url: string; videoId: string }) {
+  return (
+    <div className="mt-1.5 max-w-[320px] rounded-lg overflow-hidden border border-border border-l-4 border-l-[#FE2C55]">
+      <div className="relative" style={{ paddingTop: '177.77%' }}>
+        <iframe
+          className="absolute inset-0 w-full h-full"
+          src={`https://www.tiktok.com/embed/v2/${videoId}`}
+          allow="encrypted-media"
+          allowFullScreen
+          title="TikTok"
+          style={{ border: 'none' }}
+        />
+      </div>
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 px-3 py-2 bg-bg-tertiary border-t border-border hover:bg-bg-hover transition-colors"
+      >
+        <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34v-7.1a8.16 8.16 0 0 0 4.77 1.52V6.28a4.85 4.85 0 0 1-1-.41z"/>
+        </svg>
+        <span className="text-xs text-text-muted truncate">{url}</span>
+      </a>
+    </div>
+  )
+}
+
+function DirectImageEmbed({ url }: { url: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [failed, setFailed] = useState(false)
+  if (failed) return null
+  return (
+    <>
+      <div
+        className="mt-1.5 inline-block rounded-lg overflow-hidden border border-border cursor-zoom-in max-w-sm"
+        onClick={() => setExpanded(true)}
+      >
+        <img
+          src={url}
+          alt=""
+          className="max-w-full max-h-72 object-contain block"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      </div>
+      {expanded && (
+        <div
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center cursor-zoom-out"
+          onClick={() => setExpanded(false)}
+        >
+          <img
+            src={url}
+            alt=""
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+            referrerPolicy="no-referrer"
+          />
+        </div>
+      )}
+    </>
+  )
+}
+
+function DirectVideoEmbed({ url }: { url: string }) {
+  return (
+    <div className="mt-1.5 max-w-xl rounded-lg overflow-hidden border border-border">
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video
+        src={url}
+        controls
+        className="w-full max-h-72 bg-black block"
+        preload="metadata"
+      />
+    </div>
+  )
+}
+
+// Media section for social cards: tries native video playback, falls back to thumbnail + external link
+function SocialMediaSection({
+  url,
+  imageSrc,
+  videoUrl,
+  videoType,
+  onImageError,
+  onExpand,
+}: {
+  url: string
+  imageSrc: string | null
+  videoUrl?: string
+  videoType?: string
+  onImageError: () => void
+  onExpand?: () => void
+}) {
+  const [videoFailed, setVideoFailed] = useState(false)
+
+  // Attempt native video only for mp4/webm (not HTML embed URLs)
+  const isNativeVideo =
+    videoUrl &&
+    !videoFailed &&
+    (videoType === 'video/mp4' ||
+      videoType === 'video/webm' ||
+      /\.(mp4|webm)(\?.*)?$/i.test(videoUrl))
+
+  if (isNativeVideo) {
+    return (
+      // eslint-disable-next-line jsx-a11y/media-has-caption
+      <video
+        src={videoUrl}
+        controls
+        className="w-full max-h-80 bg-black block border-b border-border"
+        preload="metadata"
+        onError={() => setVideoFailed(true)}
+      />
+    )
+  }
+
+  if (!imageSrc) return null
+
+  // Image post: click to expand; video post: play button overlay linking out
+  return (
+    <div className="relative">
+      <img
+        src={imageSrc}
+        alt=""
+        className={`w-full max-h-80 object-cover border-b border-border ${!videoUrl && onExpand ? 'cursor-zoom-in' : ''}`}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={onImageError}
+        onClick={!videoUrl ? onExpand : undefined}
+      />
+      {videoUrl && (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="absolute inset-0 bg-black/25 hover:bg-black/15 transition-colors flex items-center justify-center"
+        >
+          <div className="w-14 h-14 rounded-full bg-black/70 ring-2 ring-white/20 flex items-center justify-center">
+            <svg className="w-7 h-7 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        </a>
+      )}
+    </div>
+  )
+}
+
+function GenericLinkPreviewCard({ url, platform }: { url: string; platform: SocialPlatform }) {
   const [preview, setPreview] = useState<UrlPreviewData | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [imageFailed, setImageFailed] = useState(false)
   const [faviconFailed, setFaviconFailed] = useState(false)
   const [imageSrc, setImageSrc] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -215,34 +469,95 @@ function LinkPreviewCard({ url }: { url: string }) {
         setLoaded(true)
       }
     })
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [url])
 
   if (!loaded) return null
-  const hostname = (() => {
-    try {
-      return new URL(url).hostname
-    } catch {
-      return ''
-    }
-  })()
+
+  const hostname = (() => { try { return new URL(url).hostname } catch { return '' } })()
   const faviconUrl = getFaviconUrl(url)
 
-  const handlePreviewImageError = async () => {
-    if (!preview?.imageUrl) {
-      setImageFailed(true)
-      return
-    }
+  const handleImageError = async () => {
+    if (!preview?.imageUrl) { setImageFailed(true); return }
     const recovered = await loadMediaWithAuth(preview.imageUrl)
-    if (recovered) {
-      setImageSrc(recovered)
-      return
-    }
+    if (recovered) { setImageSrc(recovered); return }
     setImageFailed(true)
   }
 
+  // ── Twitter / Instagram / TikTok (no video ID): rich media card ──
+  if (platform === 'twitter' || platform === 'instagram' || platform === 'tiktok') {
+    const accentClass =
+      platform === 'twitter' ? 'border-l-[#1d9bf0]' :
+      platform === 'instagram' ? 'border-l-[#e1306c]' :
+      'border-l-[#FE2C55]'
+
+    const platformIcon =
+      platform === 'twitter' ? (
+        // X / Twitter logo
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.253 5.622zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+        </svg>
+      ) : platform === 'instagram' ? (
+        // Instagram logo
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm6.406-11.845a1.44 1.44 0 1 0 0 2.881 1.44 1.44 0 0 0 0-2.881z"/>
+        </svg>
+      ) : (
+        // TikTok logo
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34v-7.1a8.16 8.16 0 0 0 4.77 1.52V6.28a4.85 4.85 0 0 1-1-.41z"/>
+        </svg>
+      )
+
+    return (
+      <>
+        <div className={`mt-1.5 rounded-lg overflow-hidden border border-border bg-bg-tertiary max-w-md border-l-4 ${accentClass}`}>
+          {!imageFailed && (
+            <SocialMediaSection
+              url={url}
+              imageSrc={imageSrc}
+              videoUrl={preview?.videoUrl}
+              videoType={preview?.videoType}
+              onImageError={handleImageError}
+              onExpand={() => setExpanded(true)}
+            />
+          )}
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block p-2.5 hover:bg-bg-hover/50 transition-colors"
+          >
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-text-muted">{platformIcon}</span>
+              <span className="text-[10px] text-text-muted uppercase tracking-wide">{preview?.siteName || hostname}</span>
+            </div>
+            {preview?.title && (
+              <p className="text-sm font-semibold text-text-primary line-clamp-2 leading-snug">{preview.title}</p>
+            )}
+            {preview?.description && (
+              <p className="text-xs text-text-secondary line-clamp-3 leading-snug mt-0.5">{preview.description}</p>
+            )}
+          </a>
+        </div>
+        {expanded && imageSrc && (
+          <div
+            className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center cursor-zoom-out"
+            onClick={() => setExpanded(false)}
+          >
+            <img
+              src={imageSrc}
+              alt=""
+              className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+        )}
+      </>
+    )
+  }
+
+  // ── Generic card ──
   return (
     <a
       href={url}
@@ -258,7 +573,7 @@ function LinkPreviewCard({ url }: { url: string }) {
             className="w-full h-full object-cover"
             loading="lazy"
             referrerPolicy="no-referrer"
-            onError={handlePreviewImageError}
+            onError={handleImageError}
           />
         ) : faviconUrl && !faviconFailed ? (
           <img
@@ -300,6 +615,16 @@ function compactPreview(text: string, max = 90): string {
   const normalized = text.replace(/\s+/g, ' ').trim()
   if (normalized.length <= max) return normalized
   return `${normalized.slice(0, max - 1)}...`
+}
+
+function LinkPreviewCard({ url }: { url: string }) {
+  const ytId = getYouTubeVideoId(url)
+  if (ytId) return <YouTubeEmbed url={url} videoId={ytId} />
+  const ttId = getTikTokVideoId(url)
+  if (ttId) return <TikTokEmbed url={url} videoId={ttId} />
+  if (isDirectImageUrl(url)) return <DirectImageEmbed url={url} />
+  if (isDirectVideoUrl(url)) return <DirectVideoEmbed url={url} />
+  return <GenericLinkPreviewCard url={url} platform={detectSocialPlatform(url)} />
 }
 
 interface MessageItemProps {
