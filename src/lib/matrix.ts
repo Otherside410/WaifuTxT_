@@ -324,7 +324,8 @@ function syncRooms() {
         // Never go below the server notification count (covers history not in the window)
         return Math.max(count, room.getUnreadNotificationCount() || 0)
       })(),
-      mentionCount: room.roomId === activeRoomId ? 0 : (room.getUnreadNotificationCount('highlight') || 0),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mentionCount: room.roomId === activeRoomId ? 0 : (room.getUnreadNotificationCount('highlight' as any) || 0),
       isSpace,
       isDirect,
       membership: room.getMyMembership(),

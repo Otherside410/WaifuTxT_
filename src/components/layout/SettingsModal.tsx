@@ -15,10 +15,29 @@ const SETTINGS_SECTIONS = [
   { id: 'security', label: 'Sécurité' },
   { id: 'appearance', label: 'Apparence' },
   { id: 'notifications', label: 'Notifications' },
+  { id: 'shortcuts', label: 'Raccourcis' },
   { id: 'account', label: 'Compte' },
 ] as const
 
 type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
+
+function ShortcutRow({ keys, label }: { keys: string[]; label: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 text-sm">
+      <span className="text-text-secondary">{label}</span>
+      <div className="flex items-center gap-1 shrink-0">
+        {keys.map((key, i) => (
+          <span key={i} className="flex items-center gap-1">
+            {i > 0 && <span className="text-text-muted text-xs">+</span>}
+            <kbd className="px-1.5 py-0.5 rounded-md text-xs font-mono bg-bg-secondary border border-border text-text-primary">
+              {key}
+            </kbd>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -658,6 +677,34 @@ export function SettingsModal() {
                     }`}
                   />
                 </button>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'shortcuts' && (
+            <div className="mt-6 space-y-3">
+              <div className="p-4 rounded-lg border border-border bg-bg-primary/40 space-y-3">
+                <h3 className="text-sm font-medium text-text-primary">Navigation</h3>
+                <ShortcutRow keys={['Alt', '↑ / ↓']} label="Naviguer entre les salons" />
+                <ShortcutRow keys={['Ctrl', 'K']} label="Rechercher un salon" />
+                <ShortcutRow keys={['Ctrl', ',']} label="Ouvrir / fermer les paramètres" />
+                <ShortcutRow keys={['Ctrl', 'Shift', 'M']} label="Afficher / masquer les membres" />
+                <ShortcutRow keys={['Échap']} label="Fermer un panneau ouvert" />
+              </div>
+              <div className="p-4 rounded-lg border border-border bg-bg-primary/40 space-y-3">
+                <h3 className="text-sm font-medium text-text-primary">Messages</h3>
+                <ShortcutRow keys={['↑']} label="Modifier le dernier message envoyé" />
+                <ShortcutRow keys={['Entrée']} label="Envoyer un message" />
+                <ShortcutRow keys={['Maj', 'Entrée']} label="Saut de ligne" />
+                <ShortcutRow keys={['Échap']} label="Annuler la réponse en cours" />
+                <ShortcutRow keys={['Échap']} label="Annuler une modification" />
+              </div>
+              <div className="p-4 rounded-lg border border-border bg-bg-primary/40 space-y-3">
+                <h3 className="text-sm font-medium text-text-primary">Mentions</h3>
+                <ShortcutRow keys={['@']} label="Ouvrir les suggestions de membres" />
+                <ShortcutRow keys={['↑ / ↓']} label="Naviguer dans les suggestions" />
+                <ShortcutRow keys={['Tab', 'Entrée']} label="Sélectionner une suggestion" />
+                <ShortcutRow keys={['Échap']} label="Fermer les suggestions" />
               </div>
             </div>
           )}

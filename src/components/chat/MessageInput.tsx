@@ -10,6 +10,8 @@ import {
 } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
+import { useAuthStore } from '../../stores/authStore'
+import { useMessageStore } from '../../stores/messageStore'
 import { sendMessage, sendFile, sendImage, sendTyping } from '../../lib/matrix'
 import { Avatar } from '../common/Avatar'
 import type { RoomMember } from '../../types/matrix'
@@ -53,6 +55,7 @@ export function MessageInput() {
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const pendingReply = useUiStore((s) => s.pendingReply)
   const setPendingReply = useUiStore((s) => s.setPendingReply)
+  const setEditTargetEventId = useUiStore((s) => s.setEditTargetEventId)
   const roomMembers = useMemo<RoomMember[]>(
     () => (activeRoomId ? membersMap.get(activeRoomId) || [] : []),
     [activeRoomId, membersMap],
@@ -184,6 +187,31 @@ export function MessageInput() {
         setMentionQuery(null)
         return
       }
+    }
+
+    // ArrowUp when input is empty → edit last own editable message
+    if (e.key === 'ArrowUp' && mentionQuery === null && text.trim() === '' && pendingImages.length === 0) {
+      if (activeRoomId) {
+        const myUserId = useAuthStore.getState().session?.userId
+        if (myUserId) {
+          const messages = useMessageStore.getState().getMessages(activeRoomId)
+          const lastEditable = [...messages]
+            .reverse()
+            .find((m) => m.sender === myUserId && m.type === 'm.text' && !m.content.startsWith('🔒'))
+          if (lastEditable) {
+            e.preventDefault()
+            setEditTargetEventId(lastEditable.eventId)
+            return
+          }
+        }
+      }
+    }
+
+    // Escape → cancel pending reply (when autocomplete is not open)
+    if (e.key === 'Escape' && mentionQuery === null && pendingReply?.roomId === activeRoomId) {
+      e.preventDefault()
+      setPendingReply(null)
+      return
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {

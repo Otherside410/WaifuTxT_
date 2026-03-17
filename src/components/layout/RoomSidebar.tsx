@@ -32,6 +32,7 @@ export function RoomSidebar() {
     return stored === 'online' || stored === 'unavailable' || stored === 'offline' ? stored : 'online'
   })
   const presenceMenuRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const rooms = useRoomStore((s) => s.rooms)
   const activeSpaceId = useRoomStore((s) => s.activeSpaceId)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
@@ -44,7 +45,15 @@ export function RoomSidebar() {
   const showMentionBadge = useUiStore((s) => s.showMentionBadge)
   const waifuOptIn = useUiStore((s) => s.waifuOptIn)
   const selectedWaifuId = useUiStore((s) => s.selectedWaifuId)
+  const roomSearchFocusBump = useUiStore((s) => s.roomSearchFocusBump)
   const myUserId = session?.userId ?? null
+
+  useEffect(() => {
+    if (roomSearchFocusBump > 0) {
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+    }
+  }, [roomSearchFocusBump])
 
   const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(null)
   useEffect(() => {
@@ -107,10 +116,12 @@ export function RoomSidebar() {
 
       <div className="px-2 py-2">
         <input
+          ref={searchInputRef}
           type="text"
           placeholder="Rechercher..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Escape') { setSearch(''); searchInputRef.current?.blur() } }}
           className="w-full text-xs !py-1.5 !px-2"
         />
       </div>

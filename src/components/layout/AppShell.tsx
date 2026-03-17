@@ -8,8 +8,10 @@ import { VerificationModal } from '../verification/VerificationModal'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
 import { loadRoomMembers } from '../../lib/matrix'
+import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 
 export function AppShell() {
+  useKeyboardShortcuts()
   const showMemberPanel = useUiStore((s) => s.showMemberPanel)
   const showSettingsModal = useUiStore((s) => s.showSettingsModal)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
