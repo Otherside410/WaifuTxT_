@@ -731,37 +731,74 @@ export async function loadRoomMembers(roomId: string): Promise<void> {
   if (!client) return
   const room = client.getRoom(roomId)
   if (!room) return
-  try {
-    await room.loadMembersIfNeeded()
-  } catch {
-    // ignore — we'll fall back to whatever is cached
-  }
-  const myUserId = client.getUserId()
-  const matrixMembers = room.getMembers().filter((m) => m.membership === 'join')
+
   const baseUrl = client.baseUrl
-  const members: RoomMember[] = matrixMembers.map((m) => {
-    let avatarUrl: string | null = null
-    try {
-      avatarUrl = m.getAvatarUrl(baseUrl, 40, 40, 'crop', false, false, true) || null
-    } catch {
-      // ignore
-    }
-    const p = client!.getUser(m.userId)?.presence
-    let presence: RoomMember['presence'] = 'offline'
-    if (p === 'online') presence = 'online'
-    else if (p === 'unavailable') presence = 'unavailable'
-    return {
-      userId: m.userId,
-      displayName: m.name || m.userId,
-      avatarUrl,
-      membership: m.membership || 'join',
-      powerLevel: room.currentState.getStateEvents('m.room.power_levels')?.[0]?.getContent()?.users?.[m.userId] || 0,
-      presence,
-    }
-  })
+  const powerLevels: Record<string, number> =
+    room.currentState.getStateEvents('m.room.power_levels')?.[0]?.getContent()?.users ?? {}
+
+  let members: RoomMember[]
+
+  try {
+    // getJoinedRoomMembers always hits the server and returns ALL currently joined
+    // members regardless of lazyLoadMembers or SDK cache state.
+    const resp = await client.getJoinedRoomMembers(roomId)
+
+    // SDK RoomMember objects carry avatar URL resolution and display names —
+    // build a lookup so we can enrich the server list where available.
+    const sdkMap = new Map(
+      room.getMembers()
+        .filter((m) => m.membership === 'join')
+        .map((m) => [m.userId, m]),
+    )
+
+    members = Object.entries(resp.joined).map(([userId, info]) => {
+      const sdkM = sdkMap.get(userId)
+      let avatarUrl: string | null = null
+      try {
+        if (sdkM) {
+          avatarUrl = sdkM.getAvatarUrl(baseUrl, 40, 40, 'crop', false, false, true) || null
+        } else if (info.avatar_url) {
+          avatarUrl = client!.mxcUrlToHttp(info.avatar_url, 40, 40, 'crop', false, false, true) || null
+        }
+      } catch {
+        // ignore
+      }
+      const p = client!.getUser(userId)?.presence
+      const presence: RoomMember['presence'] =
+        p === 'online' ? 'online' : p === 'unavailable' ? 'unavailable' : 'offline'
+      return {
+        userId,
+        displayName: sdkM?.name ?? info.display_name ?? userId,
+        avatarUrl,
+        membership: 'join',
+        powerLevel: powerLevels[userId] ?? 0,
+        presence,
+      }
+    })
+  } catch {
+    // Fallback: populate SDK cache then read from it
+    try { await room.loadMembersIfNeeded() } catch { /* ignore */ }
+    members = room.getMembers().filter((m) => m.membership === 'join').map((m) => {
+      let avatarUrl: string | null = null
+      try {
+        avatarUrl = m.getAvatarUrl(baseUrl, 40, 40, 'crop', false, false, true) || null
+      } catch { /* ignore */ }
+      const p = client!.getUser(m.userId)?.presence
+      const presence: RoomMember['presence'] =
+        p === 'online' ? 'online' : p === 'unavailable' ? 'unavailable' : 'offline'
+      return {
+        userId: m.userId,
+        displayName: m.name || m.userId,
+        avatarUrl,
+        membership: m.membership || 'join',
+        powerLevel: powerLevels[m.userId] ?? 0,
+        presence,
+      }
+    })
+  }
+
   const store = useRoomStore.getState()
-  // Seed presenceMap for members not yet tracked by real-time events,
-  // so the member list shows correct status without waiting for a presence event.
+  // Seed presenceMap for members not yet tracked by real-time events.
   for (const m of members) {
     if (!(m.userId in store.presenceMap)) {
       store.updatePresence(m.userId, m.presence)
