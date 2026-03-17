@@ -382,8 +382,10 @@ export function SettingsModal() {
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
   const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
   const setRoomMessagePreview = useUiStore((s) => s.setRoomMessagePreview)
-  const showUnreadBadges = useUiStore((s) => s.showUnreadBadges)
-  const setShowUnreadBadges = useUiStore((s) => s.setShowUnreadBadges)
+  const showUnreadDot = useUiStore((s) => s.showUnreadDot)
+  const setShowUnreadDot = useUiStore((s) => s.setShowUnreadDot)
+  const showMentionBadge = useUiStore((s) => s.showMentionBadge)
+  const setShowMentionBadge = useUiStore((s) => s.setShowMentionBadge)
   const waifuOptIn = useUiStore((s) => s.waifuOptIn)
   const selectedWaifuId = useUiStore((s) => s.selectedWaifuId)
   const setWaifuOptIn = useUiStore((s) => s.setWaifuOptIn)
@@ -611,24 +613,48 @@ export function SettingsModal() {
             <div className="mt-6 space-y-3">
               <div className="p-4 rounded-lg border border-border bg-bg-primary/40 flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-sm font-medium text-text-primary">Badges non-lus et mentions</p>
+                  <p className="text-sm font-medium text-text-primary">Point messages non-lus</p>
                   <p className="text-xs text-text-secondary mt-1">
-                    Affiche un point sur les salons avec des messages non-lus et un compteur pour les mentions non-lues.
+                    Affiche un petit point coloré à côté du nom du salon lorsqu'il contient des messages non-lus.
                   </p>
                 </div>
                 <button
                   type="button"
                   role="switch"
-                  aria-checked={showUnreadBadges}
-                  onClick={() => setShowUnreadBadges(!showUnreadBadges)}
+                  aria-checked={showUnreadDot}
+                  onClick={() => setShowUnreadDot(!showUnreadDot)}
                   className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
-                    showUnreadBadges ? 'bg-accent-pink' : 'bg-bg-hover'
+                    showUnreadDot ? 'bg-accent-pink' : 'bg-bg-hover'
                   }`}
-                  title="Activer ou désactiver les badges non-lus"
+                  title="Activer ou désactiver le point de messages non-lus"
                 >
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      showUnreadBadges ? 'translate-x-6' : 'translate-x-1'
+                      showUnreadDot ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="p-4 rounded-lg border border-border bg-bg-primary/40 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Badge de mentions non-lues</p>
+                  <p className="text-xs text-text-secondary mt-1">
+                    Affiche un compteur à côté du nom du salon lorsque vous avez été mentionné et n'avez pas encore lu.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={showMentionBadge}
+                  onClick={() => setShowMentionBadge(!showMentionBadge)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+                    showMentionBadge ? 'bg-accent-pink' : 'bg-bg-hover'
+                  }`}
+                  title="Activer ou désactiver le badge de mentions"
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      showMentionBadge ? 'translate-x-6' : 'translate-x-1'
                     }`}
                   />
                 </button>
