@@ -727,12 +727,17 @@ export async function loadInitialMessages(roomId: string): Promise<void> {
   useMessageStore.getState().setMessages(roomId, messages)
 }
 
-export function loadRoomMembers(roomId: string): void {
+export async function loadRoomMembers(roomId: string): Promise<void> {
   if (!client) return
   const room = client.getRoom(roomId)
   if (!room) return
+  try {
+    await room.loadMembersIfNeeded()
+  } catch {
+    // ignore — we'll fall back to whatever is cached
+  }
   const myUserId = client.getUserId()
-  const matrixMembers = room.getJoinedMembers()
+  const matrixMembers = room.getMembers().filter((m) => m.membership === 'join')
   const baseUrl = client.baseUrl
   const members: RoomMember[] = matrixMembers.map((m) => {
     let avatarUrl: string | null = null
