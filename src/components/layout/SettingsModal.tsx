@@ -425,6 +425,19 @@ export function SettingsModal() {
     }
   }, [rooms])
 
+  // Close on Escape — bound directly here so it fires whenever the modal is mounted,
+  // regardless of which element has focus inside it.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSettingsModal(false)
+      }
+    }
+    document.addEventListener('keydown', handler, true) // capture phase — fires before anything else
+    return () => document.removeEventListener('keydown', handler, true)
+  }, [setSettingsModal])
+
   const username = useMemo(
     () => session?.userId?.split(':')[0]?.replace('@', '') || 'Utilisateur',
     [session?.userId],

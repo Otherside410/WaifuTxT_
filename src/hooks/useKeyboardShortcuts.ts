@@ -11,7 +11,6 @@ export function useKeyboardShortcuts() {
   const activeSpaceId = useRoomStore((s) => s.activeSpaceId)
   const toggleMemberPanel = useUiStore((s) => s.toggleMemberPanel)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
-  const showSettingsModal = useUiStore((s) => s.showSettingsModal)
   const bumpRoomSearchFocus = useUiStore((s) => s.bumpRoomSearchFocus)
 
   useEffect(() => {
@@ -37,6 +36,7 @@ export function useKeyboardShortcuts() {
       // Ctrl/Cmd+, → open/close settings
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault()
+        const { showSettingsModal } = useUiStore.getState()
         setSettingsModal(!showSettingsModal)
         return
       }
@@ -48,12 +48,8 @@ export function useKeyboardShortcuts() {
         return
       }
 
-      // Escape → close settings modal first, otherwise cancel pending reply
+      // Escape → cancel pending reply (settings close is handled inside SettingsModal itself)
       if (e.key === 'Escape') {
-        if (showSettingsModal) {
-          setSettingsModal(false)
-          return
-        }
         const { pendingReply, setPendingReply } = useUiStore.getState()
         if (pendingReply) {
           setPendingReply(null)
@@ -135,7 +131,6 @@ export function useKeyboardShortcuts() {
     activeRoomId,
     activeSpaceId,
     rooms,
-    showSettingsModal,
     setActiveRoom,
     toggleMemberPanel,
     setSettingsModal,
