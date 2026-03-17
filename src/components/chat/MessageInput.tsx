@@ -311,7 +311,7 @@ export function MessageInput() {
   const room = useRoomStore.getState().rooms.get(activeRoomId)
 
   return (
-    <div className="px-4 pb-4">
+    <div className="px-4 pb-4 relative">
       {pendingReply?.roomId === activeRoomId && (
         <div className="mb-2 rounded-md border-l-2 border-accent-pink/70 bg-gradient-to-r from-accent-pink/12 to-transparent px-2 py-1.5">
           <div className="flex items-start justify-between gap-2">
@@ -366,6 +366,28 @@ export function MessageInput() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {mentionQuery !== null && suggestions.length > 0 && (
+        <div className="absolute bottom-full left-4 right-4 mb-1.5 rounded-lg border border-border bg-bg-secondary shadow-xl overflow-hidden z-20">
+          <div className="px-3 py-1 text-[10px] text-text-muted uppercase tracking-wide border-b border-border/60">
+            Membres
+          </div>
+          {suggestions.map((member, i) => {
+            const localpart = member.userId.split(':')[0].slice(1)
+            return (
+              <button
+                key={member.userId}
+                onMouseDown={(e) => { e.preventDefault(); selectSuggestion(member) }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors cursor-pointer ${i === suggestionIndex ? 'bg-bg-active text-text-primary' : 'hover:bg-bg-hover text-text-secondary hover:text-text-primary'}`}
+              >
+                <Avatar src={member.avatarUrl} name={member.displayName} size={24} />
+                <span className="text-sm font-medium truncate">{member.displayName}</span>
+                <span className="text-xs text-text-muted truncate ml-auto">@{localpart}</span>
+              </button>
+            )
+          })}
         </div>
       )}
 
