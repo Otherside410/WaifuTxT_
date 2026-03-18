@@ -67,14 +67,6 @@ function getRoomServerName(roomId: string): string {
   return roomId.slice(firstColon + 1).toLowerCase()
 }
 
-function getHomeserverHost(homeserver: string): string {
-  try {
-    return new URL(homeserver).host.toLowerCase()
-  } catch {
-    return homeserver.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
-  }
-}
-
 function splitTrailingPunctuation(url: string): { cleanUrl: string; trailing: string } {
   let cleanUrl = url
   let trailing = ''
@@ -932,8 +924,8 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const replaceMessage = useMessageStore((s) => s.replaceMessage)
   const messagesMap = useMessageStore((s) => s.messages)
   const roomsMap = useRoomStore((s) => s.rooms)
-  const activeSpaceId = useRoomStore((s) => s.activeSpaceId)
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
+  const setActiveSpace = useRoomStore((s) => s.setActiveSpace)
   const membersMap = useRoomStore((s) => s.members)
   const setPendingReply = useUiStore((s) => s.setPendingReply)
   const roomMembers = useMemo(() => membersMap.get(message.roomId) || [], [membersMap, message.roomId])
@@ -975,32 +967,26 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const roomTagToId = useMemo(() => {
     const map = new Map<string, string>()
     const currentRoomServer = getRoomServerName(message.roomId)
-    const homeserverHost = session?.homeserver ? getHomeserverHost(session.homeserver) : ''
-    const effectiveSpaceId = activeSpaceId || (() => {
-      for (const room of roomsMap.values()) {
-        if (room.isSpace && room.children.includes(message.roomId)) return room.roomId
-      }
-      return null
-    })()
-    const scopedRooms: RoomSummary[] = effectiveSpaceId
-      ? (roomsMap.get(effectiveSpaceId)?.children || [])
-          .map((roomId) => roomsMap.get(roomId))
-          .filter((room): room is RoomSummary => !!room && !room.isSpace && !room.isDirect)
-      : Array.from(roomsMap.values()).filter((room) => !room.isSpace && !room.isDirect)
-
-    for (const room of scopedRooms) {
+    for (const room of roomsMap.values()) {
+      if (room.isSpace || room.isDirect || room.membership !== 'join') continue
       const roomServer = getRoomServerName(room.roomId)
       if (currentRoomServer && roomServer !== currentRoomServer) continue
-      if (homeserverHost && roomServer !== homeserverHost) continue
       const tag = roomNameToTag(room.name)
       if (!tag) continue
       if (!map.has(tag)) map.set(tag, room.roomId)
     }
     return map
-  }, [activeSpaceId, message.roomId, roomsMap, session?.homeserver])
+  }, [message.roomId, roomsMap])
   const handleOpenRoomTag = useCallback((roomId: string) => {
+    // Keep the space sidebar in sync with the opened room when possible.
+    for (const room of roomsMap.values()) {
+      if (room.isSpace && room.children.includes(roomId)) {
+        setActiveSpace(room.roomId)
+        break
+      }
+    }
     setActiveRoom(roomId)
-  }, [setActiveRoom])
+  }, [roomsMap, setActiveRoom, setActiveSpace])
   const [showProfile, setShowProfile] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editDraft, setEditDraft] = useState(message.content)
