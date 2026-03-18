@@ -10,9 +10,10 @@ import {
 } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
+import { useAuthStore } from '../../stores/authStore'
 import { sendMessage, sendFile, sendImage, sendTyping } from '../../lib/matrix'
 import { Avatar } from '../common/Avatar'
-import type { RoomMember } from '../../types/matrix'
+import type { RoomMember, RoomSummary } from '../../types/matrix'
 
 interface PendingImage {
   id: string
@@ -20,24 +21,60 @@ interface PendingImage {
   previewUrl: string
 }
 
-function highlightInputText(text: string, validLocalparts: Set<string>): string {
+function normalizeRoomTag(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/^#/, '')
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9.-]/g, '')
+}
+
+function roomNameToTag(roomName: string): string {
+  const normalized = normalizeRoomTag(roomName)
+  return normalized ? `#${normalized}` : ''
+}
+
+function getRoomServerName(roomId: string): string {
+  const firstColon = roomId.indexOf(':')
+  if (firstColon === -1) return ''
+  return roomId.slice(firstColon + 1).toLowerCase()
+}
+
+function getHomeserverHost(homeserver: string): string {
+  try {
+    return new URL(homeserver).host.toLowerCase()
+  } catch {
+    return homeserver.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+  }
+}
+
+function highlightInputText(text: string, validLocalparts: Set<string>, validRoomTags: Set<string>): string {
   const escaped = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\n/g, '<br>')
-  return (
-    escaped.replace(/@[\w._\-=+/]+/g, (match) => {
-      const localpart = match.slice(1).toLowerCase()
-      if (validLocalparts.has(localpart)) {
+  return escaped
+    .replace(/@[\w._\-=+/]+|#[\w._\-=+/]+/g, (match) => {
+      if (match.startsWith('@')) {
+        const localpart = match.slice(1).toLowerCase()
+        if (validLocalparts.has(localpart)) {
+          return `<mark style="border-radius:0.25rem;background:var(--color-mention-bg);color:var(--color-mention)">${match}</mark>`
+        }
+        return match
+      }
+      const normalizedTag = `#${normalizeRoomTag(match)}`
+      if (normalizedTag.length > 1 && validRoomTags.has(normalizedTag)) {
         return `<mark style="border-radius:0.25rem;background:var(--color-mention-bg);color:var(--color-mention)">${match}</mark>`
       }
       return match
     }) + '\u200b'
-  )
 }
 
-const MENTION_TOKEN_RE = /@[\w._\-=+/]+/g
+const TAG_TOKEN_RE = /(?:@[\w._\-=+/]+|#[\w._\-=+/]+)/g
 
 export function MessageInput() {
   const [text, setText] = useState('')
@@ -45,10 +82,15 @@ export function MessageInput() {
   const [isSending, setIsSending] = useState(false)
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [mentionStart, setMentionStart] = useState(0)
+  const [roomTagQuery, setRoomTagQuery] = useState<string | null>(null)
+  const [roomTagStart, setRoomTagStart] = useState(0)
   const [suggestionIndex, setSuggestionIndex] = useState(0)
 
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
+  const activeSpaceId = useRoomStore((s) => s.activeSpaceId)
   const membersMap = useRoomStore((s) => s.members)
+  const roomsMap = useRoomStore((s) => s.rooms)
+  const session = useAuthStore((s) => s.session)
   const pendingMention = useUiStore((s) => s.pendingMention)
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const pendingReply = useUiStore((s) => s.pendingReply)
@@ -88,6 +130,32 @@ export function MessageInput() {
     }
     return set
   }, [roomMembers])
+  const validRoomTags = useMemo(() => {
+    const effectiveSpaceId = activeSpaceId || (() => {
+      if (!activeRoomId) return null
+      for (const room of roomsMap.values()) {
+        if (room.isSpace && room.children.includes(activeRoomId)) return room.roomId
+      }
+      return null
+    })()
+    const activeRoomServer = activeRoomId ? getRoomServerName(activeRoomId) : ''
+    const homeserverHost = session?.homeserver ? getHomeserverHost(session.homeserver) : ''
+    const scopedRooms: RoomSummary[] = effectiveSpaceId
+      ? (roomsMap.get(effectiveSpaceId)?.children || [])
+          .map((roomId) => roomsMap.get(roomId))
+          .filter((room): room is RoomSummary => !!room && !room.isSpace && !room.isDirect)
+      : Array.from(roomsMap.values()).filter((room) => !room.isSpace && !room.isDirect)
+
+    const set = new Set<string>()
+    for (const room of scopedRooms) {
+      const roomServer = getRoomServerName(room.roomId)
+      if (activeRoomServer && roomServer !== activeRoomServer) continue
+      if (homeserverHost && roomServer !== homeserverHost) continue
+      const tag = roomNameToTag(room.name)
+      if (tag) set.add(tag)
+    }
+    return set
+  }, [activeRoomId, activeSpaceId, roomsMap, session?.homeserver])
 
   // Filtered autocomplete suggestions
   const suggestions = useMemo((): RoomMember[] => {
@@ -101,24 +169,68 @@ export function MessageInput() {
       .slice(0, 8)
   }, [roomMembers, mentionQuery])
 
-  // Detect active @mention query at cursor position
-  const detectMention = useCallback((newText: string, cursorPos: number) => {
+  const roomSuggestions = useMemo((): RoomSummary[] => {
+    if (roomTagQuery === null) return []
+    const effectiveSpaceId = activeSpaceId || (() => {
+      if (!activeRoomId) return null
+      for (const room of roomsMap.values()) {
+        if (room.isSpace && room.children.includes(activeRoomId)) return room.roomId
+      }
+      return null
+    })()
+    const q = normalizeRoomTag(roomTagQuery)
+    const activeRoomServer = activeRoomId ? getRoomServerName(activeRoomId) : ''
+    const homeserverHost = session?.homeserver ? getHomeserverHost(session.homeserver) : ''
+    const scopedRooms: RoomSummary[] = effectiveSpaceId
+      ? (roomsMap.get(effectiveSpaceId)?.children || [])
+          .map((roomId) => roomsMap.get(roomId))
+          .filter((room): room is RoomSummary => !!room && !room.isSpace && !room.isDirect)
+      : Array.from(roomsMap.values()).filter((room) => !room.isSpace && !room.isDirect)
+
+    return scopedRooms
+      .filter((room) => {
+        const roomServer = getRoomServerName(room.roomId)
+        if (activeRoomServer && roomServer !== activeRoomServer) return false
+        if (homeserverHost && roomServer !== homeserverHost) return false
+        return true
+      })
+      .filter((room) => {
+        const normalizedName = normalizeRoomTag(room.name)
+        if (!q) return true
+        return normalizedName.includes(q)
+      })
+      .slice(0, 8)
+  }, [activeRoomId, activeSpaceId, roomsMap, roomTagQuery, session?.homeserver])
+
+  // Detect active @mention or #room-tag query at cursor position
+  const detectToken = useCallback((newText: string, cursorPos: number) => {
     const before = newText.slice(0, cursorPos)
     const atIdx = before.lastIndexOf('@')
-    if (atIdx !== -1) {
-      const query = before.slice(atIdx + 1)
-      const charBefore = atIdx > 0 ? before[atIdx - 1] : ' '
-      if (!query.includes(' ') && !query.includes('\n') && (/\s/.test(charBefore) || atIdx === 0)) {
-        setMentionQuery(query)
-        setMentionStart(atIdx)
+    const hashIdx = before.lastIndexOf('#')
+    const start = Math.max(atIdx, hashIdx)
+    if (start !== -1) {
+      const trigger = before[start]
+      const query = before.slice(start + 1)
+      const charBefore = start > 0 ? before[start - 1] : ' '
+      if (!query.includes(' ') && !query.includes('\n') && (/\s/.test(charBefore) || start === 0)) {
+        if (trigger === '@') {
+          setMentionQuery(query)
+          setMentionStart(start)
+          setRoomTagQuery(null)
+        } else {
+          setRoomTagQuery(query)
+          setRoomTagStart(start)
+          setMentionQuery(null)
+        }
         setSuggestionIndex(0)
         return
       }
     }
     setMentionQuery(null)
+    setRoomTagQuery(null)
   }, [])
 
-  const selectSuggestion = useCallback(
+  const selectMentionSuggestion = useCallback(
     (member: RoomMember) => {
       const localpart = member.userId.split(':')[0].slice(1)
       const cursorPos =
@@ -128,10 +240,29 @@ export function MessageInput() {
       const newText = `${before}@${localpart} ${after}`
       setText(newText)
       setMentionQuery(null)
+      setRoomTagQuery(null)
       nextCursorRef.current = before.length + localpart.length + 2 // @ + localpart + space
       textareaRef.current?.focus()
     },
     [text, mentionStart, mentionQuery],
+  )
+
+  const selectRoomSuggestion = useCallback(
+    (room: RoomSummary) => {
+      const roomTag = roomNameToTag(room.name)
+      if (!roomTag) return
+      const cursorPos =
+        textareaRef.current?.selectionStart ?? roomTagStart + (roomTagQuery?.length ?? 0) + 1
+      const before = text.slice(0, roomTagStart)
+      const after = text.slice(cursorPos)
+      const newText = `${before}${roomTag} ${after}`
+      setText(newText)
+      setMentionQuery(null)
+      setRoomTagQuery(null)
+      nextCursorRef.current = before.length + roomTag.length + 1 // #tag + space
+      textareaRef.current?.focus()
+    },
+    [text, roomTagStart, roomTagQuery],
   )
 
   const handleSend = useCallback(async () => {
@@ -163,25 +294,34 @@ export function MessageInput() {
 
   const handleKeyDown = (e: KeyboardEvent) => {
     // Autocomplete navigation takes priority
-    if (mentionQuery !== null && suggestions.length > 0) {
+    const hasMentionSuggestions = mentionQuery !== null && suggestions.length > 0
+    const hasRoomSuggestions = roomTagQuery !== null && roomSuggestions.length > 0
+    const hasAutocomplete = hasMentionSuggestions || hasRoomSuggestions
+    const activeSuggestionsLength = hasMentionSuggestions ? suggestions.length : roomSuggestions.length
+    if (hasAutocomplete) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setSuggestionIndex((i) => (i + 1) % suggestions.length)
+        setSuggestionIndex((i) => (i + 1) % activeSuggestionsLength)
         return
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault()
-        setSuggestionIndex((i) => (i - 1 + suggestions.length) % suggestions.length)
+        setSuggestionIndex((i) => (i - 1 + activeSuggestionsLength) % activeSuggestionsLength)
         return
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault()
-        selectSuggestion(suggestions[suggestionIndex])
+        if (hasMentionSuggestions) {
+          selectMentionSuggestion(suggestions[suggestionIndex])
+        } else {
+          selectRoomSuggestion(roomSuggestions[suggestionIndex])
+        }
         return
       }
       if (e.key === 'Escape') {
         e.preventDefault()
         setMentionQuery(null)
+        setRoomTagQuery(null)
         return
       }
     }
@@ -193,15 +333,15 @@ export function MessageInput() {
     }
 
     // Whole-token deletion — only when NOT actively typing a mention query
-    if (mentionQuery === null && (e.key === 'Backspace' || e.key === 'Delete')) {
+    if (mentionQuery === null && roomTagQuery === null && (e.key === 'Backspace' || e.key === 'Delete')) {
       const textarea = textareaRef.current
       if (!textarea) return
       const { selectionStart, selectionEnd } = textarea
       if (selectionStart !== selectionEnd) return
 
-      MENTION_TOKEN_RE.lastIndex = 0
+      TAG_TOKEN_RE.lastIndex = 0
       let match: RegExpExecArray | null
-      while ((match = MENTION_TOKEN_RE.exec(text)) !== null) {
+      while ((match = TAG_TOKEN_RE.exec(text)) !== null) {
         const start = match.index
         const end = match.index + match[0].length
         const hit =
@@ -222,7 +362,7 @@ export function MessageInput() {
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value
     setText(newText)
-    detectMention(newText, e.target.selectionStart ?? newText.length)
+    detectToken(newText, e.target.selectionStart ?? newText.length)
     if (!activeRoomId) return
 
     sendTyping(activeRoomId, true)
@@ -369,27 +509,48 @@ export function MessageInput() {
         </div>
       )}
 
-      {mentionQuery !== null && suggestions.length > 0 && (
+      {(mentionQuery !== null && suggestions.length > 0) || (roomTagQuery !== null && roomSuggestions.length > 0) ? (
         <div className="absolute bottom-full left-4 right-4 mb-1.5 rounded-lg border border-border bg-bg-secondary shadow-xl overflow-hidden z-20">
           <div className="px-3 py-1 text-[10px] text-text-muted uppercase tracking-wide border-b border-border/60">
-            Membres
+            {mentionQuery !== null ? 'Membres' : 'Salons'}
           </div>
-          {suggestions.map((member, i) => {
-            const localpart = member.userId.split(':')[0].slice(1)
-            return (
-              <button
-                key={member.userId}
-                onMouseDown={(e) => { e.preventDefault(); selectSuggestion(member) }}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors cursor-pointer ${i === suggestionIndex ? 'bg-bg-active text-text-primary' : 'hover:bg-bg-hover text-text-secondary hover:text-text-primary'}`}
-              >
-                <Avatar src={member.avatarUrl} name={member.displayName} size={24} />
-                <span className="text-sm font-medium truncate">{member.displayName}</span>
-                <span className="text-xs text-text-muted truncate ml-auto">@{localpart}</span>
-              </button>
-            )
-          })}
+          {mentionQuery !== null
+            ? suggestions.map((member, i) => {
+                const localpart = member.userId.split(':')[0].slice(1)
+                return (
+                  <button
+                    key={member.userId}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      selectMentionSuggestion(member)
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors cursor-pointer ${i === suggestionIndex ? 'bg-bg-active text-text-primary' : 'hover:bg-bg-hover text-text-secondary hover:text-text-primary'}`}
+                  >
+                    <Avatar src={member.avatarUrl} name={member.displayName} size={24} />
+                    <span className="text-sm font-medium truncate">{member.displayName}</span>
+                    <span className="text-xs text-text-muted truncate ml-auto">@{localpart}</span>
+                  </button>
+                )
+              })
+            : roomSuggestions.map((roomSuggestion, i) => {
+                const roomTag = roomNameToTag(roomSuggestion.name)
+                return (
+                  <button
+                    key={roomSuggestion.roomId}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      selectRoomSuggestion(roomSuggestion)
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors cursor-pointer ${i === suggestionIndex ? 'bg-bg-active text-text-primary' : 'hover:bg-bg-hover text-text-secondary hover:text-text-primary'}`}
+                  >
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-bg-tertiary text-sm text-text-muted">#</span>
+                    <span className="text-sm font-medium truncate">{roomSuggestion.name}</span>
+                    <span className="text-xs text-text-muted truncate ml-auto">{roomTag}</span>
+                  </button>
+                )
+              })}
         </div>
-      )}
+      ) : null}
 
       <div className="flex items-center gap-2 min-h-[44px] bg-bg-tertiary rounded-lg border border-border focus-within:border-accent-pink transition-colors">
         <button
@@ -412,7 +573,7 @@ export function MessageInput() {
             ref={backdropRef}
             aria-hidden="true"
             className="absolute inset-0 pt-[15px] pb-[9px] px-0 text-sm text-text-primary overflow-hidden pointer-events-none whitespace-pre-wrap break-words"
-            dangerouslySetInnerHTML={{ __html: highlightInputText(text, validLocalparts) }}
+            dangerouslySetInnerHTML={{ __html: highlightInputText(text, validLocalparts, validRoomTags) }}
           />
           <textarea
             ref={textareaRef}
@@ -422,7 +583,7 @@ export function MessageInput() {
             onPaste={handlePaste}
             onScroll={syncScroll}
             onSelect={(e) =>
-              detectMention(text, (e.target as HTMLTextAreaElement).selectionStart)
+              detectToken(text, (e.target as HTMLTextAreaElement).selectionStart)
             }
             placeholder={`Envoyer un message dans #${room?.name || '...'}`}
             rows={1}

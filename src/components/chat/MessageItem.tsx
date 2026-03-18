@@ -15,7 +15,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
-import type { EncryptedFileInfo, MessageEvent } from '../../types/matrix'
+import type { EncryptedFileInfo, MessageEvent, RoomSummary } from '../../types/matrix'
 import { Avatar } from '../common/Avatar'
 import { UserProfileCard } from '../common/UserProfileCard'
 import { useRoomStore } from '../../stores/roomStore'
@@ -35,14 +35,44 @@ import {
 import { useUiStore } from '../../stores/uiStore'
 
 const URL_REGEX = /https?:\/\/[^\s<>"']+/g
-const TOKEN_REGEX = /(https?:\/\/[^\s<>"']+|<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?)/g
-const MENTION_REGEX = /(<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?)/g
+const TOKEN_REGEX = /(https?:\/\/[^\s<>"']+|<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?|#[A-Za-z0-9._=+\-/]+)/g
+const MENTION_REGEX = /(<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?|#[A-Za-z0-9._=+\-/]+)/g
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥']
 
 function mxidToMentionLabel(raw: string): string {
   const mxid = raw.replace(/^<@/, '').replace(/>$/, '').replace(/^@/, '')
   const localpart = mxid.split(':')[0] || mxid
   return `@${localpart}`
+}
+
+function normalizeRoomTag(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/^#/, '')
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9.-]/g, '')
+}
+
+function roomNameToTag(roomName: string): string {
+  const normalized = normalizeRoomTag(roomName)
+  return normalized ? `#${normalized}` : ''
+}
+
+function getRoomServerName(roomId: string): string {
+  const firstColon = roomId.indexOf(':')
+  if (firstColon === -1) return ''
+  return roomId.slice(firstColon + 1).toLowerCase()
+}
+
+function getHomeserverHost(homeserver: string): string {
+  try {
+    return new URL(homeserver).host.toLowerCase()
+  } catch {
+    return homeserver.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+  }
 }
 
 function splitTrailingPunctuation(url: string): { cleanUrl: string; trailing: string } {
@@ -55,7 +85,15 @@ function splitTrailingPunctuation(url: string): { cleanUrl: string; trailing: st
   return { cleanUrl, trailing }
 }
 
-function RichText({ text }: { text: string }) {
+function RichText({
+  text,
+  roomTagToId,
+  onOpenRoomTag,
+}: {
+  text: string
+  roomTagToId: Map<string, string>
+  onOpenRoomTag: (roomId: string) => void
+}) {
   const parts = text.split(TOKEN_REGEX)
   if (parts.length === 1) return <>{text}</>
   return (
@@ -88,13 +126,36 @@ function RichText({ text }: { text: string }) {
             </span>
           )
         }
+        if (part.startsWith('#')) {
+          const normalizedTag = `#${normalizeRoomTag(part)}`
+          const roomId = roomTagToId.get(normalizedTag)
+          if (roomId) {
+            return (
+              <button
+                key={i}
+                onClick={() => onOpenRoomTag(roomId)}
+                className="inline-flex items-center rounded px-1 py-0.5 bg-mention-bg text-mention hover:bg-mention-hover-bg transition-colors cursor-pointer"
+              >
+                {part}
+              </button>
+            )
+          }
+        }
         return <span key={i}>{part}</span>
       })}
     </>
   )
 }
 
-function MentionText({ text }: { text: string }) {
+function MentionText({
+  text,
+  roomTagToId,
+  onOpenRoomTag,
+}: {
+  text: string
+  roomTagToId: Map<string, string>
+  onOpenRoomTag: (roomId: string) => void
+}) {
   const parts = text.split(MENTION_REGEX)
   if (parts.length === 1) return <>{text}</>
   return (
@@ -111,19 +172,38 @@ function MentionText({ text }: { text: string }) {
             </span>
           )
         }
+        if (part.startsWith('#')) {
+          const normalizedTag = `#${normalizeRoomTag(part)}`
+          const roomId = roomTagToId.get(normalizedTag)
+          if (roomId) {
+            return (
+              <button
+                key={i}
+                onClick={() => onOpenRoomTag(roomId)}
+                className="inline-flex items-center rounded px-1 py-0.5 bg-mention-bg text-mention hover:bg-mention-hover-bg transition-colors cursor-pointer"
+              >
+                {part}
+              </button>
+            )
+          }
+        }
         return <span key={i}>{part}</span>
       })}
     </>
   )
 }
 
-function decorateMentions(children: ReactNode): ReactNode {
+function decorateMentions(
+  children: ReactNode,
+  roomTagToId: Map<string, string>,
+  onOpenRoomTag: (roomId: string) => void,
+): ReactNode {
   return Children.map(children, (child) => {
-    if (typeof child === 'string') return <MentionText text={child} />
+    if (typeof child === 'string') return <MentionText text={child} roomTagToId={roomTagToId} onOpenRoomTag={onOpenRoomTag} />
     if (!isValidElement<{ children?: ReactNode }>(child)) return child
     const childChildren = child.props.children
     if (childChildren == null) return child
-    return cloneElement(child, { children: decorateMentions(childChildren) })
+    return cloneElement(child, { children: decorateMentions(childChildren, roomTagToId, onOpenRoomTag) })
   })
 }
 
@@ -134,16 +214,20 @@ function hasMarkdownSyntax(text: string): boolean {
 function MarkdownText({
   text,
   className,
+  roomTagToId,
+  onOpenRoomTag,
 }: {
   text: string
   className?: string
+  roomTagToId: Map<string, string>
+  onOpenRoomTag: (roomId: string) => void
 }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeHighlight]}
       components={{
-        p: ({ children }) => <p className={className || 'text-sm leading-relaxed break-words text-text-primary'}>{decorateMentions(children)}</p>,
+        p: ({ children }) => <p className={className || 'text-sm leading-relaxed break-words text-text-primary'}>{decorateMentions(children, roomTagToId, onOpenRoomTag)}</p>,
         a: ({ href, children }) => (
           <a
             href={href}
@@ -154,12 +238,12 @@ function MarkdownText({
             {children}
           </a>
         ),
-        ul: ({ children }) => <ul className="list-disc pl-5 my-1 space-y-0.5">{decorateMentions(children)}</ul>,
-        ol: ({ children }) => <ol className="list-decimal pl-5 my-1 space-y-0.5">{decorateMentions(children)}</ol>,
-        li: ({ children }) => <li className="text-sm leading-relaxed text-text-primary">{decorateMentions(children)}</li>,
+        ul: ({ children }) => <ul className="list-disc pl-5 my-1 space-y-0.5">{decorateMentions(children, roomTagToId, onOpenRoomTag)}</ul>,
+        ol: ({ children }) => <ol className="list-decimal pl-5 my-1 space-y-0.5">{decorateMentions(children, roomTagToId, onOpenRoomTag)}</ol>,
+        li: ({ children }) => <li className="text-sm leading-relaxed text-text-primary">{decorateMentions(children, roomTagToId, onOpenRoomTag)}</li>,
         blockquote: ({ children }) => (
           <blockquote className="border-l-2 border-border-strong pl-3 text-text-secondary italic my-1">
-            {decorateMentions(children)}
+            {decorateMentions(children, roomTagToId, onOpenRoomTag)}
           </blockquote>
         ),
         code: ({ className: codeClassName, children }) => {
@@ -847,6 +931,9 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const reactionsVersion = useMessageStore((s) => s.reactionsVersion)
   const replaceMessage = useMessageStore((s) => s.replaceMessage)
   const messagesMap = useMessageStore((s) => s.messages)
+  const roomsMap = useRoomStore((s) => s.rooms)
+  const activeSpaceId = useRoomStore((s) => s.activeSpaceId)
+  const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
   const membersMap = useRoomStore((s) => s.members)
   const setPendingReply = useUiStore((s) => s.setPendingReply)
   const roomMembers = useMemo(() => membersMap.get(message.roomId) || [], [membersMap, message.roomId])
@@ -883,6 +970,35 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
     () => (canReactMessage ? getMessageReactions(message.roomId, message.eventId) : []),
     [canReactMessage, message.roomId, message.eventId, reactionsVersion],
   )
+  const roomTagToId = useMemo(() => {
+    const map = new Map<string, string>()
+    const currentRoomServer = getRoomServerName(message.roomId)
+    const homeserverHost = session?.homeserver ? getHomeserverHost(session.homeserver) : ''
+    const effectiveSpaceId = activeSpaceId || (() => {
+      for (const room of roomsMap.values()) {
+        if (room.isSpace && room.children.includes(message.roomId)) return room.roomId
+      }
+      return null
+    })()
+    const scopedRooms: RoomSummary[] = effectiveSpaceId
+      ? (roomsMap.get(effectiveSpaceId)?.children || [])
+          .map((roomId) => roomsMap.get(roomId))
+          .filter((room): room is RoomSummary => !!room && !room.isSpace && !room.isDirect)
+      : Array.from(roomsMap.values()).filter((room) => !room.isSpace && !room.isDirect)
+
+    for (const room of scopedRooms) {
+      const roomServer = getRoomServerName(room.roomId)
+      if (currentRoomServer && roomServer !== currentRoomServer) continue
+      if (homeserverHost && roomServer !== homeserverHost) continue
+      const tag = roomNameToTag(room.name)
+      if (!tag) continue
+      if (!map.has(tag)) map.set(tag, room.roomId)
+    }
+    return map
+  }, [activeSpaceId, message.roomId, roomsMap, session?.homeserver])
+  const handleOpenRoomTag = useCallback((roomId: string) => {
+    setActiveRoom(roomId)
+  }, [setActiveRoom])
   const [showProfile, setShowProfile] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editDraft, setEditDraft] = useState(message.content)
@@ -1144,6 +1260,8 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
                   <MarkdownText
                     text={renderContent}
                     className={`text-sm leading-relaxed break-words ${message.type === 'm.notice' ? 'text-text-muted italic' : 'text-text-primary'}`}
+                    roomTagToId={roomTagToId}
+                    onOpenRoomTag={handleOpenRoomTag}
                   />
                 )}
               </>
@@ -1158,7 +1276,9 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
         {!isMediaType && message.type !== 'm.text' && message.type !== 'm.notice' && message.type !== 'm.emote' && message.content && (
           <>
             {contentWithoutUrls.length > 0 && (
-              <p className="text-sm text-text-primary leading-relaxed break-words"><RichText text={contentWithoutUrls} /></p>
+              <p className="text-sm text-text-primary leading-relaxed break-words">
+                <RichText text={contentWithoutUrls} roomTagToId={roomTagToId} onOpenRoomTag={handleOpenRoomTag} />
+              </p>
             )}
             {urls.slice(0, 3).map((linkUrl) => (
               <LinkPreviewCard key={linkUrl} url={linkUrl} />
