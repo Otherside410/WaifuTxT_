@@ -15,6 +15,7 @@ export interface RoomSummary {
   lastMessage: string
   lastMessageTs: number
   unreadCount: number
+  mentionCount: number
   isSpace: boolean
   isDirect: boolean
   membership: string

@@ -241,6 +241,8 @@ function syncRooms() {
   const matrixRooms = client.getRooms()
   const roomMap = new Map<string, RoomSummary>()
   const baseUrl = client.baseUrl
+  const myUserId = client.getUserId() || ''
+  const activeRoomId = useRoomStore.getState().activeRoomId
 
   for (const room of matrixRooms) {
     const createEvent = room.currentState.getStateEvents('m.room.create')?.[0]
@@ -297,7 +299,32 @@ function syncRooms() {
       topic,
       lastMessage: lastMessageText,
       lastMessageTs: lastEvent?.getTs() || 0,
-      unreadCount: room.getUnreadNotificationCount() || 0,
+      unreadCount: room.roomId === activeRoomId ? 0 : (() => {
+        // Server push-notification count only fires when a push rule matches,
+        // so it misses many unread messages. Compute from read receipts instead.
+        const readUpToId = room.getEventReadUpTo(myUserId, false)
+        let count = 0
+        let foundMarker = false
+        for (const ev of timeline) {
+          if (ev.getId() === readUpToId) { foundMarker = true; continue }
+          if (
+            foundMarker &&
+            !ev.isState() &&
+            ev.getSender() !== myUserId &&
+            (ev.getType() === 'm.room.message' || ev.getType() === 'm.room.encrypted')
+          ) count++
+        }
+        // Marker not in loaded window → every message in this window is unread
+        if (!foundMarker) {
+          count = timeline.filter(
+            ev => !ev.isState() && ev.getSender() !== myUserId &&
+            (ev.getType() === 'm.room.message' || ev.getType() === 'm.room.encrypted')
+          ).length
+        }
+        // Never go below the server notification count (covers history not in the window)
+        return Math.max(count, room.getUnreadNotificationCount() || 0)
+      })(),
+      mentionCount: room.roomId === activeRoomId ? 0 : (room.getUnreadNotificationCount('highlight') || 0),
       isSpace,
       isDirect,
       membership: room.getMyMembership(),

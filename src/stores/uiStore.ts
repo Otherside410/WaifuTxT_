@@ -23,6 +23,8 @@ interface UiState {
   showSettingsModal: boolean
   isMobileMenuOpen: boolean
   showRoomMessagePreview: boolean
+  showUnreadDot: boolean
+  showMentionBadge: boolean
   pendingMention: string | null
   pendingReply: PendingReply | null
   waifuOptIn: boolean
@@ -35,6 +37,8 @@ interface UiState {
   toggleMobileMenu: () => void
   toggleRoomMessagePreview: () => void
   setRoomMessagePreview: (show: boolean) => void
+  setShowUnreadDot: (show: boolean) => void
+  setShowMentionBadge: (show: boolean) => void
   setPendingMention: (mention: string | null) => void
   setPendingReply: (reply: PendingReply | null) => void
   setWaifuOptIn: (enabled: boolean) => void
@@ -43,6 +47,8 @@ interface UiState {
 }
 
 const ROOM_PREVIEW_STORAGE_KEY = 'waifutxt_show_room_message_preview'
+const UNREAD_DOT_STORAGE_KEY = 'waifutxt_show_unread_dot'
+const MENTION_BADGE_STORAGE_KEY = 'waifutxt_show_mention_badge'
 const WAIFU_OPT_IN_STORAGE_KEY = 'waifutxt_waifu_opt_in'
 const WAIFU_SELECTED_STORAGE_KEY = 'waifutxt_waifu_selected'
 const TYPING_INDICATOR_STYLE_STORAGE_KEY = 'waifutxt_typing_indicator_style'
@@ -57,6 +63,30 @@ function readRoomPreviewPreference(): boolean {
 function persistRoomPreviewPreference(show: boolean): void {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(ROOM_PREVIEW_STORAGE_KEY, String(show))
+}
+
+function readUnreadDot(): boolean {
+  if (typeof window === 'undefined') return true
+  const saved = window.localStorage.getItem(UNREAD_DOT_STORAGE_KEY)
+  if (saved == null) return true
+  return saved === 'true'
+}
+
+function persistUnreadDot(show: boolean): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(UNREAD_DOT_STORAGE_KEY, String(show))
+}
+
+function readMentionBadge(): boolean {
+  if (typeof window === 'undefined') return true
+  const saved = window.localStorage.getItem(MENTION_BADGE_STORAGE_KEY)
+  if (saved == null) return true
+  return saved === 'true'
+}
+
+function persistMentionBadge(show: boolean): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(MENTION_BADGE_STORAGE_KEY, String(show))
 }
 
 function readWaifuOptIn(): boolean {
@@ -98,6 +128,8 @@ export const useUiStore = create<UiState>((set) => ({
   showSettingsModal: false,
   isMobileMenuOpen: false,
   showRoomMessagePreview: readRoomPreviewPreference(),
+  showUnreadDot: readUnreadDot(),
+  showMentionBadge: readMentionBadge(),
   pendingMention: null,
   pendingReply: null,
   waifuOptIn: readWaifuOptIn(),
@@ -117,6 +149,14 @@ export const useUiStore = create<UiState>((set) => ({
   setRoomMessagePreview: (show) => {
     persistRoomPreviewPreference(show)
     set({ showRoomMessagePreview: show })
+  },
+  setShowUnreadDot: (show) => {
+    persistUnreadDot(show)
+    set({ showUnreadDot: show })
+  },
+  setShowMentionBadge: (show) => {
+    persistMentionBadge(show)
+    set({ showMentionBadge: show })
   },
   setPendingMention: (mention) => set({ pendingMention: mention }),
   setPendingReply: (reply) => set({ pendingReply: reply }),

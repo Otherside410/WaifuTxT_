@@ -40,6 +40,8 @@ export function RoomSidebar() {
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
   const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
+  const showUnreadDot = useUiStore((s) => s.showUnreadDot)
+  const showMentionBadge = useUiStore((s) => s.showMentionBadge)
   const waifuOptIn = useUiStore((s) => s.waifuOptIn)
   const selectedWaifuId = useUiStore((s) => s.selectedWaifuId)
   const myUserId = session?.userId ?? null
@@ -121,7 +123,9 @@ export function RoomSidebar() {
             className={`w-full flex items-center px-2 py-1.5 rounded-md transition-colors text-left cursor-pointer group ${
               activeRoomId === room.roomId
                 ? 'bg-bg-hover text-text-primary'
-                : 'text-text-secondary hover:bg-bg-hover/50 hover:text-text-primary'
+                : room.unreadCount > 0
+                  ? 'text-text-primary hover:bg-bg-hover/50'
+                  : 'text-text-secondary hover:bg-bg-hover/50 hover:text-text-primary'
             }`}
           >
             <span className="mr-1.5 text-text-muted/90 shrink-0" aria-hidden>
@@ -135,13 +139,17 @@ export function RoomSidebar() {
               )}
             </span>
             <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium truncate">{room.name}</span>
-                {room.unreadCount > 0 && (
-                  <span className="bg-accent-pink text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
-                    {room.unreadCount > 99 ? '99+' : room.unreadCount}
+              <div className="flex items-center justify-between gap-1.5">
+                <span className={`text-sm truncate ${room.unreadCount > 0 && activeRoomId !== room.roomId ? 'font-semibold' : 'font-medium'}`}>
+                  {room.name}
+                </span>
+                {showMentionBadge && activeRoomId !== room.roomId && room.mentionCount > 0 ? (
+                  <span className="shrink-0 flex items-center justify-center rounded-full min-w-[18px] h-[18px] px-1 text-[10px] font-bold text-white bg-accent-pink">
+                    {room.mentionCount > 99 ? '99+' : room.mentionCount}
                   </span>
-                )}
+                ) : showUnreadDot && activeRoomId !== room.roomId && room.unreadCount > 0 ? (
+                  <span className="shrink-0 w-2 h-2 rounded-full bg-accent-pink" />
+                ) : null}
               </div>
               {showRoomMessagePreview && room.lastMessage && (
                 <p className="text-xs text-text-muted truncate">{room.lastMessage}</p>
