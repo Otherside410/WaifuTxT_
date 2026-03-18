@@ -44,6 +44,10 @@ interface UiState {
   setWaifuOptIn: (enabled: boolean) => void
   setSelectedWaifuId: (waifuId: WaifuId) => void
   setTypingIndicatorStyle: (style: TypingIndicatorStyle) => void
+  editTargetEventId: string | null
+  setEditTargetEventId: (id: string | null) => void
+  roomSearchFocusBump: number
+  bumpRoomSearchFocus: () => void
 }
 
 const ROOM_PREVIEW_STORAGE_KEY = 'waifutxt_show_room_message_preview'
@@ -172,4 +176,8 @@ export const useUiStore = create<UiState>((set) => ({
     persistTypingIndicatorStyle(style)
     set({ typingIndicatorStyle: style })
   },
+  editTargetEventId: null,
+  setEditTargetEventId: (id) => set({ editTargetEventId: id }),
+  roomSearchFocusBump: 0,
+  bumpRoomSearchFocus: () => set((s) => ({ roomSearchFocusBump: s.roomSearchFocusBump + 1 })),
 }))

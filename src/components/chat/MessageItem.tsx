@@ -880,10 +880,35 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const [isSavingEdit, setIsSavingEdit] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
   const senderNameRef = useRef<HTMLSpanElement | null>(null)
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const editTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const editTargetEventId = useUiStore((s) => s.editTargetEventId)
+  const setEditTargetEventId = useUiStore((s) => s.setEditTargetEventId)
 
   useEffect(() => {
     setEditDraft(message.content)
   }, [message.eventId, message.content])
+
+  // Triggered from keyboard shortcut (ArrowUp in empty MessageInput)
+  useEffect(() => {
+    if (editTargetEventId === message.eventId && canEditMessage) {
+      setIsEditing(true)
+      setEditError(null)
+      setEditTargetEventId(null)
+      setTimeout(() => {
+        wrapperRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }, 30)
+    }
+  }, [editTargetEventId, message.eventId, canEditMessage, setEditTargetEventId])
+
+  // Auto-focus edit textarea whenever edit mode activates
+  useEffect(() => {
+    if (isEditing && editTextareaRef.current) {
+      editTextareaRef.current.focus()
+      const len = editTextareaRef.current.value.length
+      editTextareaRef.current.setSelectionRange(len, len)
+    }
+  }, [isEditing])
 
   const handleSaveEdit = useCallback(async () => {
     const nextBody = editDraft.trim()
@@ -911,7 +936,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   }, [editDraft, message, replaceMessage])
 
   return (
-    <div className={`group relative flex items-start gap-4 px-4 py-0.5 pr-12 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''}`}>
+    <div ref={wrapperRef} className={`group relative flex items-start gap-4 px-4 py-0.5 pr-12 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''}`}>
       {showHeader ? (
         <Avatar src={message.senderAvatar} name={message.senderName} size={40} className="mt-0.5" />
       ) : (
@@ -1005,6 +1030,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
             {isEditing ? (
               <div className="mt-1 rounded-lg border border-border bg-bg-tertiary/70 p-2.5">
                 <textarea
+                  ref={editTextareaRef}
                   value={editDraft}
                   onChange={(e) => {
                     setEditDraft(e.target.value)
