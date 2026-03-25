@@ -7,6 +7,8 @@ import {
   getOwnAvatarUrl,
   getRoomMemberProfileBasics,
   getUserProfileBasics,
+  joinRoom,
+  declineInvite,
   joinVoiceRoom,
   leaveVoiceRoom,
   loadRoomMembers,
@@ -105,22 +107,48 @@ export function RoomSidebar() {
     await setOwnPresence(presence)
   }
 
-  const displayRooms = useMemo(() => {
+  const [pendingInvites, setPendingInvites] = useState<Set<string>>(new Set())
+
+  const handleAcceptInvite = async (roomId: string) => {
+    setPendingInvites((s) => new Set(s).add(roomId))
+    try {
+      await joinRoom(roomId)
+      setActiveRoom(roomId)
+    } finally {
+      setPendingInvites((s) => { const n = new Set(s); n.delete(roomId); return n })
+    }
+  }
+
+  const handleDeclineInvite = async (roomId: string) => {
+    setPendingInvites((s) => new Set(s).add(roomId))
+    try {
+      await declineInvite(roomId)
+    } finally {
+      setPendingInvites((s) => { const n = new Set(s); n.delete(roomId); return n })
+    }
+  }
+
+  const { displayRooms, invitedRooms } = useMemo(() => {
     const allRooms = Array.from(rooms.values())
+    const invited = allRooms.filter((r) => r.membership === 'invite')
+    const joinedOnly = allRooms.filter((r) => r.membership !== 'invite')
 
     if (activeSpaceId === null) {
-      const dms = allRooms.filter((r) => r.isDirect)
-      const nonSpaceNonDm = allRooms.filter((r) => !r.isSpace && !r.isDirect)
+      const dms = joinedOnly.filter((r) => r.isDirect)
+      const nonSpaceNonDm = joinedOnly.filter((r) => !r.isSpace && !r.isDirect)
       const combined = [...dms, ...nonSpaceNonDm]
-      return combined.sort((a, b) => b.lastMessageTs - a.lastMessageTs)
+      return { displayRooms: combined.sort((a, b) => b.lastMessageTs - a.lastMessageTs), invitedRooms: invited }
     }
 
     const space = rooms.get(activeSpaceId)
-    if (!space) return []
-    return space.children
-      .map((id) => rooms.get(id))
-      .filter((r): r is NonNullable<typeof r> => !!r && !r.isSpace)
-      .sort((a, b) => b.lastMessageTs - a.lastMessageTs)
+    if (!space) return { displayRooms: [], invitedRooms: invited }
+    return {
+      displayRooms: space.children
+        .map((id) => rooms.get(id))
+        .filter((r): r is NonNullable<typeof r> => !!r && !r.isSpace && r.membership !== 'invite')
+        .sort((a, b) => b.lastMessageTs - a.lastMessageTs),
+      invitedRooms: invited,
+    }
   }, [rooms, activeSpaceId])
 
   const filtered = search
@@ -253,6 +281,37 @@ export function RoomSidebar() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 space-y-0.5">
+        {invitedRooms.length > 0 && (
+          <div className="mb-1">
+            <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              Invitations ({invitedRooms.length})
+            </p>
+            {invitedRooms.map((room) => (
+              <div key={room.roomId} className="flex items-center px-2 py-1.5 rounded-md bg-bg-tertiary/60 mb-0.5">
+                <span className="mr-1.5 text-text-muted/90 shrink-0 text-base leading-none">#</span>
+                <span className="flex-1 min-w-0 text-sm font-medium text-text-secondary truncate">{room.name}</span>
+                <div className="flex gap-1 shrink-0 ml-1">
+                  <button
+                    onClick={() => handleAcceptInvite(room.roomId)}
+                    disabled={pendingInvites.has(room.roomId)}
+                    className="px-2 py-0.5 text-[10px] font-semibold rounded bg-accent-pink text-white hover:bg-accent-pink-hover transition-colors disabled:opacity-50 cursor-pointer"
+                    title="Accepter l'invitation"
+                  >
+                    Oui
+                  </button>
+                  <button
+                    onClick={() => handleDeclineInvite(room.roomId)}
+                    disabled={pendingInvites.has(room.roomId)}
+                    className="px-2 py-0.5 text-[10px] font-semibold rounded bg-bg-hover text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50 cursor-pointer"
+                    title="Refuser l'invitation"
+                  >
+                    Non
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         {filtered.map((room) => {
           const isVoice = isVoiceRoom(room)
           const isJoinedVoice = joinedVoiceRoomId === room.roomId

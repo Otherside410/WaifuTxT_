@@ -1066,6 +1066,16 @@ export async function sendEditMessage(roomId: string, eventId: string, body: str
   }
 }
 
+export async function joinRoom(roomId: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  await client.joinRoom(roomId)
+}
+
+export async function declineInvite(roomId: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  await client.leave(roomId)
+}
+
 export async function getOrCreateDmRoom(userId: string): Promise<string> {
   if (!client) throw new Error('Client non initialisé')
   const myUserId = client.getUserId()
