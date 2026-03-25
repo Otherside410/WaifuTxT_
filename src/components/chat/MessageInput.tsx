@@ -8,6 +8,7 @@ import {
   type ChangeEvent,
   type ClipboardEvent,
 } from 'react'
+import emojiData from 'emoji-picker-react/src/data/emojis-en.json'
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -20,6 +21,58 @@ interface PendingImage {
   file: File
   previewUrl: string
 }
+
+interface EmojiSuggestion {
+  emoji: string
+  shortcode: string
+}
+
+interface PickerDataEmoji {
+  n: string[]
+  u: string
+}
+
+function unifiedToEmoji(unified: string): string {
+  const codepoints = unified
+    .split('-')
+    .map((hex) => parseInt(hex, 16))
+    .filter((cp) => Number.isFinite(cp))
+  if (codepoints.length === 0) return ''
+  try {
+    return String.fromCodePoint(...codepoints)
+  } catch {
+    return ''
+  }
+}
+
+function toShortcode(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function buildEmojiSuggestions(): EmojiSuggestion[] {
+  const allGroups = Object.values(emojiData.emojis) as PickerDataEmoji[][]
+  const flat = allGroups.flat()
+  const byShortcode = new Map<string, EmojiSuggestion>()
+
+  for (const entry of flat) {
+    const emoji = unifiedToEmoji(entry.u)
+    if (!emoji) continue
+    const names = entry.n || []
+    const bestName = [...names].sort((a, b) => b.length - a.length)[0] || names[0] || ''
+    const shortcode = toShortcode(bestName)
+    if (!shortcode || byShortcode.has(shortcode)) continue
+    byShortcode.set(shortcode, { emoji, shortcode })
+  }
+
+  return Array.from(byShortcode.values()).sort((a, b) => a.shortcode.localeCompare(b.shortcode))
+}
+
+const EMOJI_SUGGESTIONS = buildEmojiSuggestions()
 
 function normalizeRoomTag(value: string): string {
   return value
@@ -84,6 +137,8 @@ export function MessageInput() {
   const [mentionStart, setMentionStart] = useState(0)
   const [roomTagQuery, setRoomTagQuery] = useState<string | null>(null)
   const [roomTagStart, setRoomTagStart] = useState(0)
+  const [emojiQuery, setEmojiQuery] = useState<string | null>(null)
+  const [emojiStart, setEmojiStart] = useState(0)
   const [suggestionIndex, setSuggestionIndex] = useState(0)
 
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
@@ -158,7 +213,7 @@ export function MessageInput() {
   }, [activeRoomId, activeSpaceId, roomsMap, session?.homeserver])
 
   // Filtered autocomplete suggestions
-  const suggestions = useMemo((): RoomMember[] => {
+  const mentionSuggestions = useMemo((): RoomMember[] => {
     if (mentionQuery === null) return []
     const q = mentionQuery.toLowerCase()
     return roomMembers
@@ -202,12 +257,21 @@ export function MessageInput() {
       .slice(0, 8)
   }, [activeRoomId, activeSpaceId, roomsMap, roomTagQuery, session?.homeserver])
 
+  const emojiSuggestions = useMemo((): EmojiSuggestion[] => {
+    if (emojiQuery === null || emojiQuery.length < 3) return []
+    const q = toShortcode(emojiQuery)
+    if (!q) return []
+    // Filtrage strict: on ne suggère que les emojis dont le shortcode contient la séquence.
+    return EMOJI_SUGGESTIONS.filter((entry) => entry.shortcode.includes(q)).slice(0, 8)
+  }, [emojiQuery])
+
   // Detect active @mention or #room-tag query at cursor position
   const detectToken = useCallback((newText: string, cursorPos: number) => {
     const before = newText.slice(0, cursorPos)
     const atIdx = before.lastIndexOf('@')
     const hashIdx = before.lastIndexOf('#')
-    const start = Math.max(atIdx, hashIdx)
+    const colonIdx = before.lastIndexOf(':')
+    const start = Math.max(atIdx, hashIdx, colonIdx)
     if (start !== -1) {
       const trigger = before[start]
       const query = before.slice(start + 1)
@@ -217,10 +281,19 @@ export function MessageInput() {
           setMentionQuery(query)
           setMentionStart(start)
           setRoomTagQuery(null)
+          setEmojiQuery(null)
         } else {
-          setRoomTagQuery(query)
-          setRoomTagStart(start)
-          setMentionQuery(null)
+          if (trigger === '#') {
+            setRoomTagQuery(query)
+            setRoomTagStart(start)
+            setMentionQuery(null)
+            setEmojiQuery(null)
+          } else {
+            setEmojiQuery(query)
+            setEmojiStart(start)
+            setMentionQuery(null)
+            setRoomTagQuery(null)
+          }
         }
         setSuggestionIndex(0)
         return
@@ -228,6 +301,7 @@ export function MessageInput() {
     }
     setMentionQuery(null)
     setRoomTagQuery(null)
+    setEmojiQuery(null)
   }, [])
 
   const selectMentionSuggestion = useCallback(
@@ -241,6 +315,7 @@ export function MessageInput() {
       setText(newText)
       setMentionQuery(null)
       setRoomTagQuery(null)
+      setEmojiQuery(null)
       nextCursorRef.current = before.length + localpart.length + 2 // @ + localpart + space
       textareaRef.current?.focus()
     },
@@ -259,10 +334,29 @@ export function MessageInput() {
       setText(newText)
       setMentionQuery(null)
       setRoomTagQuery(null)
+      setEmojiQuery(null)
       nextCursorRef.current = before.length + roomTag.length + 1 // #tag + space
       textareaRef.current?.focus()
     },
     [text, roomTagStart, roomTagQuery],
+  )
+
+  const selectEmojiSuggestion = useCallback(
+    (entry: EmojiSuggestion) => {
+      const cursorPos =
+        textareaRef.current?.selectionStart ?? emojiStart + (emojiQuery?.length ?? 0) + 1
+      const before = text.slice(0, emojiStart)
+      const after = text.slice(cursorPos)
+      const insertion = `:${entry.shortcode}: `
+      const newText = `${before}${insertion}${after}`
+      setText(newText)
+      setMentionQuery(null)
+      setRoomTagQuery(null)
+      setEmojiQuery(null)
+      nextCursorRef.current = before.length + insertion.length
+      textareaRef.current?.focus()
+    },
+    [text, emojiStart, emojiQuery],
   )
 
   const handleSend = useCallback(async () => {
@@ -294,10 +388,15 @@ export function MessageInput() {
 
   const handleKeyDown = (e: KeyboardEvent) => {
     // Autocomplete navigation takes priority
-    const hasMentionSuggestions = mentionQuery !== null && suggestions.length > 0
+    const hasMentionSuggestions = mentionQuery !== null && mentionSuggestions.length > 0
     const hasRoomSuggestions = roomTagQuery !== null && roomSuggestions.length > 0
-    const hasAutocomplete = hasMentionSuggestions || hasRoomSuggestions
-    const activeSuggestionsLength = hasMentionSuggestions ? suggestions.length : roomSuggestions.length
+    const hasEmojiSuggestions = emojiQuery !== null && emojiSuggestions.length > 0
+    const hasAutocomplete = hasMentionSuggestions || hasRoomSuggestions || hasEmojiSuggestions
+    const activeSuggestionsLength = hasMentionSuggestions
+      ? mentionSuggestions.length
+      : hasRoomSuggestions
+        ? roomSuggestions.length
+        : emojiSuggestions.length
     if (hasAutocomplete) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -312,9 +411,11 @@ export function MessageInput() {
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault()
         if (hasMentionSuggestions) {
-          selectMentionSuggestion(suggestions[suggestionIndex])
-        } else {
+          selectMentionSuggestion(mentionSuggestions[suggestionIndex])
+        } else if (hasRoomSuggestions) {
           selectRoomSuggestion(roomSuggestions[suggestionIndex])
+        } else {
+          selectEmojiSuggestion(emojiSuggestions[suggestionIndex])
         }
         return
       }
@@ -322,6 +423,7 @@ export function MessageInput() {
         e.preventDefault()
         setMentionQuery(null)
         setRoomTagQuery(null)
+        setEmojiQuery(null)
         return
       }
     }
@@ -333,7 +435,7 @@ export function MessageInput() {
     }
 
     // Whole-token deletion — only when NOT actively typing a mention query
-    if (mentionQuery === null && roomTagQuery === null && (e.key === 'Backspace' || e.key === 'Delete')) {
+    if (mentionQuery === null && roomTagQuery === null && emojiQuery === null && (e.key === 'Backspace' || e.key === 'Delete')) {
       const textarea = textareaRef.current
       if (!textarea) return
       const { selectionStart, selectionEnd } = textarea
@@ -509,13 +611,15 @@ export function MessageInput() {
         </div>
       )}
 
-      {(mentionQuery !== null && suggestions.length > 0) || (roomTagQuery !== null && roomSuggestions.length > 0) ? (
+      {(mentionQuery !== null && mentionSuggestions.length > 0) ||
+      (roomTagQuery !== null && roomSuggestions.length > 0) ||
+      (emojiQuery !== null && emojiSuggestions.length > 0) ? (
         <div className="absolute bottom-full left-4 right-4 mb-1.5 rounded-lg border border-border bg-bg-secondary shadow-xl overflow-hidden z-20">
           <div className="px-3 py-1 text-[10px] text-text-muted uppercase tracking-wide border-b border-border/60">
-            {mentionQuery !== null ? 'Membres' : 'Salons'}
+            {mentionQuery !== null ? 'Membres' : roomTagQuery !== null ? 'Salons' : 'Emojis'}
           </div>
           {mentionQuery !== null
-            ? suggestions.map((member, i) => {
+            ? mentionSuggestions.map((member, i) => {
                 const localpart = member.userId.split(':')[0].slice(1)
                 return (
                   <button
@@ -532,7 +636,8 @@ export function MessageInput() {
                   </button>
                 )
               })
-            : roomSuggestions.map((roomSuggestion, i) => {
+            : roomTagQuery !== null
+              ? roomSuggestions.map((roomSuggestion, i) => {
                 const roomTag = roomNameToTag(roomSuggestion.name)
                 return (
                   <button
@@ -548,7 +653,20 @@ export function MessageInput() {
                     <span className="text-xs text-text-muted truncate ml-auto">{roomTag}</span>
                   </button>
                 )
-              })}
+                })
+              : emojiSuggestions.map((entry, i) => (
+                  <button
+                    key={entry.shortcode}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      selectEmojiSuggestion(entry)
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors cursor-pointer ${i === suggestionIndex ? 'bg-bg-active text-text-primary' : 'hover:bg-bg-hover text-text-secondary hover:text-text-primary'}`}
+                  >
+                    <span className="text-lg leading-none">{entry.emoji}</span>
+                    <span className="text-sm font-medium truncate">:{entry.shortcode}:</span>
+                  </button>
+                ))}
         </div>
       ) : null}
 
