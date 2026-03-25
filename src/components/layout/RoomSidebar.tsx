@@ -615,8 +615,8 @@ export function RoomSidebar() {
                 ? 'text-danger bg-danger/10 hover:bg-danger/20'
                 : 'text-text-muted hover:text-text-primary hover:bg-bg-hover/80'
             }`}
-            title={isDeafened ? 'Activer l'audio' : 'Désactiver l'audio'}
-            aria-label={isDeafened ? 'Activer l'audio' : 'Désactiver l'audio'}
+            title={isDeafened ? "Activer l'audio" : "Désactiver l'audio"}
+            aria-label={isDeafened ? "Activer l'audio" : "Désactiver l'audio"}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               {isDeafened ? (
