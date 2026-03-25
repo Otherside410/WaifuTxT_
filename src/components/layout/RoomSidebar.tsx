@@ -59,6 +59,7 @@ export function RoomSidebar() {
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
   const membersByRoom = useRoomStore((s) => s.members)
   const updatePresence = useRoomStore((s) => s.updatePresence)
+  const statusMessageMap = useRoomStore((s) => s.statusMessageMap)
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
   const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
@@ -405,7 +406,7 @@ export function RoomSidebar() {
         )}
       </div>
 
-      <div className="relative -left-[72px] w-[calc(100%+72px)] h-14 pl-[80px] pr-2 flex items-center gap-2 bg-bg-tertiary/95 border-t border-border">
+      <div className="relative -left-[72px] w-[calc(100%+72px)] min-h-14 py-1.5 pl-[80px] pr-2 flex items-center gap-2 bg-bg-tertiary/95 border-t border-border">
         {/* Presence menu */}
         {showPresenceMenu && (
           <div
@@ -441,8 +442,17 @@ export function RoomSidebar() {
             <div className="text-sm font-semibold truncate text-text-primary leading-tight">
               {session?.userId?.split(':')[0]?.replace('@', '') || ''}
             </div>
-            <div className="text-[11px] text-text-muted truncate leading-tight">
-              {PRESENCE_OPTIONS.find((o) => o.value === ownPresence)?.label ?? 'Hors-ligne'}
+            <div
+              className={`text-[11px] truncate leading-tight ${
+                myUserId && statusMessageMap[myUserId]?.trim()
+                  ? 'font-semibold text-text-secondary'
+                  : 'text-text-muted'
+              }`}
+              title={myUserId ? statusMessageMap[myUserId] : undefined}
+            >
+              {myUserId && statusMessageMap[myUserId]?.trim()
+                ? statusMessageMap[myUserId].trim()
+                : (PRESENCE_OPTIONS.find((o) => o.value === ownPresence)?.label ?? 'Hors-ligne')}
             </div>
           </div>
         </button>

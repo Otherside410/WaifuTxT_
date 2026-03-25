@@ -15,6 +15,7 @@ export function UserProfileCard({
   avatarUrl,
   presence,
   powerLevel,
+  statusMessage,
 }: {
   open: boolean
   anchorRef: RefObject<HTMLElement | null>
@@ -24,6 +25,8 @@ export function UserProfileCard({
   avatarUrl: string | null
   presence: 'online' | 'offline' | 'unavailable'
   powerLevel: number
+  /** Matrix presence status_msg when known */
+  statusMessage?: string | null
 }) {
   const cardRef = useRef<HTMLDivElement | null>(null)
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
@@ -133,6 +136,12 @@ export function UserProfileCard({
           <span className="text-xs text-text-muted">·</span>
           <span className="text-xs text-text-secondary">{role}</span>
         </div>
+
+        {statusMessage?.trim() ? (
+          <p className="mt-2 text-xs font-semibold text-text-secondary leading-snug line-clamp-3 border-t border-border/60 pt-2">
+            {statusMessage.trim()}
+          </p>
+        ) : null}
 
         {/* Actions */}
         <div className="mt-3 flex gap-2">

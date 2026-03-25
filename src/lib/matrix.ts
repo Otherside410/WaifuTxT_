@@ -295,14 +295,23 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
   // Real-time presence updates emitted by the SDK on User objects.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client.on('User.presence' as any, (_event: unknown, user: any) => {
-    applyPresence(user?.userId, user?.presence)
+    const content = user?.events?.presence?.getContent?.() as Record<string, unknown> | undefined
+    const sm =
+      content && Object.prototype.hasOwnProperty.call(content, 'status_msg')
+        ? String((content.status_msg as string | undefined) ?? '')
+        : undefined
+    applyPresence(user?.userId, user?.presence, sm)
   })
 
   // Fallback: raw m.presence events arriving in the sync stream.
   // Covers homeservers where the SDK reEmitter is not wired for User events.
   client.on(matrixSdk.ClientEvent.Event, (event: MatrixEvent) => {
     if (event.getType() !== 'm.presence') return
-    applyPresence(event.getSender(), event.getContent()?.presence)
+    const c = event.getContent() as Record<string, unknown>
+    const sm = Object.prototype.hasOwnProperty.call(c, 'status_msg')
+      ? String((c.status_msg as string | undefined) ?? '')
+      : undefined
+    applyPresence(event.getSender(), c.presence as string | undefined, sm)
   })
 
   client.on(matrixSdk.ClientEvent.Event, (event: MatrixEvent) => {
@@ -1585,6 +1594,16 @@ export async function loadRoomMembers(roomId: string): Promise<void> {
     if (!(m.userId in store.presenceMap)) {
       store.updatePresence(m.userId, m.presence)
     }
+    if (!(m.userId in store.statusMessageMap)) {
+      const u = client!.getUser(m.userId) as import('matrix-js-sdk').User | null
+      const content = u?.events?.presence?.getContent?.() as Record<string, unknown> | undefined
+      if (content && Object.prototype.hasOwnProperty.call(content, 'status_msg')) {
+        const raw = String((content.status_msg as string | undefined) ?? '').trim()
+        if (raw) store.setStatusMessage(m.userId, raw)
+      } else if (u && typeof u.presenceStatusMsg === 'string' && u.presenceStatusMsg.trim()) {
+        store.setStatusMessage(m.userId, u.presenceStatusMsg.trim())
+      }
+    }
   }
   store.setMembers(roomId, members)
 }
@@ -1675,16 +1694,32 @@ export interface DeviceInfo {
   isCurrentDevice: boolean
 }
 
-function applyPresence(userId: string | undefined | null, raw: string | undefined | null): void {
+const OWN_STATUS_MSG_STORAGE_KEY = 'waifutxt_status_msg'
+export const MAX_PRESENCE_STATUS_MSG_LEN = 200
+
+function applyPresence(
+  userId: string | undefined | null,
+  raw: string | undefined | null,
+  statusMsgUpdate?: string,
+): void {
   if (!userId) return
   const presence = raw === 'online' ? 'online' : raw === 'unavailable' ? 'unavailable' : 'offline'
   useRoomStore.getState().updatePresence(userId, presence)
+  if (statusMsgUpdate !== undefined) {
+    const trimmed = statusMsgUpdate.trim()
+    useRoomStore.getState().setStatusMessage(userId, trimmed || null)
+  }
 }
 
 function seedPresenceFromUsers(): void {
   if (!client) return
   for (const user of client.getUsers()) {
-    if (user.presence) applyPresence(user.userId, user.presence)
+    const content = user.events?.presence?.getContent?.() as Record<string, unknown> | undefined
+    const sm =
+      content && Object.prototype.hasOwnProperty.call(content, 'status_msg')
+        ? String((content.status_msg as string | undefined) ?? '')
+        : undefined
+    applyPresence(user.userId, user.presence, sm)
   }
 }
 
@@ -1698,10 +1733,33 @@ export function getOwnPresence(): 'online' | 'unavailable' | 'offline' {
   return 'offline'
 }
 
+export function getStoredOwnStatusMessage(): string {
+  try {
+    return localStorage.getItem(OWN_STATUS_MSG_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
 export async function setOwnPresence(presence: 'online' | 'unavailable' | 'offline'): Promise<void> {
   if (!client) return
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (client as any).sendPresence({ presence })
+  const status_msg = getStoredOwnStatusMessage().slice(0, MAX_PRESENCE_STATUS_MSG_LEN)
+  await client.setPresence({ presence, status_msg })
+}
+
+/** Persists and broadcasts custom status (Matrix presence status_msg). */
+export async function setOwnStatusMessage(text: string): Promise<void> {
+  const c = await ensureClientReady()
+  const userId = c.getUserId()
+  if (!userId) throw new Error('Non connecté')
+  const trimmed = text.trim().slice(0, MAX_PRESENCE_STATUS_MSG_LEN)
+  try {
+    localStorage.setItem(OWN_STATUS_MSG_STORAGE_KEY, trimmed)
+  } catch {
+    // ignore quota
+  }
+  useRoomStore.getState().setStatusMessage(userId, trimmed || null)
+  await setOwnPresence(getOwnPresence())
 }
 
 export async function initOwnPresence(): Promise<void> {
@@ -1711,7 +1769,11 @@ export async function initOwnPresence(): Promise<void> {
   // Optimistically push into presenceMap so the UI reflects it immediately,
   // before the server echoes the User.presence event back.
   const userId = client?.getUserId()
-  if (userId) useRoomStore.getState().updatePresence(userId, presence)
+  if (userId) {
+    useRoomStore.getState().updatePresence(userId, presence)
+    const msg = getStoredOwnStatusMessage().trim()
+    useRoomStore.getState().setStatusMessage(userId, msg || null)
+  }
   await setOwnPresence(presence)
 }
 

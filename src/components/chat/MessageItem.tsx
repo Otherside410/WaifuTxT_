@@ -952,6 +952,9 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
     () => roomMembers.find((m) => m.userId === message.sender),
     [roomMembers, message.sender],
   )
+  const senderIdForProfile = senderMember?.userId ?? message.sender
+  const profileCardPresence = useRoomStore((s) => s.presenceMap[senderIdForProfile])
+  const profileCardStatusMessage = useRoomStore((s) => s.statusMessageMap[senderIdForProfile])
   const isOwnMessage = !!session?.userId && message.sender === session.userId
   const isSyncedMessage = message.eventId.startsWith('$')
   const canEditMessage =
@@ -1442,8 +1445,9 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
         displayName={senderMember?.displayName || message.senderName}
         userId={senderMember?.userId || message.sender}
         avatarUrl={senderMember?.avatarUrl || message.senderAvatar}
-        presence={senderMember?.presence || 'offline'}
+        presence={profileCardPresence ?? senderMember?.presence ?? 'offline'}
         powerLevel={senderMember?.powerLevel || 0}
+        statusMessage={profileCardStatusMessage}
       />
     </div>
   )

@@ -9,6 +9,7 @@ import { startSelfVerification } from '../../lib/verification'
 import { AccentColorPicker } from '../settings/AccentColorPicker'
 import { ThemePicker } from '../settings/ThemePicker'
 import { ProfileAvatarUpload } from '../settings/ProfileAvatarUpload'
+import { ProfileStatusSettings } from '../settings/ProfileStatusSettings'
 import { WAIFU_OPTIONS, getWaifuById } from '../../lib/waifu'
 
 const SETTINGS_SECTIONS = [
@@ -526,6 +527,7 @@ export function SettingsModal() {
                       />
                     </div>
                   </div>
+                  <ProfileStatusSettings disabled={!session} />
                 </div>
               </div>
             </div>

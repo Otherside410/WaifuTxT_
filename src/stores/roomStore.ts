@@ -8,6 +8,8 @@ interface RoomState {
   activeSpaceId: string | null
   members: Map<string, RoomMember[]>
   presenceMap: Record<string, PresenceValue>
+  /** Custom status from Matrix presence (status_msg); key absent = unknown / none */
+  statusMessageMap: Record<string, string>
 
   setRooms: (rooms: Map<string, RoomSummary>) => void
   updateRoom: (roomId: string, update: Partial<RoomSummary>) => void
@@ -15,6 +17,7 @@ interface RoomState {
   setActiveSpace: (spaceId: string | null) => void
   setMembers: (roomId: string, members: RoomMember[]) => void
   updatePresence: (userId: string, presence: PresenceValue) => void
+  setStatusMessage: (userId: string, message: string | null) => void
   getSpaces: () => RoomSummary[]
   getRoomsForSpace: (spaceId: string | null) => RoomSummary[]
   getDirectMessages: () => RoomSummary[]
@@ -27,6 +30,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   activeSpaceId: null,
   members: new Map(),
   presenceMap: {},
+  statusMessageMap: {},
 
   setRooms: (rooms) => set({ rooms }),
 
@@ -50,6 +54,18 @@ export const useRoomStore = create<RoomState>((set, get) => ({
 
   updatePresence: (userId, presence) => {
     set({ presenceMap: { ...get().presenceMap, [userId]: presence } })
+  },
+
+  setStatusMessage: (userId, message) => {
+    set((state) => {
+      const next = { ...state.statusMessageMap }
+      if (message === null || message === '') {
+        delete next[userId]
+      } else {
+        next[userId] = message
+      }
+      return { statusMessageMap: next }
+    })
   },
 
   getSpaces: () => {
@@ -86,5 +102,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       activeSpaceId: null,
       members: new Map(),
       presenceMap: {},
+      statusMessageMap: {},
     }),
 }))
