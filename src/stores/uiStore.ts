@@ -48,6 +48,8 @@ interface UiState {
   setEditTargetEventId: (id: string | null) => void
   roomSearchFocusBump: number
   bumpRoomSearchFocus: () => void
+  chatInputFocusBump: number
+  bumpChatInputFocus: () => void
 }
 
 const ROOM_PREVIEW_STORAGE_KEY = 'waifutxt_show_room_message_preview'
@@ -180,4 +182,6 @@ export const useUiStore = create<UiState>((set) => ({
   setEditTargetEventId: (id) => set({ editTargetEventId: id }),
   roomSearchFocusBump: 0,
   bumpRoomSearchFocus: () => set((s) => ({ roomSearchFocusBump: s.roomSearchFocusBump + 1 })),
+  chatInputFocusBump: 0,
+  bumpChatInputFocus: () => set((s) => ({ chatInputFocusBump: s.chatInputFocusBump + 1 })),
 }))

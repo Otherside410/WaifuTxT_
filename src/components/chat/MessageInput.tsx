@@ -95,6 +95,7 @@ export function MessageInput() {
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const pendingReply = useUiStore((s) => s.pendingReply)
   const setPendingReply = useUiStore((s) => s.setPendingReply)
+  const chatInputFocusBump = useUiStore((s) => s.chatInputFocusBump)
   const roomMembers = useMemo<RoomMember[]>(
     () => (activeRoomId ? membersMap.get(activeRoomId) || [] : []),
     [activeRoomId, membersMap],
@@ -113,6 +114,11 @@ export function MessageInput() {
       nextCursorRef.current = null
     }
   })
+
+  // Focus textarea when the chat area is clicked
+  useEffect(() => {
+    if (chatInputFocusBump > 0) textareaRef.current?.focus()
+  }, [chatInputFocusBump])
 
   // Inject mention from UserProfileCard / MemberPanel
   useEffect(() => {
