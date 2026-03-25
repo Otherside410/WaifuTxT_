@@ -1,4 +1,6 @@
 import { useRef, useState } from 'react'
+import { getStoredOwnStatusMessage } from '../../lib/matrix'
+import { useAuthStore } from '../../stores/authStore'
 import { useRoomStore } from '../../stores/roomStore'
 import { Avatar } from '../common/Avatar'
 import { UserProfileCard } from '../common/UserProfileCard'
@@ -12,6 +14,7 @@ function presenceOrder(p: PresenceValue | undefined): number {
 }
 
 export function MemberPanel() {
+  const myUserId = useAuthStore((s) => s.session?.userId ?? null)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const members = useRoomStore((s) => (activeRoomId ? s.members.get(activeRoomId) : undefined))
   const presenceMap = useRoomStore((s) => s.presenceMap)
@@ -53,7 +56,9 @@ export function MemberPanel() {
         {sorted.map((member) => {
           const status = getStatus(member)
           const isOffline = status === 'offline'
-          const statusPhrase = statusMessageMap[member.userId]?.trim() ?? ''
+          const statusPhrase =
+            statusMessageMap[member.userId]?.trim() ||
+            (member.userId === myUserId ? getStoredOwnStatusMessage().trim() : '')
           return (
             <div
               key={member.userId}
@@ -105,7 +110,11 @@ export function MemberPanel() {
           avatarUrl={openCard.avatarUrl}
           presence={getStatus(openCard)}
           powerLevel={openCard.powerLevel}
-          statusMessage={statusMessageMap[openCard.userId]}
+          statusMessage={
+            openCard.userId === myUserId
+              ? statusMessageMap[openCard.userId]?.trim() || getStoredOwnStatusMessage().trim() || null
+              : statusMessageMap[openCard.userId]
+          }
         />
       )}
     </div>

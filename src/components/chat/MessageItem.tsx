@@ -27,6 +27,7 @@ import {
   getMessageReadersAtEvent,
   getMessageReactions,
   getMediaUrlWithAccessToken,
+  getStoredOwnStatusMessage,
   sendEditMessage,
   getUrlPreview,
   loadMediaWithAuth,
@@ -1447,7 +1448,11 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
         avatarUrl={senderMember?.avatarUrl || message.senderAvatar}
         presence={profileCardPresence ?? senderMember?.presence ?? 'offline'}
         powerLevel={senderMember?.powerLevel || 0}
-        statusMessage={profileCardStatusMessage}
+        statusMessage={
+          isOwnMessage
+            ? profileCardStatusMessage?.trim() || getStoredOwnStatusMessage().trim() || null
+            : profileCardStatusMessage
+        }
       />
     </div>
   )

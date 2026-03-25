@@ -7,7 +7,7 @@ import { ChatArea } from '../chat/ChatArea'
 import { VerificationModal } from '../verification/VerificationModal'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
-import { loadRoomMembers } from '../../lib/matrix'
+import { loadRoomMembers, reapplyStoredOwnStatusToStore } from '../../lib/matrix'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 
 export function AppShell() {
@@ -21,6 +21,14 @@ export function AppShell() {
       loadRoomMembers(activeRoomId)
     }
   }, [activeRoomId])
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') reapplyStoredOwnStatusToStore()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
 
   return (
     <div className="h-screen w-screen flex overflow-hidden">

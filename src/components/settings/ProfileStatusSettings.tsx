@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { getStoredOwnStatusMessage, MAX_PRESENCE_STATUS_MSG_LEN, setOwnStatusMessage } from '../../lib/matrix'
 
+function matrixErrorMessage(err: unknown): string | null {
+  if (!err || typeof err !== 'object') return null
+  const o = err as { errcode?: unknown; message?: unknown }
+  if (typeof o.message !== 'string') return null
+  if (typeof o.errcode === 'string' && o.errcode) return `${o.message} (${o.errcode})`
+  return o.message
+}
+
 type ProfileStatusSettingsProps = {
   disabled?: boolean
 }
@@ -19,7 +27,8 @@ export function ProfileStatusSettings({ disabled }: ProfileStatusSettingsProps) 
       setSavedFlash(true)
       window.setTimeout(() => setSavedFlash(false), 2000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Échec de l’enregistrement.')
+      const mx = matrixErrorMessage(err)
+      setError(mx ?? (err instanceof Error ? err.message : 'Échec de l’enregistrement.'))
     } finally {
       setSaving(false)
     }
@@ -29,8 +38,10 @@ export function ProfileStatusSettings({ disabled }: ProfileStatusSettingsProps) 
     <div className="rounded-lg border border-border/80 bg-bg-secondary/40 p-3 space-y-2">
       <p className="text-sm font-medium text-text-primary">Phrase de statut</p>
       <p className="text-xs text-text-muted leading-relaxed">
-        Visible en bas à gauche sur ton profil et sur la carte profil des autres (présence Matrix). Certains homeservers
-        limitent ou désactivent la diffusion de la présence.
+        Enregistrement = requête Matrix <span className="text-text-secondary font-mono">PUT …/presence/…/status</span> avec{' '}
+        <span className="text-text-secondary font-mono">status_msg</span>. Si ça échoue, un code d’erreur s’affiche en rouge.
+        Trace console : <span className="font-mono text-text-secondary">waifutxt_debug_presence</span> ={' '}
+        <span className="font-mono text-text-secondary">1</span> puis ré-enregistrer.
       </p>
       <textarea
         value={value}
