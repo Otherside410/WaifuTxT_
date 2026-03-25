@@ -115,10 +115,14 @@ export function MessageInput() {
     }
   })
 
-  // Focus textarea when the chat area is clicked
+  // Focus textarea when the chat area is clicked or when switching rooms
   useEffect(() => {
     if (chatInputFocusBump > 0) textareaRef.current?.focus()
   }, [chatInputFocusBump])
+
+  useEffect(() => {
+    if (activeRoomId) textareaRef.current?.focus()
+  }, [activeRoomId])
 
   // Inject mention from UserProfileCard / MemberPanel
   useEffect(() => {
