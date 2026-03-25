@@ -79,9 +79,9 @@ export function useKeyboardShortcuts() {
         }
       }
 
-      // ArrowUp (no modifiers, no active text input OR empty message input) → edit last own message
+      // ArrowUp (no modifiers) → edit last own message
       if (e.key === 'ArrowUp' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey &&
-          (!isTyping || isEmptyMessageInput) && activeRoomId) {
+          isEmptyMessageInput && activeRoomId) {
         const myUserId = useAuthStore.getState().session?.userId
         if (myUserId) {
           const messages = useMessageStore.getState().getMessages(activeRoomId)
