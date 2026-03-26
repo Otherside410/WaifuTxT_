@@ -49,7 +49,7 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 ## Installation
 
 ```bash
-git clone https://github.com/otherside/WaifuTxT_.git
+git clone https://github.com/Otherside410/WaifuTxT_.git
 cd WaifuTxT_
 npm install
 ```
