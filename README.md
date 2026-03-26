@@ -18,12 +18,17 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 - **Medias Matrix** — upload et affichage d'images/videos/fichiers, y compris contenus chiffres
 - **Edition de messages** — support Matrix `m.replace` avec indicateur `(modifie)`
 - **Reponses de messages** — support Matrix `m.in_reply_to` avec preview style Discord
-- **Read receipts** — avatars des lecteurs sur les messages envoyes
+- **Reactions aux messages** — picker emoji Discord-like avec categories, recherche et **reactions rapides personnalisables**
+- **Emoji autocomplete** — tapez `:` pour lancer les suggestions, conversion automatique des shortcodes `:joy:` → 😂
 - **Markdown** — rendu avec `react-markdown`, support GFM et coloration syntaxique
-- **Mentions** — mise en avant des mentions et aide a la saisie
+- **Mentions** — mise en avant des mentions et aide a la saisie (@user, #room tags)
 - **Indicateurs de frappe** — affichage en temps reel, mode `3 points` ou `waifu`
+- **Read receipts** — avatars des lecteurs sur les messages envoyes
+- **Statut personnalise** — message de statut custom, visible sur le profil et en ligne
 - **Personnalisation waifu (opt-in)** — choix local de waifu (Miku / Airi) dans l'apparence
+- **Personnalisation reactions rapides** — gerez votre liste d'emojis pour reactions rapides via Parametres → Personnalisation
 - **Notifications** — via l'API Notification du navigateur
+- **Bouton emoji dans la barre de chat** — insertez des emojis directement a votre position de curseur
 
 ## Stack technique
 
@@ -34,6 +39,7 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 | Style | Tailwind CSS v4 (variables CSS custom) |
 | SDK Matrix | `matrix-js-sdk` v41 |
 | Crypto E2EE | `@matrix-org/matrix-sdk-crypto-wasm` |
+| Emojis | `emojibase-data` + Twemoji CDN |
 | State | Zustand |
 | Routage | React Router |
 | Markdown | `react-markdown` + `remark-gfm` + `rehype-highlight` |
@@ -43,10 +49,20 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 ## Installation
 
 ```bash
-git clone https://github.com/<ton-user>/WaifuTxT_.git
+git clone https://github.com/otherside/WaifuTxT_.git
 cd WaifuTxT_
 npm install
 ```
+
+### Configuration du homeserver
+
+Modifiez le `homeserver` dans `src/lib/matrix.ts` si necessaire :
+
+```typescript
+const HOMESERVER_URL = 'https://matrix.example.com'
+```
+
+Par defaut, pointe sur un serveur de test. Adaptez l'URL a votre instance Matrix.
 
 ## Lancement
 
@@ -68,32 +84,41 @@ npm run preview
 ```
 src/
 ├── assets/
-│   └── waifu/         # PNG waifu (Miku, Airi)
+│   └── waifu/              # PNG waifu (Miku, Airi)
 ├── components/
-│   ├── auth/          # LoginScreen
-│   ├── chat/          # ChatArea, MessageList, MessageItem, MessageInput,
-│   │                  # KeyBackupBanner, TypingIndicator
-│   ├── common/        # Avatar, composants reutilisables
-│   ├── layout/        # AppShell, SpaceSidebar, RoomSidebar, SettingsModal
-│   ├── settings/      # ThemePicker, AccentColorPicker
-│   └── verification/  # UI de verification cross-signing
+│   ├── auth/               # LoginScreen
+│   ├── chat/               # ChatArea, MessageList, MessageItem, MessageInput,
+│   │                       # KeyBackupBanner, TypingIndicator
+│   ├── common/             # Avatar, EmojiPicker, composants reutilisables
+│   ├── layout/             # AppShell, SpaceSidebar, RoomSidebar, SettingsModal
+│   └── settings/           # ThemePicker, AccentColorPicker, ProfileStatusSettings,
+│   │                       # CustomizationSettings (reactions rapides)
+│   └── verification/       # UI de verification cross-signing
 ├── lib/
-│   ├── matrix.ts      # Interface avec matrix-js-sdk (init, events, crypto, media)
-│   ├── waifu.ts       # Catalogue waifu et helpers
-│   └── verification.ts# Logique de verification E2EE
+│   ├── matrix.ts           # Interface avec matrix-js-sdk (init, events, crypto, media)
+│   ├── waifu.ts            # Catalogue waifu et helpers
+│   └── verification.ts     # Logique de verification E2EE
 ├── stores/
-│   ├── authStore.ts   # Session & authentification (Zustand)
-│   ├── roomStore.ts   # Salons & espaces
-│   ├── messageStore.ts# Messages, receipts, indicateurs de frappe
-│   ├── uiStore.ts     # Etat UI (settings, waifu, reply preview, etc.)
-│   └── verificationStore.ts # Etat de verification E2EE
+│   ├── authStore.ts        # Session & authentification (Zustand)
+│   ├── roomStore.ts        # Salons & espaces
+│   ├── messageStore.ts     # Messages, receipts, indicateurs de frappe
+│   ├── uiStore.ts          # Etat UI (settings, waifu, reply preview, etc.)
+│   └── verificationStore.ts# Etat de verification E2EE
 ├── types/
-│   └── matrix.ts      # Types TypeScript (Session, Message, Room, etc.)
+│   └── matrix.ts           # Types TypeScript (Session, Message, Room, etc.)
 ├── styles/
-│   └── theme.css      # Variables de theme cyberpunk
+│   └── theme.css           # Variables de theme cyberpunk + animations
 ├── App.tsx
 └── main.tsx
 ```
+
+## Optimisations performance
+
+- **React.memo sur les boutons emoji** — court-circuit des re-renders inutiles lors du survol
+- **Rendu progressif des categories emoji** — premiere categorie instantanee, reste via `requestIdleCallback` pour ne pas bloquer le thread principal
+- **Picker maintenu en vie** — le picker emoji dans la barre de chat reste monte apres la premiere ouverture, transitions CSS seulement
+- **Animation d'entree fluide** — keyframe CSS avec scale + translateY (130ms)
+- **`content-visibility: auto`** — le navigateur saute le rendu des sections hors-ecran du picker
 
 ## Known Issues
 
