@@ -1277,20 +1277,27 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
           </div>
         )}
 
-        {message.replyTo && (
-          <div className="relative mb-1 mt-0.5 w-full rounded-md border border-accent-pink/35 border-l-[3px] border-l-accent-pink bg-accent-pink/12 px-2.5 py-1.5">
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute left-2.5 top-1.5 h-3.5 w-4 rounded-bl-md border-b-2 border-l-2 border-accent-pink/85"
-            />
-            <p className="flex items-center gap-1.5 pl-5 text-xs text-text-secondary">
-              Réponse à <span className="font-semibold text-accent-pink">{repliedMessage?.senderName || 'message'}</span>
-            </p>
-            <p className="mt-0.5 text-sm text-text-primary truncate leading-snug">
-              {compactPreview(repliedMessage?.content || 'Message de référence')}
-            </p>
-          </div>
-        )}
+        {message.replyTo && (() => {
+          const replyContent = repliedMessage?.content || ''
+          const isMentioned = !!session?.userId && (
+            replyContent.includes(`<@${session.userId}>`) ||
+            replyContent.includes(session.userId)
+          )
+          return (
+            <div className={`relative mb-1 mt-0.5 w-full rounded-md border border-accent-pink/35 border-l-[3px] border-l-accent-pink px-2.5 py-1.5${isMentioned ? ' bg-accent-pink/12' : ''}`}>
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute left-2.5 top-1.5 h-3.5 w-4 rounded-bl-md border-b-2 border-l-2 border-accent-pink/85"
+              />
+              <p className="flex items-center gap-1.5 pl-5 text-xs text-text-secondary">
+                Réponse à <span className="font-semibold text-accent-pink">{repliedMessage?.senderName || 'message'}</span>
+              </p>
+              <p className="mt-0.5 text-sm text-text-primary truncate leading-snug">
+                <MentionText text={compactPreview(replyContent || 'Message de référence')} roomTagToId={roomTagToId} onOpenRoomTag={handleOpenRoomTag} />
+              </p>
+            </div>
+          )
+        })()}
 
         {message.type === 'm.image' && (message.imageUrl || message.encryptedFile) && (
           message.encryptedFile ? (
