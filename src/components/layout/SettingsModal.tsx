@@ -11,6 +11,7 @@ import { ThemePicker } from '../settings/ThemePicker'
 import { ProfileAvatarUpload } from '../settings/ProfileAvatarUpload'
 import { ProfileStatusSettings } from '../settings/ProfileStatusSettings'
 import { CustomizationSettings } from '../settings/CustomizationSettings'
+import { AudioSettings } from '../settings/AudioSettings'
 import { WAIFU_OPTIONS, getWaifuById } from '../../lib/waifu'
 
 const SETTINGS_SECTIONS = [
@@ -18,6 +19,7 @@ const SETTINGS_SECTIONS = [
   { id: 'security', label: 'Sécurité' },
   { id: 'appearance', label: 'Apparence' },
   { id: 'customization', label: 'Personnalisation' },
+  { id: 'audio', label: 'Audio' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'shortcuts', label: 'Raccourcis' },
   { id: 'account', label: 'Compte' },
@@ -670,6 +672,10 @@ export function SettingsModal() {
 
           {activeSection === 'customization' && (
             <CustomizationSettings />
+          )}
+
+          {activeSection === 'audio' && (
+            <AudioSettings />
           )}
 
           {activeSection === 'notifications' && (

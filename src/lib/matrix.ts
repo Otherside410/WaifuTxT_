@@ -1287,6 +1287,17 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
           voiceDebugLog('join: unable to unmute mic after enter (ignored)', { roomId })
         }
       }
+      // Try to apply preferred input device via applyConstraints on the local track
+      const preferredInputId = useVoiceStore.getState().inputDeviceId
+      if (preferredInputId) {
+        try {
+          const lf = targetCall.localCallFeed
+          const audioTrack = lf?.stream?.getAudioTracks?.()?.[0]
+          if (audioTrack) await audioTrack.applyConstraints({ deviceId: { exact: preferredInputId } })
+        } catch {
+          voiceDebugLog('join: applyConstraints for input device failed (ignored)', { preferredInputId })
+        }
+      }
       await setupVoiceStreams(targetCall, matrixSdk)
       useVoiceStore.getState().setJoinedRoom(roomId)
       playJoinSelf()

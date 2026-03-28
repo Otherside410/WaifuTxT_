@@ -1,4 +1,5 @@
 import { useVoiceStore } from '../stores/voiceStore'
+import { useAuthStore } from '../stores/authStore'
 import { playJoinOther, playLeaveOther } from './voiceNotifications'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -6,6 +7,68 @@ let activeGroupCall: any = null
 const remoteAudioElements = new Map<string, HTMLAudioElement>()
 let localCameraStream: MediaStream | null = null
 let localScreenStream: MediaStream | null = null
+
+// ── Local VAD (Web Audio API) ────────────────────────────────────────────────
+let vadCtx: AudioContext | null = null
+let vadInterval: ReturnType<typeof setInterval> | null = null
+const VAD_INTERVAL_MS = 80
+const VAD_THRESHOLD_DB = -48 // dB RMS — raise if too sensitive, lower if not sensitive enough
+
+function startLocalVAD(stream: MediaStream): void {
+  stopLocalVAD()
+  const myUserId = useAuthStore.getState().session?.userId
+  if (!myUserId) return
+  try {
+    vadCtx = new AudioContext()
+    const src = vadCtx.createMediaStreamSource(stream)
+    const analyser = vadCtx.createAnalyser()
+    analyser.fftSize = 1024
+    analyser.smoothingTimeConstant = 0.4
+    src.connect(analyser)
+    const data = new Float32Array(analyser.frequencyBinCount)
+    let speaking = false
+    vadInterval = setInterval(() => {
+      analyser.getFloatFrequencyData(data)
+      // Compute RMS in linear scale then convert to dB
+      let sum = 0
+      for (let i = 0; i < data.length; i++) {
+        const linear = Math.pow(10, data[i] / 20)
+        sum += linear * linear
+      }
+      const rmsDb = 10 * Math.log10((sum / data.length) || 1e-12)
+      const nowSpeaking = rmsDb > VAD_THRESHOLD_DB
+      if (nowSpeaking !== speaking) {
+        speaking = nowSpeaking
+        useVoiceStore.getState().setSpeaking(myUserId, speaking)
+      }
+    }, VAD_INTERVAL_MS)
+    voiceLog('startLocalVAD', { threshold: VAD_THRESHOLD_DB })
+  } catch (err) {
+    voiceLog('startLocalVAD failed', err)
+  }
+}
+
+function stopLocalVAD(): void {
+  if (vadInterval) { clearInterval(vadInterval); vadInterval = null }
+  if (vadCtx) { vadCtx.close().catch(() => {}); vadCtx = null }
+  const myUserId = useAuthStore.getState().session?.userId
+  if (myUserId) useVoiceStore.getState().setSpeaking(myUserId, false)
+}
+
+// ── Output device helper ─────────────────────────────────────────────────────
+function applyOutputDevice(el: HTMLAudioElement): void {
+  const deviceId = useVoiceStore.getState().outputDeviceId
+  if (!deviceId) return
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const elAny = el as any
+  if (typeof elAny.setSinkId === 'function') {
+    elAny.setSinkId(deviceId).catch(() => voiceLog('setSinkId failed', { deviceId }))
+  }
+}
+
+export function applyOutputDeviceToAll(): void {
+  for (const el of remoteAudioElements.values()) applyOutputDevice(el)
+}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const feedListeners = new Map<string, { feed: any; cleanup: () => void }>()
 
@@ -37,6 +100,7 @@ function playRemoteStream(feed: { userId: string; stream: MediaStream; isLocal: 
 
   const store = useVoiceStore.getState()
   if (store.isDeafened) el.volume = 0
+  applyOutputDevice(el)
 
   el.play().catch(() => voiceLog('autoplay blocked for feed', { userId: feed.userId }))
   remoteAudioElements.set(key, el)
@@ -106,9 +170,12 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
     attachFeedListeners(feed, sdk)
   }
 
-  // Store local stream reference
+  // Store local stream reference and start VAD
   const localFeed = groupCall.localCallFeed
-  if (localFeed?.stream) store.setLocalStream(localFeed.stream)
+  if (localFeed?.stream) {
+    store.setLocalStream(localFeed.stream)
+    startLocalVAD(localFeed.stream)
+  }
 
   // Listen for new/removed feeds
   const onFeedsChanged = (newFeeds: unknown[]) => {
@@ -127,9 +194,12 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
         detachFeedListeners(key)
       }
     }
-    // Update local stream
+    // Update local stream and restart VAD if stream changed
     const lf = groupCall.localCallFeed
-    useVoiceStore.getState().setLocalStream(lf?.stream ?? null)
+    const prevStream = useVoiceStore.getState().localStream
+    const nextStream = lf?.stream ?? null
+    useVoiceStore.getState().setLocalStream(nextStream)
+    if (nextStream && nextStream !== prevStream) startLocalVAD(nextStream)
   }
 
   groupCall.on(sdk.GroupCallEvent.UserMediaFeedsChanged, onFeedsChanged)
@@ -158,6 +228,9 @@ export function cleanupVoiceStreams(): void {
   // Remove all remote audio elements
   for (const [key] of remoteAudioElements) removeRemoteStream(key)
   remoteAudioElements.clear()
+
+  // Stop VAD
+  stopLocalVAD()
 
   // Stop local audio stream tracks
   const store = useVoiceStore.getState()
