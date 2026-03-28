@@ -4,6 +4,7 @@ import { useRoomStore } from '../stores/roomStore'
 import { useAuthStore } from '../stores/authStore'
 import { useVoiceStore } from '../stores/voiceStore'
 import { setupVoiceStreams, cleanupVoiceStreams } from './voice'
+import { playJoinSelf, playLeaveSelf } from './voiceNotifications'
 import { setupVerificationListeners } from './verification'
 
 type MatrixClient = import('matrix-js-sdk').MatrixClient
@@ -1286,8 +1287,20 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
           voiceDebugLog('join: unable to unmute mic after enter (ignored)', { roomId })
         }
       }
+      // Try to apply preferred input device via applyConstraints on the local track
+      const preferredInputId = useVoiceStore.getState().inputDeviceId
+      if (preferredInputId) {
+        try {
+          const lf = targetCall.localCallFeed
+          const audioTrack = lf?.stream?.getAudioTracks?.()?.[0]
+          if (audioTrack) await audioTrack.applyConstraints({ deviceId: { exact: preferredInputId } })
+        } catch {
+          voiceDebugLog('join: applyConstraints for input device failed (ignored)', { preferredInputId })
+        }
+      }
       await setupVoiceStreams(targetCall, matrixSdk)
       useVoiceStore.getState().setJoinedRoom(roomId)
+      playJoinSelf()
       voiceDebugLog('join: GroupCall success', { roomId, alreadyInCall })
       syncRooms()
       setTimeout(() => {
@@ -1346,6 +1359,7 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
   }
 
   useVoiceStore.getState().setJoinedRoom(roomId)
+  playJoinSelf()
   syncRooms()
   setTimeout(() => {
     try { syncRooms() } catch { /* ignore */ }
@@ -1359,6 +1373,7 @@ export async function leaveVoiceRoom(roomId: string): Promise<void> {
 
   cleanupVoiceStreams()
   useVoiceStore.getState().reset()
+  playLeaveSelf()
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const clientAny = client as any

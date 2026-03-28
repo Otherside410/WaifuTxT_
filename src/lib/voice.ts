@@ -1,8 +1,74 @@
 import { useVoiceStore } from '../stores/voiceStore'
+import { useAuthStore } from '../stores/authStore'
+import { playJoinOther, playLeaveOther } from './voiceNotifications'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let activeGroupCall: any = null
 const remoteAudioElements = new Map<string, HTMLAudioElement>()
+let localCameraStream: MediaStream | null = null
+let localScreenStream: MediaStream | null = null
+
+// ── Local VAD (Web Audio API) ────────────────────────────────────────────────
+let vadCtx: AudioContext | null = null
+let vadInterval: ReturnType<typeof setInterval> | null = null
+const VAD_INTERVAL_MS = 80
+const VAD_THRESHOLD_DB = -48 // dB RMS — raise if too sensitive, lower if not sensitive enough
+
+function startLocalVAD(stream: MediaStream): void {
+  stopLocalVAD()
+  const myUserId = useAuthStore.getState().session?.userId
+  if (!myUserId) return
+  try {
+    vadCtx = new AudioContext()
+    const src = vadCtx.createMediaStreamSource(stream)
+    const analyser = vadCtx.createAnalyser()
+    analyser.fftSize = 1024
+    analyser.smoothingTimeConstant = 0.4
+    src.connect(analyser)
+    const data = new Float32Array(analyser.frequencyBinCount)
+    let speaking = false
+    vadInterval = setInterval(() => {
+      analyser.getFloatFrequencyData(data)
+      // Compute RMS in linear scale then convert to dB
+      let sum = 0
+      for (let i = 0; i < data.length; i++) {
+        const linear = Math.pow(10, data[i] / 20)
+        sum += linear * linear
+      }
+      const rmsDb = 10 * Math.log10((sum / data.length) || 1e-12)
+      const nowSpeaking = rmsDb > VAD_THRESHOLD_DB
+      if (nowSpeaking !== speaking) {
+        speaking = nowSpeaking
+        useVoiceStore.getState().setSpeaking(myUserId, speaking)
+      }
+    }, VAD_INTERVAL_MS)
+    voiceLog('startLocalVAD', { threshold: VAD_THRESHOLD_DB })
+  } catch (err) {
+    voiceLog('startLocalVAD failed', err)
+  }
+}
+
+function stopLocalVAD(): void {
+  if (vadInterval) { clearInterval(vadInterval); vadInterval = null }
+  if (vadCtx) { vadCtx.close().catch(() => {}); vadCtx = null }
+  const myUserId = useAuthStore.getState().session?.userId
+  if (myUserId) useVoiceStore.getState().setSpeaking(myUserId, false)
+}
+
+// ── Output device helper ─────────────────────────────────────────────────────
+function applyOutputDevice(el: HTMLAudioElement): void {
+  const deviceId = useVoiceStore.getState().outputDeviceId
+  if (!deviceId) return
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const elAny = el as any
+  if (typeof elAny.setSinkId === 'function') {
+    elAny.setSinkId(deviceId).catch(() => voiceLog('setSinkId failed', { deviceId }))
+  }
+}
+
+export function applyOutputDeviceToAll(): void {
+  for (const el of remoteAudioElements.values()) applyOutputDevice(el)
+}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const feedListeners = new Map<string, { feed: any; cleanup: () => void }>()
 
@@ -34,6 +100,7 @@ function playRemoteStream(feed: { userId: string; stream: MediaStream; isLocal: 
 
   const store = useVoiceStore.getState()
   if (store.isDeafened) el.volume = 0
+  applyOutputDevice(el)
 
   el.play().catch(() => voiceLog('autoplay blocked for feed', { userId: feed.userId }))
   remoteAudioElements.set(key, el)
@@ -49,10 +116,12 @@ function removeRemoteStream(key: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function attachFeedListeners(feed: any, sdk: any) {
+function attachFeedListeners(feed: any, sdk: any, isNew = false) {
   if (feed.isLocal()) return
   const key = feedKey(feed)
   if (feedListeners.has(key)) return
+
+  if (isNew) playJoinOther()
 
   const onSpeaking = (speaking: boolean) => {
     useVoiceStore.getState().setSpeaking(feed.userId, speaking)
@@ -61,7 +130,10 @@ function attachFeedListeners(feed: any, sdk: any) {
     const el = remoteAudioElements.get(key)
     if (el) el.srcObject = stream
   }
-  const onDisposed = () => detachFeedListeners(key)
+  const onDisposed = () => {
+    playLeaveOther()
+    detachFeedListeners(key)
+  }
 
   feed.on(sdk.CallFeedEvent.Speaking, onSpeaking)
   feed.on(sdk.CallFeedEvent.NewStream, onNewStream)
@@ -98,9 +170,12 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
     attachFeedListeners(feed, sdk)
   }
 
-  // Store local stream reference
+  // Store local stream reference and start VAD
   const localFeed = groupCall.localCallFeed
-  if (localFeed?.stream) store.setLocalStream(localFeed.stream)
+  if (localFeed?.stream) {
+    store.setLocalStream(localFeed.stream)
+    startLocalVAD(localFeed.stream)
+  }
 
   // Listen for new/removed feeds
   const onFeedsChanged = (newFeeds: unknown[]) => {
@@ -109,7 +184,8 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
     for (const feed of newFeeds as { userId: string; stream: MediaStream; isLocal: () => boolean }[]) {
       currentKeys.add(feedKey(feed))
       if (!feed.isLocal() && feed.stream) playRemoteStream(feed)
-      attachFeedListeners(feed, sdk)
+      const isNew = !feedListeners.has(feedKey(feed))
+      attachFeedListeners(feed, sdk, isNew)
     }
     // Remove stale audio elements and feed listeners
     for (const [key] of remoteAudioElements) {
@@ -123,7 +199,10 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
     }
     // Update local stream
     const lf = groupCall.localCallFeed
-    useVoiceStore.getState().setLocalStream(lf?.stream ?? null)
+    const prevStream = useVoiceStore.getState().localStream
+    const nextStream = lf?.stream ?? null
+    useVoiceStore.getState().setLocalStream(nextStream)
+    if (nextStream && nextStream !== prevStream) startLocalVAD(nextStream)
   }
 
   groupCall.on(sdk.GroupCallEvent.UserMediaFeedsChanged, onFeedsChanged)
@@ -153,11 +232,17 @@ export function cleanupVoiceStreams(): void {
   for (const [key] of remoteAudioElements) removeRemoteStream(key)
   remoteAudioElements.clear()
 
-  // Stop local stream tracks
+  // Stop VAD
+  stopLocalVAD()
+
+  // Stop local audio stream tracks
   const store = useVoiceStore.getState()
   if (store.localStream) {
     for (const track of store.localStream.getTracks()) track.stop()
   }
+
+  // Stop local video/screen streams
+  stopLocalVideo()
 
   store.clearSpeaking()
   store.setLocalStream(null)
@@ -185,4 +270,79 @@ export function setVoiceDeafened(deafened: boolean): void {
 
 export function getActiveGroupCall(): unknown {
   return activeGroupCall
+}
+
+export async function toggleCamera(): Promise<void> {
+  const store = useVoiceStore.getState()
+  if (store.isCameraOn) {
+    if (localCameraStream) {
+      for (const track of localCameraStream.getTracks()) track.stop()
+      localCameraStream = null
+    }
+    store.setCameraOn(false)
+    store.setLocalVideoStream(localScreenStream)
+  } else {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      if (localScreenStream) {
+        for (const track of localScreenStream.getTracks()) track.stop()
+        localScreenStream = null
+        store.setScreenSharing(false)
+      }
+      localCameraStream = stream
+      store.setCameraOn(true)
+      store.setLocalVideoStream(stream)
+    } catch (err) {
+      voiceLog('toggleCamera: getUserMedia failed', err)
+      throw err
+    }
+  }
+}
+
+export async function toggleScreenShare(): Promise<void> {
+  const store = useVoiceStore.getState()
+  if (store.isScreenSharing) {
+    if (localScreenStream) {
+      for (const track of localScreenStream.getTracks()) track.stop()
+      localScreenStream = null
+    }
+    store.setScreenSharing(false)
+    store.setLocalVideoStream(localCameraStream)
+  } else {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+      if (localCameraStream) {
+        for (const track of localCameraStream.getTracks()) track.stop()
+        localCameraStream = null
+        store.setCameraOn(false)
+      }
+      localScreenStream = stream
+      store.setScreenSharing(true)
+      store.setLocalVideoStream(stream)
+      // Handle user stopping share via browser UI
+      stream.getTracks()[0].addEventListener('ended', () => {
+        localScreenStream = null
+        useVoiceStore.getState().setScreenSharing(false)
+        useVoiceStore.getState().setLocalVideoStream(null)
+      })
+    } catch (err) {
+      voiceLog('toggleScreenShare: getDisplayMedia failed', err)
+      throw err
+    }
+  }
+}
+
+export function stopLocalVideo(): void {
+  if (localCameraStream) {
+    for (const track of localCameraStream.getTracks()) track.stop()
+    localCameraStream = null
+  }
+  if (localScreenStream) {
+    for (const track of localScreenStream.getTracks()) track.stop()
+    localScreenStream = null
+  }
+  const store = useVoiceStore.getState()
+  store.setCameraOn(false)
+  store.setScreenSharing(false)
+  store.setLocalVideoStream(null)
 }
