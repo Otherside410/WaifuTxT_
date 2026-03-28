@@ -703,7 +703,7 @@ export function RoomSidebar() {
           title="Changer de statut"
           aria-label="Changer de statut"
         >
-          <div className={`rounded-full shrink-0 transition-[box-shadow] duration-300 ${voiceStoreJoinedRoom ? 'ring-2 ring-accent-pink shadow-[0_0_8px_3px_rgba(255,45,120,0.45)]' : ''}`}>
+          <div className={`rounded-full shrink-0 transition-[box-shadow] duration-200 ${myUserId && speakingUsers.has(myUserId) ? 'ring-2 ring-accent-pink shadow-[0_0_8px_3px_rgba(255,45,120,0.45)]' : ''}`}>
             <Avatar
               src={displayedOwnAvatarUrl}
               name={session?.userId || '?'}

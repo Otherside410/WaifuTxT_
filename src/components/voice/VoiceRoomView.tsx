@@ -65,7 +65,7 @@ function ParticipantTile({
           showVideo ? 'w-48 h-36' : 'w-24 h-24',
           isSpeaking
             ? 'ring-4 ring-accent-pink shadow-[0_0_20px_4px_rgba(255,45,120,0.45)]'
-            : 'ring-2 ring-border',
+            : '',
         ].join(' ')}
       >
         {showVideo ? (
