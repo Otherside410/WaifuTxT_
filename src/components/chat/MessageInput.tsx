@@ -13,7 +13,7 @@ import emojibaseData from 'emojibase-data/en/data.json'
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
 import { useAuthStore } from '../../stores/authStore'
-import { sendMessage, sendFile, sendImage, sendTyping } from '../../lib/matrix'
+import { sendMessage, sendFile, sendImage, sendAudio, sendTyping } from '../../lib/matrix'
 import { Avatar } from '../common/Avatar'
 import type { RoomMember, RoomSummary } from '../../types/matrix'
 import { EmojiPicker, addRecentEmoji } from '../common/EmojiPicker'
@@ -168,6 +168,9 @@ export function MessageInput() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [emojiPickerMounted, setEmojiPickerMounted] = useState(false)
 
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingDuration, setRecordingDuration] = useState(0)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const backdropRef = useRef<HTMLDivElement>(null)
@@ -176,6 +179,10 @@ export function MessageInput() {
   const nextCursorRef = useRef<number | null>(null)
   const emojiPickerRef = useRef<HTMLDivElement>(null)
   const emojiBtnRef = useRef<HTMLButtonElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const recordingStartRef = useRef<number>(0)
 
   // Restore cursor position after a mention insertion/deletion re-render
   useEffect(() => {
@@ -531,6 +538,62 @@ export function MessageInput() {
     e.target.value = ''
   }
 
+  const startRecording = useCallback(async () => {
+    if (!activeRoomId) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : 'audio/webm'
+      const recorder = new MediaRecorder(stream, { mimeType })
+      audioChunksRef.current = []
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+      recorder.start(100)
+      mediaRecorderRef.current = recorder
+      recordingStartRef.current = Date.now()
+      setIsRecording(true)
+      setRecordingDuration(0)
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(Math.floor((Date.now() - recordingStartRef.current) / 1000))
+      }, 500)
+    } catch {
+      // permission denied or not available
+    }
+  }, [activeRoomId])
+
+  const stopRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder || !activeRoomId) return
+    recorder.onstop = async () => {
+      const duration = (Date.now() - recordingStartRef.current) / 1000
+      const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType })
+      recorder.stream.getTracks().forEach((t) => t.stop())
+      audioChunksRef.current = []
+      await sendAudio(activeRoomId, blob, duration)
+    }
+    recorder.stop()
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
+    mediaRecorderRef.current = null
+    setIsRecording(false)
+    setRecordingDuration(0)
+  }, [activeRoomId])
+
+  const cancelRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder) return
+    recorder.onstop = () => {
+      recorder.stream.getTracks().forEach((t) => t.stop())
+      audioChunksRef.current = []
+    }
+    recorder.stop()
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
+    mediaRecorderRef.current = null
+    setIsRecording(false)
+    setRecordingDuration(0)
+  }, [])
+
   const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     if (!activeRoomId) return
     const items = e.clipboardData?.items
@@ -716,99 +779,143 @@ export function MessageInput() {
       ) : null}
 
       <div className="flex items-center gap-2 min-h-[44px] bg-bg-tertiary rounded-lg border border-border focus-within:border-accent-pink transition-colors">
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="p-3 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-          </svg>
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          className="hidden"
-          onChange={handleFileUpload}
-        />
-        <div className="relative flex-1 min-w-0 pt-[15px] pb-[9px]">
-          {/* Highlight backdrop — renders behind the textarea */}
-          <div
-            ref={backdropRef}
-            aria-hidden="true"
-            className="absolute inset-0 pt-[15px] pb-[9px] px-0 text-sm text-text-primary overflow-hidden pointer-events-none whitespace-pre-wrap break-words"
-            dangerouslySetInnerHTML={{ __html: highlightInputText(text, validLocalparts, validRoomTags) }}
-          />
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            onScroll={syncScroll}
-            onSelect={(e) =>
-              detectToken(text, (e.target as HTMLTextAreaElement).selectionStart)
-            }
-            placeholder={`Envoyer un message dans #${room?.name || '...'}`}
-            rows={1}
-            className="relative z-10 w-full bg-transparent !border-0 resize-none py-0 px-0 text-sm outline-none max-h-40 placeholder:text-text-muted"
-            style={{ minHeight: '24px', color: 'transparent', caretColor: 'var(--color-text-primary)' }}
-          />
-        </div>
-        {/* Emoji picker button */}
-        <div className="relative flex-shrink-0">
-          <button
-            ref={emojiBtnRef}
-            type="button"
-            onClick={() => setShowEmojiPicker((v) => !v)}
-            className={`p-2.5 transition-colors cursor-pointer ${showEmojiPicker ? 'text-accent-pink' : 'text-text-muted hover:text-text-secondary'}`}
-            title="Insérer un émoji"
-            aria-label="Insérer un émoji"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </button>
-          {emojiPickerMounted && (
-            <div
-              ref={emojiPickerRef}
-              className="absolute bottom-full right-0 mb-2 z-40 transition-[opacity,transform] duration-[130ms] ease-out"
-              style={{
-                opacity: showEmojiPicker ? 1 : 0,
-                transform: showEmojiPicker ? 'translateY(0) scale(1)' : 'translateY(6px) scale(0.97)',
-                pointerEvents: showEmojiPicker ? 'auto' : 'none',
-                visibility: showEmojiPicker ? 'visible' : 'hidden',
-              }}
+        {!isRecording && (
+          <>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="p-3 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
             >
-              <EmojiPicker
-                onSelect={(emoji) => {
-                  addRecentEmoji(emoji)
-                  const textarea = textareaRef.current
-                  if (textarea) {
-                    const start = textarea.selectionStart ?? text.length
-                    const end = textarea.selectionEnd ?? text.length
-                    const newText = text.slice(0, start) + emoji + text.slice(end)
-                    setText(newText)
-                    nextCursorRef.current = start + emoji.length
-                    setTimeout(() => textarea.focus(), 0)
-                  } else {
-                    setText((prev) => prev + emoji)
-                  }
-                  setShowEmojiPicker(false)
-                }}
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={handleFileUpload}
+            />
+          </>
+        )}
+        {isRecording ? (
+          <div className="flex flex-1 items-center gap-3 px-3">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+            <span className="text-sm text-text-primary tabular-nums">
+              {`${Math.floor(recordingDuration / 60)}:${String(recordingDuration % 60).padStart(2, '0')}`}
+            </span>
+            <span className="flex-1 text-sm text-text-muted">Enregistrement en cours...</span>
+            <button
+              onClick={cancelRecording}
+              className="p-2 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+              title="Annuler"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <button
+              onClick={stopRecording}
+              className="p-2 text-accent-pink hover:text-accent-pink-hover transition-colors cursor-pointer"
+              title="Envoyer le message vocal"
+            >
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="relative flex-1 min-w-0 pt-[15px] pb-[9px]">
+              {/* Highlight backdrop — renders behind the textarea */}
+              <div
+                ref={backdropRef}
+                aria-hidden="true"
+                className="absolute inset-0 pt-[15px] pb-[9px] px-0 text-sm text-text-primary overflow-hidden pointer-events-none whitespace-pre-wrap break-words"
+                dangerouslySetInnerHTML={{ __html: highlightInputText(text, validLocalparts, validRoomTags) }}
+              />
+              <textarea
+                ref={textareaRef}
+                value={text}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                onScroll={syncScroll}
+                onSelect={(e) =>
+                  detectToken(text, (e.target as HTMLTextAreaElement).selectionStart)
+                }
+                placeholder={`Envoyer un message dans #${room?.name || '...'}`}
+                rows={1}
+                className="relative z-10 w-full bg-transparent !border-0 resize-none py-0 px-0 text-sm outline-none max-h-40 placeholder:text-text-muted"
+                style={{ minHeight: '24px', color: 'transparent', caretColor: 'var(--color-text-primary)' }}
               />
             </div>
-          )}
-        </div>
-
-        <button
-          onClick={handleSend}
-          disabled={isSending || (!text.trim() && pendingImages.length === 0)}
-          className="p-3 text-accent-pink hover:text-accent-pink-hover disabled:text-text-muted transition-colors cursor-pointer disabled:cursor-not-allowed"
-        >
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-          </svg>
-        </button>
+            {/* Emoji picker button */}
+            <div className="relative flex-shrink-0">
+              <button
+                ref={emojiBtnRef}
+                type="button"
+                onClick={() => setShowEmojiPicker((v) => !v)}
+                className={`p-2.5 transition-colors cursor-pointer ${showEmojiPicker ? 'text-accent-pink' : 'text-text-muted hover:text-text-secondary'}`}
+                title="Insérer un émoji"
+                aria-label="Insérer un émoji"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+              {emojiPickerMounted && (
+                <div
+                  ref={emojiPickerRef}
+                  className="absolute bottom-full right-0 mb-2 z-40 transition-[opacity,transform] duration-[130ms] ease-out"
+                  style={{
+                    opacity: showEmojiPicker ? 1 : 0,
+                    transform: showEmojiPicker ? 'translateY(0) scale(1)' : 'translateY(6px) scale(0.97)',
+                    pointerEvents: showEmojiPicker ? 'auto' : 'none',
+                    visibility: showEmojiPicker ? 'visible' : 'hidden',
+                  }}
+                >
+                  <EmojiPicker
+                    onSelect={(emoji) => {
+                      addRecentEmoji(emoji)
+                      const textarea = textareaRef.current
+                      if (textarea) {
+                        const start = textarea.selectionStart ?? text.length
+                        const end = textarea.selectionEnd ?? text.length
+                        const newText = text.slice(0, start) + emoji + text.slice(end)
+                        setText(newText)
+                        nextCursorRef.current = start + emoji.length
+                        setTimeout(() => textarea.focus(), 0)
+                      } else {
+                        setText((prev) => prev + emoji)
+                      }
+                      setShowEmojiPicker(false)
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+            {/* Mic button */}
+            <button
+              onClick={startRecording}
+              className="p-2.5 text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
+              title="Enregistrer un message vocal"
+              aria-label="Enregistrer un message vocal"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+              </svg>
+            </button>
+            <button
+              onClick={handleSend}
+              disabled={isSending || (!text.trim() && pendingImages.length === 0)}
+              className="p-3 text-accent-pink hover:text-accent-pink-hover disabled:text-text-muted transition-colors cursor-pointer disabled:cursor-not-allowed"
+            >
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

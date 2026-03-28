@@ -860,6 +860,81 @@ function EncryptedImage({ message }: { message: MessageEvent }) {
   )
 }
 
+function AudioAttachment({ message }: { message: MessageEvent }) {
+  const { url: decryptedUrl } = useDecryptedUrl(message.encryptedFile)
+  const url = message.fileUrl || decryptedUrl
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [playing, setPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60)
+    const sec = Math.floor(s % 60)
+    return `${m}:${sec.toString().padStart(2, '0')}`
+  }
+
+  const toggle = useCallback(() => {
+    const el = audioRef.current
+    if (!el || !url) return
+    if (playing) { el.pause() } else { el.play() }
+  }, [playing, url])
+
+  const handleSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const el = audioRef.current
+    if (!el) return
+    el.currentTime = Number(e.target.value)
+  }, [])
+
+  return (
+    <div className="mt-1 flex items-center gap-3 p-3 bg-bg-tertiary rounded-lg border border-border max-w-xs">
+      <audio
+        ref={audioRef}
+        src={url || undefined}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setCurrentTime(0) }}
+        onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
+        onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? 0)}
+      />
+      <button
+        onClick={toggle}
+        disabled={!url}
+        className="shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-accent-pink hover:bg-accent-pink-hover disabled:opacity-50 disabled:cursor-wait transition-colors cursor-pointer"
+      >
+        {playing ? (
+          <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+          </svg>
+        ) : (
+          <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
+        )}
+      </button>
+      <div className="flex-1 min-w-0 flex flex-col gap-1">
+        <input
+          type="range"
+          min={0}
+          max={duration || 0}
+          step={0.1}
+          value={currentTime}
+          onChange={handleSeek}
+          disabled={!url}
+          className="w-full h-1 accent-accent-pink cursor-pointer disabled:opacity-50"
+        />
+        <div className="flex justify-between text-xs text-text-muted">
+          <span>{formatTime(currentTime)}</span>
+          <span>{duration ? formatTime(duration) : (message.fileSize != null ? formatFileSize(message.fileSize) : '')}</span>
+        </div>
+      </div>
+      {!url && message.encryptedFile && (
+        <span className="text-xs text-text-muted shrink-0">Déchiffrement...</span>
+      )}
+    </div>
+  )
+}
+
 function FileAttachment({ message }: { message: MessageEvent }) {
   const { url: decryptedUrl } = useDecryptedUrl(message.encryptedFile)
   const url = message.fileUrl || decryptedUrl
@@ -1222,9 +1297,8 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
         )}
 
         {message.type === 'm.video' && (message.fileUrl || message.encryptedFile) && <VideoAttachment message={message} />}
-        {(message.type === 'm.file' || message.type === 'm.audio') && (message.fileUrl || message.encryptedFile) && (
-          <FileAttachment message={message} />
-        )}
+        {message.type === 'm.audio' && (message.fileUrl || message.encryptedFile) && <AudioAttachment message={message} />}
+        {message.type === 'm.file' && (message.fileUrl || message.encryptedFile) && <FileAttachment message={message} />}
 
         {(message.type === 'm.text' || message.type === 'm.notice' || message.type === 'm.emote') && (
           <>

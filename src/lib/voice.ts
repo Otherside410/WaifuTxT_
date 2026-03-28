@@ -187,14 +187,17 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
       const isNew = !feedListeners.has(feedKey(feed))
       attachFeedListeners(feed, sdk, isNew)
     }
-    // Remove stale
+    // Remove stale audio elements and feed listeners
     for (const [key] of remoteAudioElements) {
       if (!currentKeys.has(key)) {
         removeRemoteStream(key)
         detachFeedListeners(key)
       }
     }
-    // Update local stream and restart VAD if stream changed
+    for (const [key] of feedListeners) {
+      if (!currentKeys.has(key)) detachFeedListeners(key)
+    }
+    // Update local stream
     const lf = groupCall.localCallFeed
     const prevStream = useVoiceStore.getState().localStream
     const nextStream = lf?.stream ?? null

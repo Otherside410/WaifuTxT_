@@ -1450,6 +1450,21 @@ export async function sendFile(roomId: string, file: File): Promise<void> {
   } as any)
 }
 
+export async function sendAudio(roomId: string, blob: Blob, duration?: number): Promise<void> {
+  if (!client) return
+  const upload = await client.uploadContent(blob)
+  await client.sendMessage(roomId, {
+    msgtype: 'm.audio',
+    body: 'voice-message.ogg',
+    url: upload.content_uri,
+    info: {
+      mimetype: blob.type || 'audio/ogg',
+      size: blob.size,
+      ...(duration != null ? { duration: Math.round(duration * 1000) } : {}),
+    },
+  } as any)
+}
+
 export async function loadRoomHistory(roomId: string): Promise<boolean> {
   if (!client) return false
   const room = client.getRoom(roomId)
