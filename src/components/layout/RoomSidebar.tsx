@@ -541,7 +541,7 @@ export function RoomSidebar() {
                 <button key={`${room.roomId}:${p.userId}`} onClick={() => setActiveRoom(room.roomId)}
                   className="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left text-text-muted hover:text-text-primary hover:bg-bg-hover/40 transition-colors cursor-pointer"
                   title={p.userId}>
-                  <div className={`shrink-0 rounded-full transition-[box-shadow] duration-200 ${isSpeaking ? 'ring-2 ring-success' : ''}`}>
+                  <div className={`shrink-0 rounded-full transition-[box-shadow,box-shadow] duration-200 ${isSpeaking ? 'ring-2 ring-accent-pink shadow-[0_0_6px_2px_rgba(255,45,120,0.5)]' : ''}`}>
                     <Avatar src={avatarUrl} name={displayName} size={18} />
                   </div>
                   <span className={`text-xs truncate ${isSpeaking ? 'text-text-primary' : ''}`}>{displayName}</span>
@@ -703,13 +703,14 @@ export function RoomSidebar() {
           title="Changer de statut"
           aria-label="Changer de statut"
         >
-          <Avatar
-            className="shrink-0"
-            src={displayedOwnAvatarUrl}
-            name={session?.userId || '?'}
-            size={32}
-            status={ownPresence}
-          />
+          <div className={`rounded-full shrink-0 transition-[box-shadow] duration-300 ${voiceStoreJoinedRoom ? 'ring-2 ring-accent-pink shadow-[0_0_8px_3px_rgba(255,45,120,0.45)]' : ''}`}>
+            <Avatar
+              src={displayedOwnAvatarUrl}
+              name={session?.userId || '?'}
+              size={32}
+              status={ownPresence}
+            />
+          </div>
           <div className="min-w-0 flex-1 overflow-hidden text-left">
             <div className="text-sm font-semibold truncate text-text-primary leading-tight">
               {session?.userId?.split(':')[0]?.replace('@', '') || ''}

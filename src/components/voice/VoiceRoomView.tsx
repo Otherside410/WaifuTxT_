@@ -1,8 +1,8 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useAuthStore } from '../../stores/authStore'
-import { joinVoiceRoom, leaveVoiceRoom } from '../../lib/matrix'
+import { joinVoiceRoom, leaveVoiceRoom, getOwnAvatarUrl, getUserProfileBasics } from '../../lib/matrix'
 import { setVoiceMuted, setVoiceDeafened, toggleCamera, toggleScreenShare } from '../../lib/voice'
 import { Avatar } from '../common/Avatar'
 import { RoomHeader } from '../chat/RoomHeader'
@@ -205,6 +205,33 @@ export function VoiceRoomView() {
   const isJoined = !!activeRoomId && joinedRoomId === activeRoomId
   const myUserId = session?.userId ?? ''
 
+  // Own avatar
+  const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(() => getOwnAvatarUrl())
+  useEffect(() => {
+    const url = getOwnAvatarUrl()
+    if (url) setOwnAvatarUrl(url)
+  }, [rooms])
+
+  // Fetch missing participant avatars
+  const [extraProfiles, setExtraProfiles] = useState<Record<string, { displayName: string | null; avatarUrl: string | null }>>({})
+  useEffect(() => {
+    if (!room) return
+    const missing = (room.voiceParticipants ?? []).filter((p) => p.userId !== myUserId && !p.avatarUrl && !(p.userId in extraProfiles))
+    if (!missing.length) return
+    let cancelled = false
+    Promise.all(
+      missing.map(async (p) => ({ userId: p.userId, profile: await getUserProfileBasics(p.userId, 64) }))
+    ).then((items) => {
+      if (cancelled) return
+      setExtraProfiles((prev) => {
+        const next = { ...prev }
+        for (const i of items) next[i.userId] = i.profile
+        return next
+      })
+    }).catch(() => { /* ignore */ })
+    return () => { cancelled = true }
+  }, [room, myUserId, extraProfiles])
+
   const handleJoin = useCallback(async () => {
     if (!activeRoomId) return
     try { await joinVoiceRoom(activeRoomId) } catch (err) { console.error('[voice] join failed', err) }
@@ -233,8 +260,14 @@ export function VoiceRoomView() {
 
   if (!room) return null
 
-  // Participants from room state, excluding self (self tile is rendered separately)
-  const otherParticipants = (room.voiceParticipants ?? []).filter((p) => p.userId !== myUserId)
+  // Participants from room state, excluding self
+  const otherParticipants = (room.voiceParticipants ?? [])
+    .filter((p) => p.userId !== myUserId)
+    .map((p) => ({
+      ...p,
+      avatarUrl: p.avatarUrl || extraProfiles[p.userId]?.avatarUrl || null,
+      displayName: p.displayName || extraProfiles[p.userId]?.displayName || p.userId,
+    }))
 
   return (
     <div className="flex flex-col h-full bg-bg-primary">
@@ -248,7 +281,7 @@ export function VoiceRoomView() {
             <ParticipantTile
               userId={myUserId}
               displayName={session?.userId?.split(':')[0]?.replace('@', '') ?? 'Moi'}
-              avatarUrl={null}
+              avatarUrl={ownAvatarUrl}
               isSpeaking={speakingUsers.has(myUserId)}
               isSelf
               localVideoStream={localVideoStream}
