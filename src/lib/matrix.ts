@@ -4,6 +4,7 @@ import { useRoomStore } from '../stores/roomStore'
 import { useAuthStore } from '../stores/authStore'
 import { useVoiceStore } from '../stores/voiceStore'
 import { setupVoiceStreams, cleanupVoiceStreams } from './voice'
+import { playJoinSelf, playLeaveSelf } from './voiceNotifications'
 import { setupVerificationListeners } from './verification'
 
 type MatrixClient = import('matrix-js-sdk').MatrixClient
@@ -1288,6 +1289,7 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
       }
       await setupVoiceStreams(targetCall, matrixSdk)
       useVoiceStore.getState().setJoinedRoom(roomId)
+      playJoinSelf()
       voiceDebugLog('join: GroupCall success', { roomId, alreadyInCall })
       syncRooms()
       setTimeout(() => {
@@ -1346,6 +1348,7 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
   }
 
   useVoiceStore.getState().setJoinedRoom(roomId)
+  playJoinSelf()
   syncRooms()
   setTimeout(() => {
     try { syncRooms() } catch { /* ignore */ }
@@ -1359,6 +1362,7 @@ export async function leaveVoiceRoom(roomId: string): Promise<void> {
 
   cleanupVoiceStreams()
   useVoiceStore.getState().reset()
+  playLeaveSelf()
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const clientAny = client as any

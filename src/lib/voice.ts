@@ -1,8 +1,11 @@
 import { useVoiceStore } from '../stores/voiceStore'
+import { playJoinOther, playLeaveOther } from './voiceNotifications'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let activeGroupCall: any = null
 const remoteAudioElements = new Map<string, HTMLAudioElement>()
+let localCameraStream: MediaStream | null = null
+let localScreenStream: MediaStream | null = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const feedListeners = new Map<string, { feed: any; cleanup: () => void }>()
 
@@ -49,10 +52,12 @@ function removeRemoteStream(key: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function attachFeedListeners(feed: any, sdk: any) {
+function attachFeedListeners(feed: any, sdk: any, isNew = false) {
   if (feed.isLocal()) return
   const key = feedKey(feed)
   if (feedListeners.has(key)) return
+
+  if (isNew) playJoinOther()
 
   const onSpeaking = (speaking: boolean) => {
     useVoiceStore.getState().setSpeaking(feed.userId, speaking)
@@ -61,7 +66,10 @@ function attachFeedListeners(feed: any, sdk: any) {
     const el = remoteAudioElements.get(key)
     if (el) el.srcObject = stream
   }
-  const onDisposed = () => detachFeedListeners(key)
+  const onDisposed = () => {
+    playLeaveOther()
+    detachFeedListeners(key)
+  }
 
   feed.on(sdk.CallFeedEvent.Speaking, onSpeaking)
   feed.on(sdk.CallFeedEvent.NewStream, onNewStream)
@@ -109,7 +117,8 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
     for (const feed of newFeeds as { userId: string; stream: MediaStream; isLocal: () => boolean }[]) {
       currentKeys.add(feedKey(feed))
       if (!feed.isLocal() && feed.stream) playRemoteStream(feed)
-      attachFeedListeners(feed, sdk)
+      const isNew = !feedListeners.has(feedKey(feed))
+      attachFeedListeners(feed, sdk, isNew)
     }
     // Remove stale
     for (const [key] of remoteAudioElements) {
@@ -150,11 +159,14 @@ export function cleanupVoiceStreams(): void {
   for (const [key] of remoteAudioElements) removeRemoteStream(key)
   remoteAudioElements.clear()
 
-  // Stop local stream tracks
+  // Stop local audio stream tracks
   const store = useVoiceStore.getState()
   if (store.localStream) {
     for (const track of store.localStream.getTracks()) track.stop()
   }
+
+  // Stop local video/screen streams
+  stopLocalVideo()
 
   store.clearSpeaking()
   store.setLocalStream(null)
@@ -182,4 +194,79 @@ export function setVoiceDeafened(deafened: boolean): void {
 
 export function getActiveGroupCall(): unknown {
   return activeGroupCall
+}
+
+export async function toggleCamera(): Promise<void> {
+  const store = useVoiceStore.getState()
+  if (store.isCameraOn) {
+    if (localCameraStream) {
+      for (const track of localCameraStream.getTracks()) track.stop()
+      localCameraStream = null
+    }
+    store.setCameraOn(false)
+    store.setLocalVideoStream(localScreenStream)
+  } else {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      if (localScreenStream) {
+        for (const track of localScreenStream.getTracks()) track.stop()
+        localScreenStream = null
+        store.setScreenSharing(false)
+      }
+      localCameraStream = stream
+      store.setCameraOn(true)
+      store.setLocalVideoStream(stream)
+    } catch (err) {
+      voiceLog('toggleCamera: getUserMedia failed', err)
+      throw err
+    }
+  }
+}
+
+export async function toggleScreenShare(): Promise<void> {
+  const store = useVoiceStore.getState()
+  if (store.isScreenSharing) {
+    if (localScreenStream) {
+      for (const track of localScreenStream.getTracks()) track.stop()
+      localScreenStream = null
+    }
+    store.setScreenSharing(false)
+    store.setLocalVideoStream(localCameraStream)
+  } else {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+      if (localCameraStream) {
+        for (const track of localCameraStream.getTracks()) track.stop()
+        localCameraStream = null
+        store.setCameraOn(false)
+      }
+      localScreenStream = stream
+      store.setScreenSharing(true)
+      store.setLocalVideoStream(stream)
+      // Handle user stopping share via browser UI
+      stream.getTracks()[0].addEventListener('ended', () => {
+        localScreenStream = null
+        useVoiceStore.getState().setScreenSharing(false)
+        useVoiceStore.getState().setLocalVideoStream(null)
+      })
+    } catch (err) {
+      voiceLog('toggleScreenShare: getDisplayMedia failed', err)
+      throw err
+    }
+  }
+}
+
+export function stopLocalVideo(): void {
+  if (localCameraStream) {
+    for (const track of localCameraStream.getTracks()) track.stop()
+    localCameraStream = null
+  }
+  if (localScreenStream) {
+    for (const track of localScreenStream.getTracks()) track.stop()
+    localScreenStream = null
+  }
+  const store = useVoiceStore.getState()
+  store.setCameraOn(false)
+  store.setScreenSharing(false)
+  store.setLocalVideoStream(null)
 }
