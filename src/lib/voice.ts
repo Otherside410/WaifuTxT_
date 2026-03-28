@@ -111,12 +111,15 @@ export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void>
       if (!feed.isLocal() && feed.stream) playRemoteStream(feed)
       attachFeedListeners(feed, sdk)
     }
-    // Remove stale
+    // Remove stale audio elements and feed listeners
     for (const [key] of remoteAudioElements) {
       if (!currentKeys.has(key)) {
         removeRemoteStream(key)
         detachFeedListeners(key)
       }
+    }
+    for (const [key] of feedListeners) {
+      if (!currentKeys.has(key)) detachFeedListeners(key)
     }
     // Update local stream
     const lf = groupCall.localCallFeed
