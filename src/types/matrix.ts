@@ -55,6 +55,8 @@ export interface MessageEvent {
   fileName?: string
   fileUrl?: string
   fileSize?: number
+  audioDuration?: number
+  isVoiceMessage?: boolean
   encryptedFile?: EncryptedFileInfo
   encryptedThumbnailFile?: EncryptedFileInfo
 }

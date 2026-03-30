@@ -21,6 +21,7 @@ function loadStoredPresence(): PresenceValue {
 interface UiState {
   showMemberPanel: boolean
   showSettingsModal: boolean
+  showPinnedPanel: boolean
   isMobileMenuOpen: boolean
   showRoomMessagePreview: boolean
   showUnreadDot: boolean
@@ -34,6 +35,7 @@ interface UiState {
   toggleMemberPanel: () => void
   toggleSettingsModal: () => void
   setSettingsModal: (open: boolean) => void
+  togglePinnedPanel: () => void
   toggleMobileMenu: () => void
   toggleRoomMessagePreview: () => void
   setRoomMessagePreview: (show: boolean) => void
@@ -132,6 +134,7 @@ function persistTypingIndicatorStyle(style: TypingIndicatorStyle): void {
 export const useUiStore = create<UiState>((set) => ({
   showMemberPanel: true,
   showSettingsModal: false,
+  showPinnedPanel: false,
   isMobileMenuOpen: false,
   showRoomMessagePreview: readRoomPreviewPreference(),
   showUnreadDot: readUnreadDot(),
@@ -145,6 +148,7 @@ export const useUiStore = create<UiState>((set) => ({
   toggleMemberPanel: () => set((s) => ({ showMemberPanel: !s.showMemberPanel })),
   toggleSettingsModal: () => set((s) => ({ showSettingsModal: !s.showSettingsModal })),
   setSettingsModal: (open) => set({ showSettingsModal: open }),
+  togglePinnedPanel: () => set((s) => ({ showPinnedPanel: !s.showPinnedPanel })),
   toggleMobileMenu: () => set((s) => ({ isMobileMenuOpen: !s.isMobileMenuOpen })),
   toggleRoomMessagePreview: () =>
     set((s) => {

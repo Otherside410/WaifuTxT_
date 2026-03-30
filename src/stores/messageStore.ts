@@ -7,6 +7,8 @@ interface MessageState {
   isLoadingHistory: boolean
   receiptsVersion: number
   reactionsVersion: number
+  pinnedEventIds: Map<string, string[]>
+  pinnedVersion: number
 
   addMessage: (roomId: string, message: MessageEvent) => void
   removeMessage: (roomId: string, eventId: string) => void
@@ -19,6 +21,9 @@ interface MessageState {
   setLoadingHistory: (loading: boolean) => void
   getMessages: (roomId: string) => MessageEvent[]
   getTypingUsers: (roomId: string) => string[]
+  setPinnedEventIds: (roomId: string, ids: string[]) => void
+  getPinnedEventIds: (roomId: string) => string[]
+  bumpPinnedVersion: () => void
   reset: () => void
 }
 
@@ -28,6 +33,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   isLoadingHistory: false,
   receiptsVersion: 0,
   reactionsVersion: 0,
+  pinnedEventIds: new Map(),
+  pinnedVersion: 0,
 
   addMessage: (roomId, message) => {
     const allMessages = new Map(get().messages)
@@ -94,5 +101,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   getTypingUsers: (roomId) => get().typing.get(roomId) || [],
 
-  reset: () => set({ messages: new Map(), typing: new Map(), receiptsVersion: 0, reactionsVersion: 0 }),
+  setPinnedEventIds: (roomId, ids) => {
+    const pinnedEventIds = new Map(get().pinnedEventIds)
+    pinnedEventIds.set(roomId, ids)
+    set({ pinnedEventIds, pinnedVersion: get().pinnedVersion + 1 })
+  },
+
+  getPinnedEventIds: (roomId) => get().pinnedEventIds.get(roomId) || [],
+
+  bumpPinnedVersion: () => set((state) => ({ pinnedVersion: state.pinnedVersion + 1 })),
+
+  reset: () => set({ messages: new Map(), typing: new Map(), receiptsVersion: 0, reactionsVersion: 0, pinnedEventIds: new Map(), pinnedVersion: 0 }),
 }))

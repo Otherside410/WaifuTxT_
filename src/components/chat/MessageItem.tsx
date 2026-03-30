@@ -32,18 +32,31 @@ import {
   getUrlPreview,
   loadMediaWithAuth,
   toggleReaction,
+  pinMessage,
+  unpinMessage,
+  canUserPinMessages,
   type UrlPreviewData,
 } from '../../lib/matrix'
 import { useUiStore } from '../../stores/uiStore'
 
 const URL_REGEX = /https?:\/\/[^\s<>"']+/g
-const TOKEN_REGEX = /(https?:\/\/[^\s<>"']+|<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?|#[A-Za-z0-9._=+\-/]+)/g
-const MENTION_REGEX = /(<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?|#[A-Za-z0-9._=+\-/]+)/g
+// Matches: URLs, <@user:server>, @user:server, @user (localpart-only), #room
+const TOKEN_REGEX = /(https?:\/\/[^\s<>"']+|<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+(?::[A-Za-z0-9.-]+(?::\d+)?)?|#[A-Za-z0-9._=+\-/]+)/g
+const MENTION_REGEX = /(<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+(?::[A-Za-z0-9.-]+(?::\d+)?)?|#[A-Za-z0-9._=+\-/]+)/g
 
 function mxidToMentionLabel(raw: string): string {
   const mxid = raw.replace(/^<@/, '').replace(/>$/, '').replace(/^@/, '')
   const localpart = mxid.split(':')[0] || mxid
   return `@${localpart}`
+}
+
+function isMentionToken(part: string, knownLocalparts: Set<string>): boolean {
+  if (part.startsWith('<@')) return true
+  if (/^@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]/.test(part)) return true // full MXID
+  if (/^@[A-Za-z0-9._=+\-/]+$/.test(part)) {
+    return knownLocalparts.has(part.slice(1).toLowerCase())
+  }
+  return false
 }
 
 function normalizeRoomTag(value: string): string {
@@ -82,10 +95,12 @@ function RichText({
   text,
   roomTagToId,
   onOpenRoomTag,
+  knownLocalparts,
 }: {
   text: string
   roomTagToId: Map<string, string>
   onOpenRoomTag: (roomId: string) => void
+  knownLocalparts: Set<string>
 }) {
   const parts = text.split(TOKEN_REGEX)
   if (parts.length === 1) return <>{text}</>
@@ -109,7 +124,7 @@ function RichText({
             </span>
           )
         }
-        if (part.startsWith('<@') || /^@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?$/.test(part)) {
+        if (isMentionToken(part, knownLocalparts)) {
           return (
             <span
               key={i}
@@ -144,10 +159,12 @@ function MentionText({
   text,
   roomTagToId,
   onOpenRoomTag,
+  knownLocalparts,
 }: {
   text: string
   roomTagToId: Map<string, string>
   onOpenRoomTag: (roomId: string) => void
+  knownLocalparts: Set<string>
 }) {
   const parts = text.split(MENTION_REGEX)
   if (parts.length === 1) return <>{text}</>
@@ -155,7 +172,7 @@ function MentionText({
     <>
       {parts.map((part, i) => {
         if (!part) return null
-        if (part.startsWith('<@') || /^@[A-Za-z0-9._=+\-/]+:[A-Za-z0-9.-]+(?:\:\d+)?$/.test(part)) {
+        if (isMentionToken(part, knownLocalparts)) {
           return (
             <span
               key={i}
@@ -190,13 +207,14 @@ function decorateMentions(
   children: ReactNode,
   roomTagToId: Map<string, string>,
   onOpenRoomTag: (roomId: string) => void,
+  knownLocalparts: Set<string>,
 ): ReactNode {
   return Children.map(children, (child) => {
-    if (typeof child === 'string') return <MentionText text={child} roomTagToId={roomTagToId} onOpenRoomTag={onOpenRoomTag} />
+    if (typeof child === 'string') return <MentionText text={child} roomTagToId={roomTagToId} onOpenRoomTag={onOpenRoomTag} knownLocalparts={knownLocalparts} />
     if (!isValidElement<{ children?: ReactNode }>(child)) return child
     const childChildren = child.props.children
     if (childChildren == null) return child
-    return cloneElement(child, { children: decorateMentions(childChildren, roomTagToId, onOpenRoomTag) })
+    return cloneElement(child, { children: decorateMentions(childChildren, roomTagToId, onOpenRoomTag, knownLocalparts) })
   })
 }
 
@@ -209,18 +227,20 @@ function MarkdownText({
   className,
   roomTagToId,
   onOpenRoomTag,
+  knownLocalparts,
 }: {
   text: string
   className?: string
   roomTagToId: Map<string, string>
   onOpenRoomTag: (roomId: string) => void
+  knownLocalparts: Set<string>
 }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeHighlight]}
       components={{
-        p: ({ children }) => <p className={className || 'text-sm leading-relaxed break-words text-text-primary'}>{decorateMentions(children, roomTagToId, onOpenRoomTag)}</p>,
+        p: ({ children }) => <p className={className || 'text-sm leading-relaxed break-words text-text-primary'}>{decorateMentions(children, roomTagToId, onOpenRoomTag, knownLocalparts)}</p>,
         a: ({ href, children }) => (
           <a
             href={href}
@@ -231,12 +251,12 @@ function MarkdownText({
             {children}
           </a>
         ),
-        ul: ({ children }) => <ul className="list-disc pl-5 my-1 space-y-0.5">{decorateMentions(children, roomTagToId, onOpenRoomTag)}</ul>,
-        ol: ({ children }) => <ol className="list-decimal pl-5 my-1 space-y-0.5">{decorateMentions(children, roomTagToId, onOpenRoomTag)}</ol>,
-        li: ({ children }) => <li className="text-sm leading-relaxed text-text-primary">{decorateMentions(children, roomTagToId, onOpenRoomTag)}</li>,
+        ul: ({ children }) => <ul className="list-disc pl-5 my-1 space-y-0.5">{decorateMentions(children, roomTagToId, onOpenRoomTag, knownLocalparts)}</ul>,
+        ol: ({ children }) => <ol className="list-decimal pl-5 my-1 space-y-0.5">{decorateMentions(children, roomTagToId, onOpenRoomTag, knownLocalparts)}</ol>,
+        li: ({ children }) => <li className="text-sm leading-relaxed text-text-primary">{decorateMentions(children, roomTagToId, onOpenRoomTag, knownLocalparts)}</li>,
         blockquote: ({ children }) => (
           <blockquote className="border-l-2 border-border-strong pl-3 text-text-secondary italic my-1">
-            {decorateMentions(children, roomTagToId, onOpenRoomTag)}
+            {decorateMentions(children, roomTagToId, onOpenRoomTag, knownLocalparts)}
           </blockquote>
         ),
         code: ({ className: codeClassName, children }) => {
@@ -860,77 +880,109 @@ function EncryptedImage({ message }: { message: MessageEvent }) {
   )
 }
 
-function AudioAttachment({ message }: { message: MessageEvent }) {
-  const { url: decryptedUrl } = useDecryptedUrl(message.encryptedFile)
-  const url = message.fileUrl || decryptedUrl
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const [playing, setPlaying] = useState(false)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [duration, setDuration] = useState(0)
+function formatAudioTime(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
 
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60)
-    const sec = Math.floor(s % 60)
-    return `${m}:${sec.toString().padStart(2, '0')}`
+function VoiceMessagePlayer({ message }: { message: MessageEvent }) {
+  const { url: decryptedUrl } = useDecryptedUrl(message.encryptedFile)
+  const audioUrl = message.fileUrl || decryptedUrl
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(message.audioDuration ? message.audioDuration / 1000 : 0)
+  const progressRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime)
+    const onLoadedMetadata = () => {
+      if (audio.duration && isFinite(audio.duration)) setDuration(audio.duration)
+    }
+    const onEnded = () => { setIsPlaying(false); setCurrentTime(0) }
+    audio.addEventListener('timeupdate', onTimeUpdate)
+    audio.addEventListener('loadedmetadata', onLoadedMetadata)
+    audio.addEventListener('ended', onEnded)
+    return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate)
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata)
+      audio.removeEventListener('ended', onEnded)
+    }
+  }, [audioUrl])
+
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (isPlaying) {
+      audio.pause()
+      setIsPlaying(false)
+    } else {
+      audio.play().then(() => setIsPlaying(true)).catch(() => {})
+    }
+  }, [isPlaying])
+
+  const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current
+    const bar = progressRef.current
+    if (!audio || !bar || !duration) return
+    const rect = bar.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    audio.currentTime = ratio * duration
+    setCurrentTime(audio.currentTime)
+  }, [duration])
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+
+  if (!audioUrl) {
+    return (
+      <div className="mt-1 flex items-center gap-3 p-3 bg-bg-tertiary rounded-lg border border-border max-w-xs animate-pulse">
+        <div className="w-9 h-9 rounded-full bg-bg-hover" />
+        <div className="flex-1 h-3 rounded bg-bg-hover" />
+      </div>
+    )
   }
 
-  const toggle = useCallback(() => {
-    const el = audioRef.current
-    if (!el || !url) return
-    if (playing) { el.pause() } else { el.play() }
-  }, [playing, url])
-
-  const handleSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const el = audioRef.current
-    if (!el) return
-    el.currentTime = Number(e.target.value)
-  }, [])
-
   return (
-    <div className="mt-1 flex items-center gap-3 p-3 bg-bg-tertiary rounded-lg border border-border max-w-xs">
-      <audio
-        ref={audioRef}
-        src={url || undefined}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onEnded={() => { setPlaying(false); setCurrentTime(0) }}
-        onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
-        onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? 0)}
-      />
+    <div className="mt-1 flex items-center gap-3 p-2.5 bg-bg-tertiary rounded-xl border border-border max-w-xs group">
+      <audio ref={audioRef} src={audioUrl} preload="metadata" />
       <button
-        onClick={toggle}
-        disabled={!url}
-        className="shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-accent-pink hover:bg-accent-pink-hover disabled:opacity-50 disabled:cursor-wait transition-colors cursor-pointer"
+        onClick={togglePlay}
+        className="w-9 h-9 shrink-0 rounded-full bg-accent-pink text-white flex items-center justify-center hover:bg-accent-pink-hover transition-colors cursor-pointer"
+        aria-label={isPlaying ? 'Pause' : 'Lecture'}
       >
-        {playing ? (
-          <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+        {isPlaying ? (
+          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+            <rect x="6" y="4" width="4" height="16" rx="1" />
+            <rect x="14" y="4" width="4" height="16" rx="1" />
           </svg>
         ) : (
-          <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M8 5v14l11-7z"/>
+          <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M8 5.14v14l11-7-11-7z" />
           </svg>
         )}
       </button>
-      <div className="flex-1 min-w-0 flex flex-col gap-1">
-        <input
-          type="range"
-          min={0}
-          max={duration || 0}
-          step={0.1}
-          value={currentTime}
-          onChange={handleSeek}
-          disabled={!url}
-          className="w-full h-1 accent-accent-pink cursor-pointer disabled:opacity-50"
-        />
-        <div className="flex justify-between text-xs text-text-muted">
-          <span>{formatTime(currentTime)}</span>
-          <span>{duration ? formatTime(duration) : (message.fileSize != null ? formatFileSize(message.fileSize) : '')}</span>
+      <div className="flex-1 min-w-0">
+        <div
+          ref={progressRef}
+          onClick={handleSeek}
+          className="relative h-6 flex items-center cursor-pointer"
+        >
+          <div className="w-full h-1.5 rounded-full bg-border overflow-hidden">
+            <div
+              className="h-full rounded-full bg-accent-pink transition-[width] duration-100"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+        <div className="flex justify-between text-[10px] text-text-muted -mt-0.5">
+          <span>{formatAudioTime(currentTime * 1000)}</span>
+          <span>{formatAudioTime(duration * 1000)}</span>
         </div>
       </div>
-      {!url && message.encryptedFile && (
-        <span className="text-xs text-text-muted shrink-0">Déchiffrement...</span>
-      )}
     </div>
   )
 }
@@ -1027,6 +1079,13 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
     !message.content.startsWith('🔒')
   const canReplyMessage = !message.content.startsWith('🔒')
   const canReactMessage = !message.content.startsWith('🔒')
+  const canPinMessage = isSyncedMessage && !message.content.startsWith('🔒') && canUserPinMessages(message.roomId)
+  const pinnedVersion = useMessageStore((s) => s.pinnedVersion)
+  const pinnedEventIds = useMessageStore((s) => s.pinnedEventIds)
+  const isPinned = useMemo(() => {
+    const ids = pinnedEventIds.get(message.roomId) || []
+    return ids.includes(message.eventId)
+  }, [pinnedEventIds, message.roomId, message.eventId, pinnedVersion])
   const isDeletedNoticeMessage =
     message.type === 'm.notice' && message.content.trim().toLowerCase() === 'message supprimé'
   const readersUserIds = useMemo(
@@ -1062,6 +1121,14 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
     }
     return map
   }, [message.roomId, roomsMap])
+  const knownLocalparts = useMemo(() => {
+    const set = new Set<string>()
+    for (const m of roomMembers) {
+      const lp = m.userId.split(':')[0].slice(1).toLowerCase()
+      if (lp) set.add(lp)
+    }
+    return set
+  }, [roomMembers])
   const handleOpenRoomTag = useCallback((roomId: string) => {
     // Keep the space sidebar in sync with the opened room when possible.
     for (const room of roomsMap.values()) {
@@ -1079,7 +1146,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const [editError, setEditError] = useState<string | null>(null)
   const [showReactionPicker, setShowReactionPicker] = useState(false)
   const [pickerDir, setPickerDir] = useState<'up' | 'down'>('up')
-  const showActionBar = !isEditing && (canReplyMessage || canEditMessage || canReactMessage)
+  const showActionBar = !isEditing && (canReplyMessage || canEditMessage || canReactMessage || canPinMessage)
   const actionButtonClass =
     'inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-bg-tertiary/85 text-text-secondary hover:text-text-primary hover:border-accent-pink/60 hover:bg-bg-hover transition-all cursor-pointer shadow-sm'
   const senderNameRef = useRef<HTMLSpanElement | null>(null)
@@ -1165,8 +1232,40 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
     }
   }, [message.roomId, message.eventId])
 
+  const [pinError, setPinError] = useState<string | null>(null)
+  const [isPinning, setIsPinning] = useState(false)
+
+  const handleTogglePin = useCallback(async () => {
+    if (isPinning) return
+    setIsPinning(true)
+    setPinError(null)
+    try {
+      if (isPinned) {
+        await unpinMessage(message.roomId, message.eventId)
+      } else {
+        await pinMessage(message.roomId, message.eventId)
+      }
+    } catch (err) {
+      console.error('[WaifuTxT] Toggle pin failed:', err)
+      const e = err as { httpStatus?: number; errcode?: string; message?: string; status?: number }
+      const status = e?.httpStatus ?? e?.status ?? 0
+      const errcode = e?.errcode ?? ''
+      const msg = e?.message ?? ''
+      const isForbidden =
+        status === 403 ||
+        errcode === 'M_FORBIDDEN' ||
+        msg.includes('403') ||
+        msg.toLowerCase().includes('forbidden') ||
+        msg.toLowerCase().includes('power level')
+      setPinError(isForbidden ? 'Droits insuffisants' : `Erreur : ${msg.replace('MatrixError: ', '').slice(0, 40) || 'inconnue'}`)
+      setTimeout(() => setPinError(null), 5000)
+    } finally {
+      setIsPinning(false)
+    }
+  }, [message.roomId, message.eventId, isPinned, isPinning])
+
   return (
-    <div ref={wrapperRef} className={`group relative flex items-start gap-4 px-4 py-0.5 pr-24 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''}`}>
+    <div ref={wrapperRef} className={`group relative flex items-start gap-4 px-4 py-0.5 pr-24 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''} ${isPinned ? 'border-l-2 border-l-accent-pink/50' : ''}`}>
       {showHeader ? (
         <Avatar src={message.senderAvatar} name={message.senderName} size={40} className="mt-0.5" />
       ) : (
@@ -1220,6 +1319,27 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 3.487a2.1 2.1 0 113 2.974l-10.5 10.5-4.2 1.2 1.2-4.2 10.5-10.474z" />
                 </svg>
               </button>
+            )}
+
+            {canPinMessage && (
+              <div className="relative">
+                <button
+                  onClick={handleTogglePin}
+                  disabled={isPinning}
+                  className={`${actionButtonClass} ${isPinned ? '!text-accent-pink !border-accent-pink/60 !bg-accent-pink/10' : ''} ${isPinning ? 'opacity-50' : ''}`}
+                  title={isPinned ? 'Désépingler' : 'Épingler'}
+                  aria-label={isPinned ? 'Désépingler le message' : 'Épingler le message'}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
+                  </svg>
+                </button>
+                {pinError && (
+                  <div className="absolute bottom-full right-0 mb-1 whitespace-nowrap rounded bg-red-500/90 px-2 py-1 text-[10px] text-white shadow-lg z-50">
+                    {pinError}
+                  </div>
+                )}
+              </div>
             )}
 
             {canReactMessage && (
@@ -1282,7 +1402,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
                 Réponse à <span className="font-semibold text-accent-pink">{repliedMessage?.senderName || 'message'}</span>
               </p>
               <p className="mt-0.5 text-sm text-text-primary truncate leading-snug">
-                <MentionText text={compactPreview(replyContent || 'Message de référence')} roomTagToId={roomTagToId} onOpenRoomTag={handleOpenRoomTag} />
+                <MentionText text={compactPreview(replyContent || 'Message de référence')} roomTagToId={roomTagToId} onOpenRoomTag={handleOpenRoomTag} knownLocalparts={knownLocalparts} />
               </p>
             </div>
           )
@@ -1297,8 +1417,12 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
         )}
 
         {message.type === 'm.video' && (message.fileUrl || message.encryptedFile) && <VideoAttachment message={message} />}
-        {message.type === 'm.audio' && (message.fileUrl || message.encryptedFile) && <AudioAttachment message={message} />}
-        {message.type === 'm.file' && (message.fileUrl || message.encryptedFile) && <FileAttachment message={message} />}
+        {message.type === 'm.audio' && message.isVoiceMessage && (message.fileUrl || message.encryptedFile) && (
+          <VoiceMessagePlayer message={message} />
+        )}
+        {(message.type === 'm.file' || (message.type === 'm.audio' && !message.isVoiceMessage)) && (message.fileUrl || message.encryptedFile) && (
+          <FileAttachment message={message} />
+        )}
 
         {(message.type === 'm.text' || message.type === 'm.notice' || message.type === 'm.emote') && (
           <>
@@ -1369,6 +1493,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
                     className={`text-sm leading-relaxed break-words ${message.type === 'm.notice' ? 'text-text-muted italic' : 'text-text-primary'}`}
                     roomTagToId={roomTagToId}
                     onOpenRoomTag={handleOpenRoomTag}
+                    knownLocalparts={knownLocalparts}
                   />
                 )}
               </>
@@ -1384,7 +1509,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
           <>
             {contentWithoutUrls.length > 0 && (
               <p className="text-sm text-text-primary leading-relaxed break-words">
-                <RichText text={contentWithoutUrls} roomTagToId={roomTagToId} onOpenRoomTag={handleOpenRoomTag} />
+                <RichText text={contentWithoutUrls} roomTagToId={roomTagToId} onOpenRoomTag={handleOpenRoomTag} knownLocalparts={knownLocalparts} />
               </p>
             )}
             {urls.slice(0, 3).map((linkUrl) => (

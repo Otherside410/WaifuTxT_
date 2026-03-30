@@ -4,10 +4,12 @@ import { RoomSidebar } from './RoomSidebar'
 import { MemberPanel } from './MemberPanel'
 import { SettingsModal } from './SettingsModal'
 import { ChatArea } from '../chat/ChatArea'
+import { PinnedMessagesPanel } from '../chat/PinnedMessagesPanel'
 import { VerificationModal } from '../verification/VerificationModal'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
-import { loadRoomMembers, reapplyStoredOwnStatusToStore, leaveVoiceRoom } from '../../lib/matrix'
+import { loadRoomMembers, reapplyStoredOwnStatusToStore, leaveVoiceRoom, getPinnedEventIds } from '../../lib/matrix'
+import { useMessageStore } from '../../stores/messageStore'
 import { cleanupVoiceStreams } from '../../lib/voice'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
@@ -15,12 +17,15 @@ import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 export function AppShell() {
   useKeyboardShortcuts()
   const showMemberPanel = useUiStore((s) => s.showMemberPanel)
+  const showPinnedPanel = useUiStore((s) => s.showPinnedPanel)
   const showSettingsModal = useUiStore((s) => s.showSettingsModal)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
 
   useEffect(() => {
     if (activeRoomId) {
       loadRoomMembers(activeRoomId)
+      const ids = getPinnedEventIds(activeRoomId)
+      useMessageStore.getState().setPinnedEventIds(activeRoomId, ids)
     }
   }, [activeRoomId])
 
@@ -49,6 +54,7 @@ export function AppShell() {
       <SpaceSidebar />
       <RoomSidebar />
       <ChatArea />
+      {showPinnedPanel && activeRoomId && <PinnedMessagesPanel />}
       {showMemberPanel && activeRoomId && <MemberPanel />}
       {showSettingsModal && <SettingsModal />}
       <VerificationModal />

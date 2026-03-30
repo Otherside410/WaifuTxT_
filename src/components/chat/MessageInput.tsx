@@ -13,7 +13,7 @@ import emojibaseData from 'emojibase-data/en/data.json'
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
 import { useAuthStore } from '../../stores/authStore'
-import { sendMessage, sendFile, sendImage, sendAudio, sendTyping } from '../../lib/matrix'
+import { sendMessage, sendFile, sendImage, sendTyping, sendVoiceMessage } from '../../lib/matrix'
 import { Avatar } from '../common/Avatar'
 import type { RoomMember, RoomSummary } from '../../types/matrix'
 import { EmojiPicker, addRecentEmoji } from '../common/EmojiPicker'
@@ -139,6 +139,26 @@ function highlightInputText(text: string, validLocalparts: Set<string>, validRoo
 
 const TAG_TOKEN_RE = /(?:@[\w._\-=+/]+|#[\w._\-=+/]+)/g
 
+function formatRecordingTime(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+function expandMentions(text: string, members: RoomMember[]): string {
+  if (!text.includes('@')) return text
+  const localpartToMxid = new Map<string, string>()
+  for (const member of members) {
+    const localpart = member.userId.split(':')[0].slice(1).toLowerCase()
+    if (localpart) localpartToMxid.set(localpart, member.userId)
+  }
+  return text.replace(/@([\w._\-=+/]+)/g, (match, lp: string) => {
+    const mxid = localpartToMxid.get(lp.toLowerCase())
+    return mxid ?? match
+  })
+}
+
 export function MessageInput() {
   const [text, setText] = useState('')
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
@@ -170,6 +190,10 @@ export function MessageInput() {
 
   const [isRecording, setIsRecording] = useState(false)
   const [recordingDuration, setRecordingDuration] = useState(0)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordingChunksRef = useRef<Blob[]>([])
+  const recordingStartRef = useRef(0)
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -179,10 +203,6 @@ export function MessageInput() {
   const nextCursorRef = useRef<number | null>(null)
   const emojiPickerRef = useRef<HTMLDivElement>(null)
   const emojiBtnRef = useRef<HTMLButtonElement>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
-  const recordingStartRef = useRef<number>(0)
 
   // Restore cursor position after a mention insertion/deletion re-render
   useEffect(() => {
@@ -411,6 +431,73 @@ export function MessageInput() {
     [text, emojiStart, emojiQuery],
   )
 
+  const startRecording = useCallback(async () => {
+    if (!activeRoomId || isRecording) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mimeType = MediaRecorder.isTypeSupported('audio/ogg; codecs=opus')
+        ? 'audio/ogg; codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm; codecs=opus')
+          ? 'audio/webm; codecs=opus'
+          : 'audio/webm'
+      const recorder = new MediaRecorder(stream, { mimeType })
+      recordingChunksRef.current = []
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordingChunksRef.current.push(e.data)
+      }
+      recorder.start(200)
+      mediaRecorderRef.current = recorder
+      recordingStartRef.current = Date.now()
+      setIsRecording(true)
+      setRecordingDuration(0)
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(Date.now() - recordingStartRef.current)
+      }, 200)
+    } catch (err) {
+      console.error('[WaifuTxT] Microphone access denied:', err)
+    }
+  }, [activeRoomId, isRecording])
+
+  const stopRecording = useCallback(async () => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder || !activeRoomId) return
+    return new Promise<void>((resolve) => {
+      recorder.onstop = async () => {
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+        const durationMs = Date.now() - recordingStartRef.current
+        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType })
+        recordingChunksRef.current = []
+        setIsRecording(false)
+        setRecordingDuration(0)
+        recorder.stream.getTracks().forEach((t) => t.stop())
+        mediaRecorderRef.current = null
+        if (blob.size > 0 && durationMs > 500) {
+          await sendVoiceMessage(activeRoomId, blob, durationMs)
+        }
+        resolve()
+      }
+      recorder.stop()
+    })
+  }, [activeRoomId])
+
+  const cancelRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder) return
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+    recorder.stream.getTracks().forEach((t) => t.stop())
+    recorder.stop()
+    recordingChunksRef.current = []
+    mediaRecorderRef.current = null
+    setIsRecording(false)
+    setRecordingDuration(0)
+  }, [])
+
   const handleSend = useCallback(async () => {
     if (isSending || !activeRoomId) return
     const msg = replaceEmojiShortcodes(text.trim())
@@ -428,7 +515,8 @@ export function MessageInput() {
       }
       if (msg) {
         setText('')
-        await sendMessage(activeRoomId, msg, pendingReply?.roomId === activeRoomId ? pendingReply.eventId : undefined)
+        const msgWithMentions = expandMentions(msg, roomMembers)
+        await sendMessage(activeRoomId, msgWithMentions, pendingReply?.roomId === activeRoomId ? pendingReply.eventId : undefined)
         if (pendingReply?.roomId === activeRoomId) {
           setPendingReply(null)
         }
@@ -538,62 +626,6 @@ export function MessageInput() {
     e.target.value = ''
   }
 
-  const startRecording = useCallback(async () => {
-    if (!activeRoomId) return
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
-        ? 'audio/ogg;codecs=opus'
-        : 'audio/webm'
-      const recorder = new MediaRecorder(stream, { mimeType })
-      audioChunksRef.current = []
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
-      recorder.start(100)
-      mediaRecorderRef.current = recorder
-      recordingStartRef.current = Date.now()
-      setIsRecording(true)
-      setRecordingDuration(0)
-      recordingTimerRef.current = setInterval(() => {
-        setRecordingDuration(Math.floor((Date.now() - recordingStartRef.current) / 1000))
-      }, 500)
-    } catch {
-      // permission denied or not available
-    }
-  }, [activeRoomId])
-
-  const stopRecording = useCallback(() => {
-    const recorder = mediaRecorderRef.current
-    if (!recorder || !activeRoomId) return
-    recorder.onstop = async () => {
-      const duration = (Date.now() - recordingStartRef.current) / 1000
-      const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType })
-      recorder.stream.getTracks().forEach((t) => t.stop())
-      audioChunksRef.current = []
-      await sendAudio(activeRoomId, blob, duration)
-    }
-    recorder.stop()
-    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
-    mediaRecorderRef.current = null
-    setIsRecording(false)
-    setRecordingDuration(0)
-  }, [activeRoomId])
-
-  const cancelRecording = useCallback(() => {
-    const recorder = mediaRecorderRef.current
-    if (!recorder) return
-    recorder.onstop = () => {
-      recorder.stream.getTracks().forEach((t) => t.stop())
-      audioChunksRef.current = []
-    }
-    recorder.stop()
-    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
-    mediaRecorderRef.current = null
-    setIsRecording(false)
-    setRecordingDuration(0)
-  }, [])
-
   const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     if (!activeRoomId) return
     const items = e.clipboardData?.items
@@ -646,6 +678,11 @@ export function MessageInput() {
   useEffect(() => {
     return () => {
       for (const image of pendingImagesRef.current) URL.revokeObjectURL(image.previewUrl)
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop())
+        mediaRecorderRef.current = null
+      }
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
     }
   }, [])
 
@@ -778,8 +815,52 @@ export function MessageInput() {
         </div>
       ) : null}
 
-      <div className="flex items-center gap-2 min-h-[44px] bg-bg-tertiary rounded-lg border border-border focus-within:border-accent-pink transition-colors">
-        {!isRecording && (
+      <div className={`flex items-center gap-2 min-h-[44px] bg-bg-tertiary rounded-lg border transition-colors ${isRecording ? 'border-red-500/60' : 'border-border focus-within:border-accent-pink'}`}>
+        {isRecording ? (
+          <>
+            <button
+              onClick={cancelRecording}
+              className="p-3 text-text-muted hover:text-red-400 transition-colors cursor-pointer"
+              title="Annuler"
+              aria-label="Annuler l'enregistrement"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <div className="flex-1 flex items-center gap-3 min-w-0">
+              <span className="relative flex h-3 w-3 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+              </span>
+              <span className="text-sm text-red-400 font-medium tabular-nums">
+                {formatRecordingTime(recordingDuration)}
+              </span>
+              <div className="flex-1 flex items-center gap-[2px] h-4 overflow-hidden">
+                {Array.from({ length: 30 }, (_, i) => (
+                  <div
+                    key={i}
+                    className="w-[3px] rounded-full bg-red-500/70"
+                    style={{
+                      height: `${Math.max(20, Math.random() * 100)}%`,
+                      animation: `voiceBar 0.4s ease-in-out ${i * 0.05}s infinite alternate`,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={stopRecording}
+              className="p-3 text-red-400 hover:text-red-300 transition-colors cursor-pointer"
+              title="Envoyer le message vocal"
+              aria-label="Envoyer le message vocal"
+            >
+              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
+          </>
+        ) : (
           <>
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -795,38 +876,7 @@ export function MessageInput() {
               className="hidden"
               onChange={handleFileUpload}
             />
-          </>
-        )}
-        {isRecording ? (
-          <div className="flex flex-1 items-center gap-3 px-3">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
-            <span className="text-sm text-text-primary tabular-nums">
-              {`${Math.floor(recordingDuration / 60)}:${String(recordingDuration % 60).padStart(2, '0')}`}
-            </span>
-            <span className="flex-1 text-sm text-text-muted">Enregistrement en cours...</span>
-            <button
-              onClick={cancelRecording}
-              className="p-2 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
-              title="Annuler"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-            <button
-              onClick={stopRecording}
-              className="p-2 text-accent-pink hover:text-accent-pink-hover transition-colors cursor-pointer"
-              title="Envoyer le message vocal"
-            >
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-              </svg>
-            </button>
-          </div>
-        ) : (
-          <>
             <div className="relative flex-1 min-w-0 pt-[15px] pb-[9px]">
-              {/* Highlight backdrop — renders behind the textarea */}
               <div
                 ref={backdropRef}
                 aria-hidden="true"
@@ -849,7 +899,6 @@ export function MessageInput() {
                 style={{ minHeight: '24px', color: 'transparent', caretColor: 'var(--color-text-primary)' }}
               />
             </div>
-            {/* Emoji picker button */}
             <div className="relative flex-shrink-0">
               <button
                 ref={emojiBtnRef}
@@ -894,26 +943,31 @@ export function MessageInput() {
                 </div>
               )}
             </div>
-            {/* Mic button */}
-            <button
-              onClick={startRecording}
-              className="p-2.5 text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
-              title="Enregistrer un message vocal"
-              aria-label="Enregistrer un message vocal"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
-              </svg>
-            </button>
-            <button
-              onClick={handleSend}
-              disabled={isSending || (!text.trim() && pendingImages.length === 0)}
-              className="p-3 text-accent-pink hover:text-accent-pink-hover disabled:text-text-muted transition-colors cursor-pointer disabled:cursor-not-allowed"
-            >
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-              </svg>
-            </button>
+
+            {text.trim() || pendingImages.length > 0 ? (
+              <button
+                onClick={handleSend}
+                disabled={isSending}
+                className="p-3 text-accent-pink hover:text-accent-pink-hover disabled:text-text-muted transition-colors cursor-pointer disabled:cursor-not-allowed"
+                title="Envoyer"
+                aria-label="Envoyer"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                onClick={startRecording}
+                className="p-3 text-text-muted hover:text-accent-pink transition-colors cursor-pointer"
+                title="Message vocal"
+                aria-label="Enregistrer un message vocal"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                </svg>
+              </button>
+            )}
           </>
         )}
       </div>

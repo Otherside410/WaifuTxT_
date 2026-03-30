@@ -4,7 +4,6 @@ import { useRoomStore } from '../stores/roomStore'
 import { useAuthStore } from '../stores/authStore'
 import { useVoiceStore } from '../stores/voiceStore'
 import { setupVoiceStreams, cleanupVoiceStreams } from './voice'
-import { playJoinSelf, playLeaveSelf } from './voiceNotifications'
 import { setupVerificationListeners } from './verification'
 
 type MatrixClient = import('matrix-js-sdk').MatrixClient
@@ -338,6 +337,15 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
   client.on(matrixSdk.ClientEvent.Event, (event: MatrixEvent) => {
     if (event.getType() !== 'm.room.redaction') return
     useMessageStore.getState().bumpReactionsVersion()
+  })
+
+  client.on(matrixSdk.RoomStateEvent.Events, (event: MatrixEvent) => {
+    if (event.getType() !== 'm.room.pinned_events') return
+    const roomId = event.getRoomId?.() || (event as unknown as { room_id?: string }).room_id
+    if (!roomId) return
+    const content = event.getContent() as { pinned?: string[] }
+    const pinned = Array.isArray(content.pinned) ? content.pinned : []
+    useMessageStore.getState().setPinnedEventIds(roomId, pinned)
   })
 
   // Keep voice participant lists fresh when call membership state changes.
@@ -1020,6 +1028,9 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
     }
   }
 
+  let audioDuration: number | undefined
+  let isVoiceMessage = false
+
   if (type === 'm.file' || type === 'm.video' || type === 'm.audio') {
     fileName = String(effectiveContent.filename || effectiveContent.body || '')
     const info = effectiveContent.info as Record<string, unknown> | undefined
@@ -1031,6 +1042,11 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
       if (typeof info?.thumbnail_url === 'string') {
         thumbnailUrl = client?.mxcUrlToHttp(info.thumbnail_url, 400, 300, 'scale', false, true) || undefined
       }
+    }
+    if (type === 'm.audio') {
+      audioDuration = typeof info?.duration === 'number' ? info.duration : undefined
+      const mscVoice = effectiveContent['org.matrix.msc3245.voice'] || effectiveContent['org.matrix.msc1767.audio']
+      isVoiceMessage = !!mscVoice
     }
   }
 
@@ -1055,6 +1071,8 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
     fileName,
     fileUrl,
     fileSize,
+    audioDuration,
+    isVoiceMessage,
     encryptedFile,
     encryptedThumbnailFile,
   }
@@ -1287,20 +1305,8 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
           voiceDebugLog('join: unable to unmute mic after enter (ignored)', { roomId })
         }
       }
-      // Try to apply preferred input device via applyConstraints on the local track
-      const preferredInputId = useVoiceStore.getState().inputDeviceId
-      if (preferredInputId) {
-        try {
-          const lf = targetCall.localCallFeed
-          const audioTrack = lf?.stream?.getAudioTracks?.()?.[0]
-          if (audioTrack) await audioTrack.applyConstraints({ deviceId: { exact: preferredInputId } })
-        } catch {
-          voiceDebugLog('join: applyConstraints for input device failed (ignored)', { preferredInputId })
-        }
-      }
       await setupVoiceStreams(targetCall, matrixSdk)
       useVoiceStore.getState().setJoinedRoom(roomId)
-      playJoinSelf()
       voiceDebugLog('join: GroupCall success', { roomId, alreadyInCall })
       syncRooms()
       setTimeout(() => {
@@ -1359,7 +1365,6 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
   }
 
   useVoiceStore.getState().setJoinedRoom(roomId)
-  playJoinSelf()
   syncRooms()
   setTimeout(() => {
     try { syncRooms() } catch { /* ignore */ }
@@ -1373,7 +1378,6 @@ export async function leaveVoiceRoom(roomId: string): Promise<void> {
 
   cleanupVoiceStreams()
   useVoiceStore.getState().reset()
-  playLeaveSelf()
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const clientAny = client as any
@@ -1450,17 +1454,22 @@ export async function sendFile(roomId: string, file: File): Promise<void> {
   } as any)
 }
 
-export async function sendAudio(roomId: string, blob: Blob, duration?: number): Promise<void> {
+export async function sendVoiceMessage(roomId: string, blob: Blob, durationMs: number): Promise<void> {
   if (!client) return
-  const upload = await client.uploadContent(blob)
+  const file = new File([blob], 'voice-message.ogg', { type: blob.type || 'audio/ogg' })
+  const upload = await client.uploadContent(file)
   await client.sendMessage(roomId, {
     msgtype: 'm.audio',
-    body: 'voice-message.ogg',
+    body: 'Message vocal',
     url: upload.content_uri,
     info: {
-      mimetype: blob.type || 'audio/ogg',
+      mimetype: file.type,
       size: blob.size,
-      ...(duration != null ? { duration: Math.round(duration * 1000) } : {}),
+      duration: durationMs,
+    },
+    'org.matrix.msc3245.voice': {},
+    'org.matrix.msc1767.audio': {
+      duration: durationMs,
     },
   } as any)
 }
@@ -2289,6 +2298,109 @@ export async function getUrlPreview(url: string): Promise<UrlPreviewData | null>
     previewCache.set(url, null)
     return null
   }
+}
+
+export function canUserPinMessages(roomId: string): boolean {
+  if (!client) return false
+  const room = client.getRoom(roomId)
+  if (!room) return false
+  const userId = client.getUserId()
+  if (!userId) return false
+
+  const powerLevelsEvent = room.currentState.getStateEvents('m.room.power_levels', '')
+  const powerLevels = (powerLevelsEvent?.getContent() as {
+    state_default?: number
+    events?: Record<string, number>
+    users?: Record<string, number>
+  }) ?? {}
+  const userPowerLevel = powerLevels.users?.[userId] ?? room.getMember(userId)?.powerLevel ?? 0
+  const requiredLevel = powerLevels.events?.['m.room.pinned_events'] ?? powerLevels.state_default ?? 50
+  return userPowerLevel >= requiredLevel
+}
+
+export function getPinnedEventIds(roomId: string): string[] {
+  if (!client) return []
+  const room = client.getRoom(roomId)
+  if (!room) return []
+  const pinEvent = room.currentState.getStateEvents('m.room.pinned_events', '')
+  if (!pinEvent) return []
+  const content = pinEvent.getContent() as { pinned?: string[] }
+  return Array.isArray(content.pinned) ? content.pinned : []
+}
+
+export async function pinMessage(roomId: string, eventId: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  const current = getPinnedEventIds(roomId)
+  if (current.includes(eventId)) return
+  const pinned = [...current, eventId]
+  // Optimistic update before server call
+  useMessageStore.getState().setPinnedEventIds(roomId, pinned)
+  try {
+    await (client as any).sendStateEvent(roomId, 'm.room.pinned_events', { pinned }, '')
+  } catch (err) {
+    // Revert on failure
+    useMessageStore.getState().setPinnedEventIds(roomId, current)
+    throw err
+  }
+}
+
+export async function unpinMessage(roomId: string, eventId: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  const current = getPinnedEventIds(roomId)
+  const pinned = current.filter((id) => id !== eventId)
+  // Optimistic update before server call
+  useMessageStore.getState().setPinnedEventIds(roomId, pinned)
+  try {
+    await (client as any).sendStateEvent(roomId, 'm.room.pinned_events', { pinned }, '')
+  } catch (err) {
+    // Revert on failure
+    useMessageStore.getState().setPinnedEventIds(roomId, current)
+    throw err
+  }
+}
+
+export async function loadPinnedMessages(roomId: string): Promise<MessageEvent[]> {
+  if (!client) return []
+  const pinnedIds = getPinnedEventIds(roomId)
+  if (pinnedIds.length === 0) return []
+
+  const results: MessageEvent[] = []
+  for (const eventId of pinnedIds) {
+    try {
+      const event = await client.fetchRoomEvent(roomId, eventId) as Record<string, unknown>
+      if (!event || event.type !== 'm.room.message') continue
+      const content = event.content as Record<string, unknown>
+      const sender = event.sender as string
+      const room = client.getRoom(roomId)
+      const member = room?.getMember(sender)
+      const senderAvatar = member ? memberAvatarHttpUrl(member) : null
+      const msgtype = String(content.msgtype || 'm.text')
+      let type: MessageEvent['type'] = 'm.text'
+      if (msgtype === 'm.image') type = 'm.image'
+      else if (msgtype === 'm.file') type = 'm.file'
+      else if (msgtype === 'm.video') type = 'm.video'
+      else if (msgtype === 'm.audio') type = 'm.audio'
+      else if (msgtype === 'm.notice') type = 'm.notice'
+      else if (msgtype === 'm.emote') type = 'm.emote'
+
+      results.push({
+        eventId: event.event_id as string,
+        roomId,
+        sender,
+        senderName: member?.name || sender,
+        senderAvatar,
+        content: String(content.body || ''),
+        htmlContent: (content.formatted_body as string | undefined) || null,
+        timestamp: (event.origin_server_ts as number) || 0,
+        type,
+        replyTo: null,
+        isEdited: false,
+      })
+    } catch {
+      // Event may have been redacted or inaccessible
+    }
+  }
+  return results
 }
 
 /** @param _size ignored — avatars use full download URL for GIF compatibility */
