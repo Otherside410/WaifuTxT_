@@ -602,9 +602,26 @@ export function MessageInput() {
   }
 
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
-    const newText = e.target.value
+    let newText = e.target.value
+    const cursorPos = e.target.selectionStart ?? newText.length
+
+    if (cursorPos > 0 && cursorPos <= newText.length) {
+      const charIdx = cursorPos - 1
+      const char = newText[charIdx]
+      if (/[a-zà-öø-ÿ]/.test(char)) {
+        const before = newText.slice(0, charIdx)
+        const shouldCap =
+          before.trimStart() === '' ||
+          /[.!?]\s+$/.test(before) ||
+          /[.!?]$/.test(before)
+        if (shouldCap) {
+          newText = newText.slice(0, charIdx) + char.toUpperCase() + newText.slice(charIdx + 1)
+        }
+      }
+    }
+
     setText(newText)
-    detectToken(newText, e.target.selectionStart ?? newText.length)
+    detectToken(newText, cursorPos)
     if (!activeRoomId) return
 
     sendTyping(activeRoomId, true)
