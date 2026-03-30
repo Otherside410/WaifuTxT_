@@ -1164,6 +1164,60 @@ export async function getOrCreateDmRoom(userId: string): Promise<string> {
   return created.room_id
 }
 
+export function canUserCreateRoom(spaceId: string): boolean {
+  if (!client) return false
+  const room = client.getRoom(spaceId)
+  if (!room) return false
+  const userId = client.getUserId()
+  if (!userId) return false
+
+  const powerLevelsEvent = room.currentState.getStateEvents('m.room.power_levels', '')
+  const powerLevels = (powerLevelsEvent?.getContent() as {
+    state_default?: number
+    events?: Record<string, number>
+    users?: Record<string, number>
+  }) ?? {}
+  const userPowerLevel = powerLevels.users?.[userId] ?? room.getMember(userId)?.powerLevel ?? 0
+  const requiredLevel = powerLevels.events?.['m.space.child'] ?? powerLevels.state_default ?? 50
+  return userPowerLevel >= requiredLevel
+}
+
+export async function createRoom(
+  name: string,
+  options?: { topic?: string; visibility?: 'public' | 'private'; parentSpaceId?: string },
+): Promise<string> {
+  const readyClient = await ensureClientReady()
+  const trimmedName = name.trim()
+  if (!trimmedName) throw new Error('Le nom du salon est requis')
+  const visibility = options?.visibility === 'public' ? 'public' : 'private'
+
+  try {
+    const created = await readyClient.createRoom({
+      name: trimmedName,
+      topic: options?.topic?.trim() || undefined,
+      preset: visibility === 'public' ? 'public_chat' : 'private_chat',
+      visibility,
+    } as any)
+    const newRoomId = created.room_id
+
+    if (options?.parentSpaceId) {
+      const homeserver = readyClient.getDomain() || readyClient.baseUrl.replace(/^https?:\/\//, '')
+      await (readyClient as any).sendStateEvent(
+        options.parentSpaceId,
+        'm.space.child',
+        { via: [homeserver] },
+        newRoomId,
+      )
+    }
+
+    return newRoomId
+  } catch (err) {
+    const errorData = err as { data?: { error?: string }; message?: string }
+    const msg = errorData?.data?.error || errorData?.message || 'Impossible de créer le salon'
+    throw new Error(msg)
+  }
+}
+
 export async function createSpace(
   name: string,
   options?: { visibility?: 'public' | 'private' },

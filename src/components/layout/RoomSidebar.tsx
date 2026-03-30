@@ -14,6 +14,8 @@ import {
   leaveVoiceRoom,
   loadRoomMembers,
   setOwnPresence,
+  createRoom,
+  canUserCreateRoom,
 } from '../../lib/matrix'
 import { getWaifuById } from '../../lib/waifu'
 import { setVoiceMuted, setVoiceDeafened } from '../../lib/voice'
@@ -202,6 +204,13 @@ export function RoomSidebar() {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
 
+  const [showCreateRoomModal, setShowCreateRoomModal] = useState(false)
+  const [newRoomName, setNewRoomName] = useState('')
+  const [newRoomTopic, setNewRoomTopic] = useState('')
+  const [newRoomType, setNewRoomType] = useState<'public' | 'private'>('private')
+  const [createRoomError, setCreateRoomError] = useState<string | null>(null)
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false)
+
   const presenceMenuRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const rooms = useRoomStore((s) => s.rooms)
@@ -249,6 +258,32 @@ export function RoomSidebar() {
     if (myUserId) updatePresence(myUserId, presence)
     setShowPresenceMenu(false)
     await setOwnPresence(presence)
+  }
+
+  const canCreate = activeSpaceId ? canUserCreateRoom(activeSpaceId) : false
+
+  const handleCreateRoom = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (isCreatingRoom || !newRoomName.trim() || !activeSpaceId) return
+    setCreateRoomError(null)
+    setIsCreatingRoom(true)
+    try {
+      const roomId = await createRoom(newRoomName.trim(), {
+        topic: newRoomTopic.trim() || undefined,
+        visibility: newRoomType,
+        parentSpaceId: activeSpaceId,
+      })
+      setActiveRoom(roomId)
+      setShowCreateRoomModal(false)
+      setNewRoomName('')
+      setNewRoomTopic('')
+      setNewRoomType('private')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Impossible de créer le salon'
+      setCreateRoomError(message)
+    } finally {
+      setIsCreatingRoom(false)
+    }
   }
 
   // ── Invitations ──────────────────────────────────────────────────────────
@@ -557,8 +592,20 @@ export function RoomSidebar() {
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="w-60 bg-bg-secondary flex flex-col border-r border-border">
-      <div className="h-12 px-3 flex items-center border-b border-border shrink-0">
+      <div className="h-12 px-3 flex items-center justify-between border-b border-border shrink-0">
         <h2 className="font-semibold text-text-primary truncate text-sm">{spaceName}</h2>
+        {activeSpaceId && canCreate && (
+          <button
+            onClick={() => setShowCreateRoomModal(true)}
+            className="shrink-0 w-6 h-6 inline-flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+            title="Créer un salon"
+            aria-label="Créer un salon"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m7-7H5" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <div className="px-2 py-2">
@@ -675,6 +722,136 @@ export function RoomSidebar() {
       </div>
 
       <VoicePanel />
+
+      {showCreateRoomModal && activeSpaceId && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-[2px] flex items-center justify-center p-4">
+          <div className="w-full max-w-[480px] rounded-2xl border border-border bg-bg-secondary shadow-2xl p-6">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-semibold text-text-primary">Créer un salon</h3>
+                <p className="mt-1.5 text-sm text-text-secondary">
+                  Le salon sera ajouté à <span className="font-medium text-text-primary">{spaceName}</span>.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  if (isCreatingRoom) return
+                  setShowCreateRoomModal(false)
+                  setNewRoomName('')
+                  setNewRoomTopic('')
+                  setNewRoomType('private')
+                  setCreateRoomError(null)
+                }}
+                className="h-8 w-8 inline-flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+                aria-label="Fermer"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => setNewRoomType('private')}
+                className={`flex-1 rounded-lg border p-3 text-left transition-colors cursor-pointer ${
+                  newRoomType === 'private'
+                    ? 'border-accent-pink bg-accent-pink/10'
+                    : 'border-border bg-bg-primary/40 hover:bg-bg-hover'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-text-muted shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2.25m-4.5 0h9A2.25 2.25 0 0018.75 15V9.75A2.25 2.25 0 0016.5 7.5h-9A2.25 2.25 0 005.25 9.75V15A2.25 2.25 0 007.5 17.25zM9 7.5V6a3 3 0 016 0v1.5" />
+                  </svg>
+                  <div>
+                    <p className="text-sm font-semibold text-text-primary">Privé</p>
+                    <p className="text-xs text-text-muted">Sur invitation</p>
+                  </div>
+                </div>
+              </button>
+              <button
+                onClick={() => setNewRoomType('public')}
+                className={`flex-1 rounded-lg border p-3 text-left transition-colors cursor-pointer ${
+                  newRoomType === 'public'
+                    ? 'border-accent-pink bg-accent-pink/10'
+                    : 'border-border bg-bg-primary/40 hover:bg-bg-hover'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-text-muted shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18" />
+                  </svg>
+                  <div>
+                    <p className="text-sm font-semibold text-text-primary">Public</p>
+                    <p className="text-xs text-text-muted">Ouvert à tous</p>
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateRoom} className="mt-4 space-y-3">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1" htmlFor="new-room-name">
+                  Nom du salon
+                </label>
+                <input
+                  id="new-room-name"
+                  type="text"
+                  value={newRoomName}
+                  onChange={(e) => {
+                    setNewRoomName(e.target.value)
+                    if (createRoomError) setCreateRoomError(null)
+                  }}
+                  placeholder="nouveau-salon"
+                  disabled={isCreatingRoom}
+                  autoFocus
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1" htmlFor="new-room-topic">
+                  Description <span className="text-text-muted">(optionnel)</span>
+                </label>
+                <input
+                  id="new-room-topic"
+                  type="text"
+                  value={newRoomTopic}
+                  onChange={(e) => setNewRoomTopic(e.target.value)}
+                  placeholder="À quoi sert ce salon ?"
+                  disabled={isCreatingRoom}
+                  className="w-full"
+                />
+              </div>
+              {createRoomError && (
+                <p className="text-xs text-danger">{createRoomError}</p>
+              )}
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isCreatingRoom) return
+                    setShowCreateRoomModal(false)
+                    setNewRoomName('')
+                    setNewRoomTopic('')
+                    setNewRoomType('private')
+                    setCreateRoomError(null)
+                  }}
+                  className="px-3 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+                  disabled={isCreatingRoom}
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingRoom || !newRoomName.trim()}
+                  className="px-3 py-2 text-sm rounded-md bg-accent-pink text-white hover:bg-accent-pink-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  {isCreatingRoom ? 'Création...' : 'Créer'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <div className="relative -left-[72px] w-[calc(100%+72px)] min-h-[3.25rem] py-2 pl-[80px] pr-2 flex items-center justify-between gap-2 bg-bg-tertiary/95 border-t border-border">
          {showPresenceMenu && (
