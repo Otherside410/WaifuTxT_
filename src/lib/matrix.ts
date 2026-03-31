@@ -1508,6 +1508,68 @@ export async function sendFile(roomId: string, file: File): Promise<void> {
   } as any)
 }
 
+export async function redactMessage(roomId: string, eventId: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  await client.redactEvent(roomId, eventId)
+}
+
+export function canUserRedact(roomId: string, senderId: string): boolean {
+  if (!client) return false
+  const userId = client.getUserId()
+  if (!userId) return false
+  if (senderId === userId) return true
+  const room = client.getRoom(roomId)
+  if (!room) return false
+  const powerLevelsEvent = room.currentState.getStateEvents('m.room.power_levels', '')
+  const powerLevels = (powerLevelsEvent?.getContent() as {
+    redact?: number
+    users?: Record<string, number>
+  }) ?? {}
+  const userPowerLevel = powerLevels.users?.[userId] ?? room.getMember(userId)?.powerLevel ?? 0
+  const requiredLevel = powerLevels.redact ?? 50
+  return userPowerLevel >= requiredLevel
+}
+
+export async function leaveRoom(roomId: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  await client.leave(roomId)
+}
+
+export async function renameRoom(roomId: string, name: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('Le nom du salon est requis')
+  await (client as any).sendStateEvent(roomId, 'm.room.name', { name: trimmed }, '')
+}
+
+export function canUserRenameRoom(roomId: string): boolean {
+  if (!client) return false
+  const room = client.getRoom(roomId)
+  if (!room) return false
+  const userId = client.getUserId()
+  if (!userId) return false
+  const powerLevelsEvent = room.currentState.getStateEvents('m.room.power_levels', '')
+  const powerLevels = (powerLevelsEvent?.getContent() as {
+    state_default?: number
+    events?: Record<string, number>
+    users?: Record<string, number>
+  }) ?? {}
+  const userPowerLevel = powerLevels.users?.[userId] ?? room.getMember(userId)?.powerLevel ?? 0
+  const requiredLevel = powerLevels.events?.['m.room.name'] ?? powerLevels.state_default ?? 50
+  return userPowerLevel >= requiredLevel
+}
+
+export async function sendVideo(roomId: string, file: File): Promise<void> {
+  if (!client) return
+  const upload = await client.uploadContent(file)
+  await client.sendMessage(roomId, {
+    msgtype: 'm.video',
+    body: file.name || 'video.mp4',
+    url: upload.content_uri,
+    info: { mimetype: file.type, size: file.size },
+  } as any)
+}
+
 export async function sendVoiceMessage(roomId: string, blob: Blob, durationMs: number): Promise<void> {
   if (!client) return
   const file = new File([blob], 'voice-message.ogg', { type: blob.type || 'audio/ogg' })
