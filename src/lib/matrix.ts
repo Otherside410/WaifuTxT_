@@ -2477,41 +2477,39 @@ export async function unpinMessage(roomId: string, eventId: string): Promise<voi
 
 export async function loadPinnedMessages(roomId: string): Promise<MessageEvent[]> {
   if (!client) return []
+  const matrixSdk = await getSDK()
   const pinnedIds = getPinnedEventIds(roomId)
   if (pinnedIds.length === 0) return []
 
+  const room = client.getRoom(roomId)
+  if (!room) return []
+
+  const storeMessages = useMessageStore.getState().getMessages(roomId)
   const results: MessageEvent[] = []
+
   for (const eventId of pinnedIds) {
     try {
-      const event = await client.fetchRoomEvent(roomId, eventId) as Record<string, unknown>
-      if (!event || event.type !== 'm.room.message') continue
-      const content = event.content as Record<string, unknown>
-      const sender = event.sender as string
-      const room = client.getRoom(roomId)
-      const member = room?.getMember(sender)
-      const senderAvatar = member ? memberAvatarHttpUrl(member) : null
-      const msgtype = String(content.msgtype || 'm.text')
-      let type: MessageEvent['type'] = 'm.text'
-      if (msgtype === 'm.image') type = 'm.image'
-      else if (msgtype === 'm.file') type = 'm.file'
-      else if (msgtype === 'm.video') type = 'm.video'
-      else if (msgtype === 'm.audio') type = 'm.audio'
-      else if (msgtype === 'm.notice') type = 'm.notice'
-      else if (msgtype === 'm.emote') type = 'm.emote'
+      const stored = storeMessages.find((m) => m.eventId === eventId)
+      if (stored) { results.push(stored); continue }
 
-      results.push({
-        eventId: event.event_id as string,
-        roomId,
-        sender,
-        senderName: member?.name || sender,
-        senderAvatar,
-        content: String(content.body || ''),
-        htmlContent: (content.formatted_body as string | undefined) || null,
-        timestamp: (event.origin_server_ts as number) || 0,
-        type,
-        replyTo: null,
-        isEdited: false,
-      })
+      const local = room.findEventById(eventId)
+      if (local) {
+        const msg = eventToMessage(local, roomId)
+        if (msg) { results.push(msg); continue }
+      }
+
+      const rawEvent = await client.fetchRoomEvent(roomId, eventId) as Record<string, unknown>
+      if (!rawEvent) continue
+      const mxEvent = new matrixSdk.MatrixEvent({ ...rawEvent, room_id: roomId })
+
+      if (mxEvent.isEncrypted()) {
+        try {
+          await mxEvent.attemptDecryption((client as any).crypto)
+        } catch { /* decryption keys unavailable */ }
+      }
+
+      const msg = eventToMessage(mxEvent, roomId)
+      if (msg) results.push(msg)
     } catch {
       // Event may have been redacted or inaccessible
     }
