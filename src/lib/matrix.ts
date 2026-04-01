@@ -887,6 +887,13 @@ export async function getRoomMemberProfileBasics(
   return getUserProfileBasics(userId, size)
 }
 
+/** Store placeholder for encrypted timeline events until decrypt completes (see RoomEvent.Timeline handler). */
+const E2EE_STORE_PLACEHOLDER_CONTENT = '🔒 Message chiffré — clé de récupération requise'
+
+function isEncryptedStorePlaceholder(msg: MessageEvent): boolean {
+  return msg.content === E2EE_STORE_PLACEHOLDER_CONTENT
+}
+
 function encryptedFallbackMessage(event: MatrixEvent, roomId: string): MessageEvent | null {
   const sender = event.getSender()
   if (!sender) return null
@@ -899,7 +906,7 @@ function encryptedFallbackMessage(event: MatrixEvent, roomId: string): MessageEv
     sender,
     senderName: member?.name || sender,
     senderAvatar,
-    content: '🔒 Message chiffré — clé de récupération requise',
+    content: E2EE_STORE_PLACEHOLDER_CONTENT,
     htmlContent: null,
     timestamp: event.getTs(),
     type: 'm.notice',
@@ -2489,25 +2496,26 @@ export async function loadPinnedMessages(roomId: string): Promise<MessageEvent[]
 
   for (const eventId of pinnedIds) {
     try {
-      const stored = storeMessages.find((m) => m.eventId === eventId)
-      if (stored) { results.push(stored); continue }
-
       const local = room.findEventById(eventId)
       if (local) {
-        const msg = eventToMessage(local, roomId)
-        if (msg) { results.push(msg); continue }
+        await client.decryptEventIfNeeded(local)
+        const fromTimeline = eventToMessage(local, roomId)
+        if (fromTimeline && !isEncryptedStorePlaceholder(fromTimeline)) {
+          results.push(fromTimeline)
+          continue
+        }
+      }
+
+      const stored = storeMessages.find((m) => m.eventId === eventId)
+      if (stored && !isEncryptedStorePlaceholder(stored)) {
+        results.push(stored)
+        continue
       }
 
       const rawEvent = await client.fetchRoomEvent(roomId, eventId) as Record<string, unknown>
       if (!rawEvent) continue
       const mxEvent = new matrixSdk.MatrixEvent({ ...rawEvent, room_id: roomId })
-
-      if (mxEvent.isEncrypted()) {
-        try {
-          await mxEvent.attemptDecryption((client as any).crypto)
-        } catch { /* decryption keys unavailable */ }
-      }
-
+      await client.decryptEventIfNeeded(mxEvent)
       const msg = eventToMessage(mxEvent, roomId)
       if (msg) results.push(msg)
     } catch {
