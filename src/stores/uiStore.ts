@@ -52,6 +52,12 @@ interface UiState {
   bumpRoomSearchFocus: () => void
   chatInputFocusBump: number
   bumpChatInputFocus: () => void
+  activeThreadRootId: string | null
+  activeThreadRoomId: string | null
+  openThreadPanel: (roomId: string, threadRootId: string) => void
+  closeThreadPanel: () => void
+  showThreadsListPanel: boolean
+  toggleThreadsListPanel: () => void
 }
 
 const ROOM_PREVIEW_STORAGE_KEY = 'waifutxt_show_room_message_preview'
@@ -188,4 +194,10 @@ export const useUiStore = create<UiState>((set) => ({
   bumpRoomSearchFocus: () => set((s) => ({ roomSearchFocusBump: s.roomSearchFocusBump + 1 })),
   chatInputFocusBump: 0,
   bumpChatInputFocus: () => set((s) => ({ chatInputFocusBump: s.chatInputFocusBump + 1 })),
+  activeThreadRootId: null,
+  activeThreadRoomId: null,
+  openThreadPanel: (roomId, threadRootId) => set({ activeThreadRootId: threadRootId, activeThreadRoomId: roomId, showPinnedPanel: false, showThreadsListPanel: false }),
+  closeThreadPanel: () => set({ activeThreadRootId: null, activeThreadRoomId: null }),
+  showThreadsListPanel: false,
+  toggleThreadsListPanel: () => set((s) => ({ showThreadsListPanel: !s.showThreadsListPanel, showPinnedPanel: false, activeThreadRootId: null, activeThreadRoomId: null })),
 }))

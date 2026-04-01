@@ -9,6 +9,8 @@ interface MessageState {
   reactionsVersion: number
   pinnedEventIds: Map<string, string[]>
   pinnedVersion: number
+  threadMessages: Map<string, MessageEvent[]>
+  threadsVersion: number
 
   addMessage: (roomId: string, message: MessageEvent) => void
   removeMessage: (roomId: string, eventId: string) => void
@@ -24,6 +26,11 @@ interface MessageState {
   setPinnedEventIds: (roomId: string, ids: string[]) => void
   getPinnedEventIds: (roomId: string) => string[]
   bumpPinnedVersion: () => void
+  addThreadMessage: (threadRootId: string, message: MessageEvent) => void
+  setThreadMessages: (threadRootId: string, messages: MessageEvent[]) => void
+  getThreadMessages: (threadRootId: string) => MessageEvent[]
+  updateThreadRootInfo: (roomId: string, threadRootId: string, info: MessageEvent['threadInfo']) => void
+  bumpThreadsVersion: () => void
   reset: () => void
 }
 
@@ -35,6 +42,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   reactionsVersion: 0,
   pinnedEventIds: new Map(),
   pinnedVersion: 0,
+  threadMessages: new Map(),
+  threadsVersion: 0,
 
   addMessage: (roomId, message) => {
     const allMessages = new Map(get().messages)
@@ -111,5 +120,36 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   bumpPinnedVersion: () => set((state) => ({ pinnedVersion: state.pinnedVersion + 1 })),
 
-  reset: () => set({ messages: new Map(), typing: new Map(), receiptsVersion: 0, reactionsVersion: 0, pinnedEventIds: new Map(), pinnedVersion: 0 }),
+  addThreadMessage: (threadRootId, message) => {
+    const all = new Map(get().threadMessages)
+    const existing = all.get(threadRootId) || []
+    if (!existing.some((m) => m.eventId === message.eventId)) {
+      all.set(threadRootId, [...existing, message])
+      set({ threadMessages: all, threadsVersion: get().threadsVersion + 1 })
+    }
+  },
+
+  setThreadMessages: (threadRootId, messages) => {
+    const all = new Map(get().threadMessages)
+    all.set(threadRootId, messages)
+    set({ threadMessages: all, threadsVersion: get().threadsVersion + 1 })
+  },
+
+  getThreadMessages: (threadRootId) => get().threadMessages.get(threadRootId) || [],
+
+  updateThreadRootInfo: (roomId, threadRootId, info) => {
+    const allMessages = new Map(get().messages)
+    const roomMessages = allMessages.get(roomId)
+    if (!roomMessages) return
+    const idx = roomMessages.findIndex((m) => m.eventId === threadRootId)
+    if (idx === -1) return
+    const updated = [...roomMessages]
+    updated[idx] = { ...updated[idx], threadInfo: info }
+    allMessages.set(roomId, updated)
+    set({ messages: allMessages, threadsVersion: get().threadsVersion + 1 })
+  },
+
+  bumpThreadsVersion: () => set((state) => ({ threadsVersion: state.threadsVersion + 1 })),
+
+  reset: () => set({ messages: new Map(), typing: new Map(), receiptsVersion: 0, reactionsVersion: 0, pinnedEventIds: new Map(), pinnedVersion: 0, threadMessages: new Map(), threadsVersion: 0 }),
 }))

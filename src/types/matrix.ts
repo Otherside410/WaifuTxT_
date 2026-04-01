@@ -59,6 +59,13 @@ export interface MessageEvent {
   isVoiceMessage?: boolean
   encryptedFile?: EncryptedFileInfo
   encryptedThumbnailFile?: EncryptedFileInfo
+  threadRootId?: string | null
+  threadInfo?: {
+    replyCount: number
+    lastReplyTs: number
+    lastReplierAvatar: string | null
+    lastReplierName: string
+  } | null
 }
 
 export interface RoomMember {
@@ -68,6 +75,14 @@ export interface RoomMember {
   membership: string
   powerLevel: number
   presence: 'online' | 'offline' | 'unavailable'
+}
+
+export interface ThreadSummary {
+  rootMessage: MessageEvent
+  replyCount: number
+  lastReplyTs: number
+  lastReplierName: string
+  lastReplierAvatar: string | null
 }
 
 export interface TypingState {

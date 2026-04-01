@@ -11,6 +11,8 @@ export function RoomHeader() {
   const showMemberPanel = useUiStore((s) => s.showMemberPanel)
   const togglePinnedPanel = useUiStore((s) => s.togglePinnedPanel)
   const showPinnedPanel = useUiStore((s) => s.showPinnedPanel)
+  const toggleThreadsListPanel = useUiStore((s) => s.toggleThreadsListPanel)
+  const showThreadsListPanel = useUiStore((s) => s.showThreadsListPanel)
   const pinnedEventIds = useMessageStore((s) => s.pinnedEventIds)
   const pinnedVersion = useMessageStore((s) => s.pinnedVersion)
 
@@ -36,6 +38,18 @@ export function RoomHeader() {
       )}
 
       <div className="ml-auto flex items-center gap-1">
+        <button
+          onClick={toggleThreadsListPanel}
+          className={`p-1.5 rounded transition-colors cursor-pointer ${
+            showThreadsListPanel ? 'text-text-primary bg-bg-hover' : 'text-text-muted hover:text-text-primary'
+          }`}
+          title="Fils de discussion"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h8M8 8h5M8 16h6" />
+            <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
         <button
           onClick={togglePinnedPanel}
           className={`relative p-1.5 rounded transition-colors cursor-pointer ${
