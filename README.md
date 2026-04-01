@@ -1,6 +1,6 @@
 # WaifuTxT_
 
-Client web pour le protocole [Matrix](https://matrix.org), avec une interface inspirée de Discord et un thème cyberpunk/anime.
+Client web pour le protocole [Matrix](https://matrix.org), avec une interface inspirée de Discord et un thème cyberpunk / anime.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React_19-61DAFB?logo=react&logoColor=black)
@@ -8,43 +8,72 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS_v4-06B6D4?logo=tailwindcss&logoColor=white)
 ![Matrix](https://img.shields.io/badge/Matrix-000000?logo=matrix&logoColor=white)
 
-## Fonctionnalites
+## Fonctionnalités
 
-- **Authentification Matrix** — login identifiant/mot de passe + persistance de session
-- **Salons, Spaces et DMs** — navigation inspiree de Discord (serveurs, channels, messages directs)
-- **Messagerie temps reel** — timeline, historique, envoi/reception des messages
-- **Chiffrement de bout en bout (E2EE)** — via `matrix-sdk-crypto-wasm` (Rust crypto)
-- **Restauration de cles** — dechiffrement de l'historique via la cle de recuperation (Secret Storage / 4S)
-- **Medias Matrix** — upload et affichage d'images/videos/fichiers, y compris contenus chiffres
-- **Edition de messages** — support Matrix `m.replace` avec indicateur `(modifie)`
-- **Reponses de messages** — support Matrix `m.in_reply_to` avec preview style Discord
-- **Reactions aux messages** — picker emoji Discord-like avec categories, recherche et **reactions rapides personnalisables**
-- **Emoji autocomplete** — tapez `:` pour lancer les suggestions, conversion automatique des shortcodes `:joy:` → 😂
-- **Markdown** — rendu avec `react-markdown`, support GFM et coloration syntaxique
-- **Mentions** — mise en avant des mentions et aide a la saisie (@user, #room tags)
-- **Indicateurs de frappe** — affichage en temps reel, mode `3 points` ou `waifu`
-- **Read receipts** — avatars des lecteurs sur les messages envoyes
-- **Statut personnalise** — message de statut custom, visible sur le profil et en ligne
-- **Personnalisation waifu (opt-in)** — choix local de waifu (Miku / Airi) dans l'apparence
-- **Personnalisation reactions rapides** — gerez votre liste d'emojis pour reactions rapides via Parametres → Personnalisation
-- **Notifications** — via l'API Notification du navigateur
-- **Bouton emoji dans la barre de chat** — insertez des emojis directement a votre position de curseur
+### Connexion & chiffrement
+
+- **Authentification Matrix** — identifiant / mot de passe, choix du **homeserver** sur l’écran de connexion + persistance de session optionnelle
+- **Chiffrement de bout en bout (E2EE)** — via `matrix-sdk-crypto-wasm` (crypto Rust)
+- **Restauration de clés** — déchiffrement de l’historique via la clé de récupération (Secret Storage / 4S)
+- **Vérification croisée** — flux de vérification d’appareils (modal dédiée)
+
+### Navigation & salons
+
+- **Spaces, salons et DMs** — barres latérales type Discord (serveurs, canaux, messages directs)
+- **Création de salon** — dans un espace, si les droits Matrix le permettent (`m.space.child`)
+- **Renommer un salon** — depuis l’en-tête du salon (selon les power levels)
+- **Quitter un salon** — confirmation depuis l’en-tête
+- **Salons vocaux (expérimental)** — appels vocaux Matrix / groupe (panneau dédié, réglages audio)
+
+### Messagerie
+
+- **Temps réel** — timeline, réception des événements, **cache en mémoire** : un salon déjà visité n’est pas rechargé entièrement depuis le SDK au prochain focus (évite un `setMessages` inutile)
+- **Historique** — pagination vers le haut (`prependMessages`, indépendant du cache ci-dessus)
+- **Édition** — `m.replace` avec indicateur « modifié »
+- **Réponses** — `m.in_reply_to` avec aperçu type Discord
+- **Réactions** — picker emoji (catégories, recherche), réactions rapides personnalisables
+- **Épinglage** — état `m.room.pinned_events`, panneau « Messages épinglés » (aperçu texte / médias, désépinglage)
+- **Suppression (redaction)** — selon les droits Matrix, avec confirmation
+- **Copier le contenu** — bouton sur les messages éligibles
+- **Mentions** — `@localpart` étendu en MXID à l’envoi, mise en forme à l’affichage
+- **Markdown** — `react-markdown`, GFM, coloration syntaxique
+- **Emoji** — `:` pour l’autocomplétion, shortcodes → emoji, bouton dans la barre de saisie
+- **Saisie** — capitalisation automatique en début de message et après `.` `!` `?`
+- **Indicateurs de frappe** — temps réel, style « points » ou « waifu »
+- **Accusés de lecture** — avatars des lecteurs sur vos messages envoyés
+
+### Médias & fichiers
+
+- **Images, vidéos, fichiers** — envoi et affichage (y compris contenus chiffrés, déchiffrement côté client)
+- **Messages vocaux** — enregistrement micro, envoi `m.audio` avec drapeaux vocaux (MSC3245 / MSC1767), lecteur dans la timeline
+- **Aperçus d’URL** — récupération Open Graph côté client quand c’est possible
+
+### Profil & interface
+
+- **Statut personnalisé** — message de statut, visible en ligne / profil
+- **Avatar profil** — recadrage / upload
+- **Thème & accent** — clair / sombre, couleur d’accent
+- **Waifu (opt-in)** — Miku / Airi en local
+- **Notifications** — API Notifications du navigateur
+- **Raccourcis clavier** — hooks dédiés selon les écrans
 
 ## Stack technique
 
 | Couche | Technologie |
-|---|---|
+|--------|-------------|
 | Framework | React 19 + TypeScript |
 | Build | Vite 7 |
-| Style | Tailwind CSS v4 (variables CSS custom) |
+| Style | Tailwind CSS v4 (variables CSS) |
 | SDK Matrix | `matrix-js-sdk` v41 |
 | Crypto E2EE | `@matrix-org/matrix-sdk-crypto-wasm` |
-| Emojis | `emojibase-data` + Twemoji CDN |
-| State | Zustand |
-| Routage | React Router |
+| Emojis | `emojibase-data`, `emoji-picker-react`, Twemoji (CDN) |
+| State | Zustand 5 |
+| Routage | React Router 7 |
 | Markdown | `react-markdown` + `remark-gfm` + `rehype-highlight` |
 | Dates | `date-fns` |
-| Qualite dev | ESLint + Husky |
+| Qualité dev | ESLint + Husky |
+
+Pas d’**axios** : HTTP via `fetch` / SDK Matrix.
 
 ## Installation
 
@@ -54,15 +83,9 @@ cd WaifuTxT_
 npm install
 ```
 
-### Configuration du homeserver
+### Homeserver
 
-Modifiez le `homeserver` dans `src/lib/matrix.ts` si necessaire :
-
-```typescript
-const HOMESERVER_URL = 'https://matrix.example.com'
-```
-
-Par defaut, pointe sur un serveur de test. Adaptez l'URL a votre instance Matrix.
+L’URL du homeserver est saisie **sur l’écran de connexion** (champ dédié, valeur par défaut `https://matrix.org`). Aucune constante obligatoire à modifier dans le code pour un usage normal.
 
 ## Lancement
 
@@ -70,7 +93,7 @@ Par defaut, pointe sur un serveur de test. Adaptez l'URL a votre instance Matrix
 npm run dev
 ```
 
-L'app est accessible sur `http://localhost:5173` (ou le port suivant disponible).
+Application sur `http://localhost:5173` (ou le port indiqué par Vite).
 
 ## Build production
 
@@ -83,59 +106,57 @@ npm run preview
 
 ```
 src/
-├── assets/
-│   └── waifu/              # PNG waifu (Miku, Airi)
+├── assets/waifu/           # Illustrations waifu (Miku, Airi)
 ├── components/
 │   ├── auth/               # LoginScreen
 │   ├── chat/               # ChatArea, MessageList, MessageItem, MessageInput,
-│   │                       # KeyBackupBanner, TypingIndicator
-│   ├── common/             # Avatar, EmojiPicker, composants reutilisables
-│   ├── layout/             # AppShell, SpaceSidebar, RoomSidebar, SettingsModal
-│   └── settings/           # ThemePicker, AccentColorPicker, ProfileStatusSettings,
-│   │                       # CustomizationSettings (reactions rapides)
-│   └── verification/       # UI de verification cross-signing
+│   │                       # PinnedMessagesPanel, RoomHeader, KeyBackupBanner, TypingIndicator
+│   ├── common/             # Avatar, EmojiPicker, Tooltip, etc.
+│   ├── layout/             # AppShell, SpaceSidebar, RoomSidebar, MemberPanel,
+│   │                       # VoicePanel, SettingsModal
+│   ├── settings/           # Thème, accent, profil, réactions rapides, audio
+│   ├── verification/       # Vérification E2EE
+│   └── voice/              # Vue salon vocal
+├── hooks/                  # useNotifications, useKeyboardShortcuts
 ├── lib/
-│   ├── matrix.ts           # Interface avec matrix-js-sdk (init, events, crypto, media)
-│   ├── waifu.ts            # Catalogue waifu et helpers
-│   └── verification.ts     # Logique de verification E2EE
+│   ├── matrix.ts           # Client SDK, sync, médias, pièces jointes, pins, vocaux, rooms
+│   ├── voice.ts            # Flux audio appels groupe
+│   ├── verification.ts
+│   └── waifu.ts
 ├── stores/
-│   ├── authStore.ts        # Session & authentification (Zustand)
-│   ├── roomStore.ts        # Salons & espaces
-│   ├── messageStore.ts     # Messages, receipts, indicateurs de frappe
-│   ├── uiStore.ts          # Etat UI (settings, waifu, reply preview, etc.)
-│   └── verificationStore.ts# Etat de verification E2EE
-├── types/
-│   └── matrix.ts           # Types TypeScript (Session, Message, Room, etc.)
-├── styles/
-│   └── theme.css           # Variables de theme cyberpunk + animations
+│   ├── authStore.ts
+│   ├── roomStore.ts
+│   ├── messageStore.ts     # Messages, typing, pins, loadedRooms (cache init par salon)
+│   ├── uiStore.ts
+│   ├── voiceStore.ts
+│   └── verificationStore.ts
+├── types/matrix.ts
+├── styles/theme.css
 ├── App.tsx
 └── main.tsx
 ```
 
-## Optimisations performance
+## Performances & UX
 
-- **React.memo sur les boutons emoji** — court-circuit des re-renders inutiles lors du survol
-- **Rendu progressif des categories emoji** — premiere categorie instantanee, reste via `requestIdleCallback` pour ne pas bloquer le thread principal
-- **Picker maintenu en vie** — le picker emoji dans la barre de chat reste monte apres la premiere ouverture, transitions CSS seulement
-- **Animation d'entree fluide** — keyframe CSS avec scale + translateY (130ms)
-- **`content-visibility: auto`** — le navigateur saute le rendu des sections hors-ecran du picker
+- **Salons déjà chargés** — `loadedRooms` dans le store : `loadInitialMessages` ne réécrit pas la timeline si le salon a déjà été initialisé dans la session (les événements temps réel continuent d’alimenter le store)
+- **React.memo / picker emoji** — limitation des re-renders, rendu progressif des catégories (`requestIdleCallback`)
+- **Picker monté de façon persistante** — transitions CSS plutôt que remontage complet
+- **`content-visibility: auto`** — sections hors écran du picker moins coûteuses à peindre
 
-## Known Issues
+## Problèmes connus
 
-- **Affichage des images avec texte (messages entrants)**: sur certains messages Matrix qui contiennent une image + du texte (notamment depuis d'autres clients comme Element), l'image peut ne pas se charger correctement dans WaifuTxT_ alors que le fichier/image seul fonctionne.
-- **Statut**: non resolu a ce stade, plusieurs fallbacks d'auth media sont deja en place, mais le cas persiste selon le homeserver/client emetteur.
-- **Piste de correction**: tracer precisement les URLs media recues (`url`, `file.url`, `thumbnail_url`) et les codes HTTP au moment du rendu pour harmoniser le chargement avec le comportement d'Element.
+- **Image + texte dans un même message** : sur certains messages venant d’autres clients (ex. Element), l’image peut mal se charger alors qu’un média seul fonctionne. Piste : tracer les URLs media et codes HTTP au rendu.
 
 ## Versioning automatique sur commit
 
-Le projet incremente automatiquement la version (`package.json`) a chaque commit via Husky.
+Incrément de version dans `package.json` via Husky selon le message de commit :
 
-- `feat: ...` -> bump **minor**
-- `fix: ...` -> bump **patch**
-- `feat!: ...` ou `BREAKING CHANGE:` -> bump **major**
-- tout autre type de commit -> bump **patch**
+- `feat: …` → **minor**
+- `fix: …` → **patch**
+- `feat!: …` ou `BREAKING CHANGE:` → **major**
+- autre → **patch**
 
-Exemples:
+Exemples :
 
 ```bash
 git commit -m "feat(chat): add fullscreen image viewer"
@@ -145,4 +166,4 @@ git commit -m "feat!: replace legacy room store API"
 
 ## Licence
 
-Projet personnel — pas de licence definie pour le moment.
+Projet personnel — pas de licence définie pour le moment.
