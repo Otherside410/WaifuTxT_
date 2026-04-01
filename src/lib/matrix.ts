@@ -1,4 +1,4 @@
-import type { MatrixSession, MessageEvent, RoomSummary, RoomMember, EncryptedFileInfo } from '../types/matrix'
+import type { MatrixSession, MessageEvent, RoomSummary, RoomMember, EncryptedFileInfo, ThreadSummary } from '../types/matrix'
 import { useMessageStore } from '../stores/messageStore'
 import { useRoomStore } from '../stores/roomStore'
 import { useAuthStore } from '../stores/authStore'
@@ -250,10 +250,16 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
       if (type === 'm.room.encrypted') {
         // Always show a placeholder immediately — Rust crypto is async so
         // isDecryptionFailure() may still be false at this point.
+        // encryptedFallbackMessage already extracts threadRootId from unencrypted wire content.
         const fallback = encryptedFallbackMessage(event, room.roomId)
         if (fallback) {
-          useMessageStore.getState().addMessage(room.roomId, fallback)
-          updateRoomLastMessage(room.roomId, fallback)
+          if (fallback.threadRootId) {
+            // Thread reply — placeholder goes into the thread store, not main timeline
+            useMessageStore.getState().addThreadMessage(fallback.threadRootId, fallback)
+          } else {
+            useMessageStore.getState().addMessage(room.roomId, fallback)
+            updateRoomLastMessage(room.roomId, fallback)
+          }
         }
 
         // Replace with real content once decryption completes (success or failure).
@@ -262,15 +268,34 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
           if (!msg) return
           if (msg.replacesEventId) {
             applyMessageEdit(room.roomId, msg)
-            // This encrypted event is only the edit payload; remove its temporary placeholder.
+            // Drop the temporary placeholder — it may be in thread store or main timeline
             const decryptedEventId = event.getId()
             if (decryptedEventId) {
               useMessageStore.getState().removeMessage(room.roomId, decryptedEventId)
             }
             return
           }
+          if (msg.threadRootId) {
+            const store = useMessageStore.getState()
+            // Replace the encrypted fallback with the real message in the thread store
+            const existing = store.getThreadMessages(msg.threadRootId)
+            const idx = existing.findIndex((m) => m.eventId === msg.eventId)
+            if (idx !== -1) {
+              const updated = [...existing]
+              updated[idx] = msg
+              store.setThreadMessages(msg.threadRootId, updated)
+            } else {
+              store.addThreadMessage(msg.threadRootId, msg)
+            }
+            store.updateThreadRootInfo(room.roomId, msg.threadRootId, {
+              replyCount: store.getThreadMessages(msg.threadRootId).length,
+              lastReplyTs: msg.timestamp,
+              lastReplierAvatar: msg.senderAvatar,
+              lastReplierName: msg.senderName,
+            })
+            return
+          }
           const store = useMessageStore.getState()
-          // replaceMessage also appends when the event is not yet in the list.
           store.replaceMessage(room.roomId, msg.eventId, msg)
           updateRoomLastMessage(room.roomId, msg)
         })
@@ -281,6 +306,20 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
       if (msg) {
         if (msg.replacesEventId) {
           applyMessageEdit(room.roomId, msg)
+          return
+        }
+        if (msg.threadRootId) {
+          // Thread reply — route to thread store, not main timeline
+          const store = useMessageStore.getState()
+          store.addThreadMessage(msg.threadRootId, msg)
+          // Update reply count pill on the root message
+          const threadMsgs = store.getThreadMessages(msg.threadRootId)
+          store.updateThreadRootInfo(room.roomId, msg.threadRootId, {
+            replyCount: threadMsgs.length,
+            lastReplyTs: msg.timestamp,
+            lastReplierAvatar: msg.senderAvatar,
+            lastReplierName: msg.senderName,
+          })
           return
         }
         useMessageStore.getState().addMessage(room.roomId, msg)
@@ -900,6 +939,18 @@ function encryptedFallbackMessage(event: MatrixEvent, roomId: string): MessageEv
   const room = client?.getRoom(roomId)
   const member = room?.getMember(sender)
   const senderAvatar = member ? memberAvatarHttpUrl(member) : null
+
+  // m.relates_to is NOT encrypted per Matrix spec — extract threadRootId from wire content
+  // so we can route the fallback to the right store immediately.
+  type RelContent = { rel_type?: string; event_id?: string }
+  const relation = (event.getRelation?.() as RelContent | null) || null
+  const wireContent = (event.getWireContent?.() as Record<string, unknown> | undefined) || {}
+  const wireRelatesTo = relation || (wireContent['m.relates_to'] as RelContent | undefined)
+  const threadRootId =
+    wireRelatesTo?.rel_type === 'm.thread' && typeof wireRelatesTo?.event_id === 'string'
+      ? wireRelatesTo.event_id
+      : null
+
   return {
     eventId: event.getId() || `${roomId}-${event.getTs()}`,
     roomId,
@@ -912,6 +963,7 @@ function encryptedFallbackMessage(event: MatrixEvent, roomId: string): MessageEv
     type: 'm.notice',
     replyTo: null,
     isEdited: false,
+    threadRootId,
   }
 }
 
@@ -973,13 +1025,17 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
 
   const content = event.getContent() as Record<string, unknown>
   const wireContent = (event.getWireContent?.() as Record<string, unknown> | undefined) || {}
-  type RelationContent = { rel_type?: string; event_id?: string; 'm.in_reply_to'?: { event_id?: string } }
+  type RelationContent = { rel_type?: string; event_id?: string; 'm.in_reply_to'?: { event_id?: string }; is_falling_back?: boolean }
   const relation = (event.getRelation?.() as RelationContent | null) || null
   const mRelatesTo =
     relation ||
     ((wireContent['m.relates_to'] as RelationContent | undefined) ?? (content['m.relates_to'] as RelationContent | undefined))
   const replacesEventId =
     mRelatesTo?.rel_type === 'm.replace' && typeof mRelatesTo?.event_id === 'string'
+      ? mRelatesTo.event_id
+      : null
+  const threadRootId =
+    mRelatesTo?.rel_type === 'm.thread' && typeof mRelatesTo?.event_id === 'string'
       ? mRelatesTo.event_id
       : null
   const effectiveContent =
@@ -1006,7 +1062,13 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
   else if (msgtype === 'm.notice') type = 'm.notice'
   else if (msgtype === 'm.emote') type = 'm.emote'
 
-  const replyTo = (mRelatesTo?.['m.in_reply_to']?.event_id as string | undefined) || null
+  // Show reply quote when:
+  //   • Normal reply (no thread): always
+  //   • In-thread reply with is_falling_back: false: genuine reply to a specific message, show it
+  //   • In-thread reply with is_falling_back: true (or missing): just a fallback pointing to the root, skip
+  const inReplyToId = mRelatesTo?.['m.in_reply_to']?.event_id as string | undefined
+  const isGenuineInThreadReply = !!threadRootId && mRelatesTo?.is_falling_back === false
+  const replyTo = inReplyToId && (!threadRootId || isGenuineInThreadReply) ? inReplyToId : null
 
   let imageUrl: string | undefined
   let imageInfo: MessageEvent['imageInfo']
@@ -1082,6 +1144,8 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
     isVoiceMessage,
     encryptedFile,
     encryptedThumbnailFile,
+    threadRootId,
+    threadInfo: null,
   }
 }
 
@@ -1096,6 +1160,201 @@ export async function sendMessage(roomId: string, body: string, replyToEventId?:
     }
   }
   await client.sendMessage(roomId, content as any)
+}
+
+export async function sendThreadReply(
+  roomId: string,
+  threadRootId: string,
+  body: string,
+  replyToEventId?: string,
+): Promise<void> {
+  if (!client) return
+  // When replying to a specific message inside the thread (not just the root),
+  // set is_falling_back: false so clients render the quote correctly.
+  const inReplyToId = replyToEventId ?? threadRootId
+  const isFallingBack = !replyToEventId || replyToEventId === threadRootId
+  const content = {
+    msgtype: 'm.text',
+    body,
+    'm.relates_to': {
+      rel_type: 'm.thread',
+      event_id: threadRootId,
+      'm.in_reply_to': { event_id: inReplyToId },
+      is_falling_back: isFallingBack,
+    },
+  }
+  await client.sendMessage(roomId, content as any)
+}
+
+export async function loadThreadMessages(roomId: string, threadRootId: string): Promise<void> {
+  if (!client) return
+  try {
+    const matrixSdk = await getSDK()
+    const result = await (client as any).http.authedRequest(
+      'GET',
+      `/rooms/${encodeURIComponent(roomId)}/relations/${encodeURIComponent(threadRootId)}/m.thread`,
+      { limit: 100, dir: 'f' },
+      undefined,
+      { prefix: '/_matrix/client/v1' },
+    ) as { chunk?: Record<string, unknown>[] } | null
+
+    const rawEvents = result?.chunk ?? []
+    const matrixEvents = rawEvents.map((raw) => new matrixSdk.MatrixEvent(raw as any))
+
+    // Decrypt all encrypted events in parallel before processing
+    await Promise.all(
+      matrixEvents
+        .filter((e) => e.getType() === 'm.room.encrypted')
+        .map(async (e) => {
+          try { await client!.decryptEventIfNeeded(e) } catch { /* shown as fallback */ }
+        }),
+    )
+
+    const messages: MessageEvent[] = []
+    for (const matrixEvent of matrixEvents) {
+      const type = matrixEvent.getType()
+      if (type !== 'm.room.message' && type !== 'm.room.encrypted') continue
+      const msg = eventToMessage(matrixEvent, roomId)
+      if (msg) messages.push(msg)
+    }
+
+    messages.sort((a, b) => a.timestamp - b.timestamp)
+    useMessageStore.getState().setThreadMessages(threadRootId, messages)
+    if (messages.length > 0) {
+      const last = messages[messages.length - 1]
+      useMessageStore.getState().updateThreadRootInfo(roomId, threadRootId, {
+        replyCount: messages.length,
+        lastReplyTs: last.timestamp,
+        lastReplierAvatar: last.senderAvatar,
+        lastReplierName: last.senderName,
+      })
+    }
+  } catch (err) {
+    console.warn('[WaifuTxT] loadThreadMessages failed:', err)
+  }
+}
+
+export async function loadRoomThreads(roomId: string): Promise<ThreadSummary[]> {
+  if (!client) return []
+  const room = client.getRoom(roomId)
+  if (!room) return []
+
+  // Primary: Matrix spec GET /rooms/{roomId}/threads (MSC3856 / Matrix 1.4+)
+  // Returns thread root events with bundled reply count + latest event.
+  try {
+    const matrixSdk = await getSDK()
+    const result = await (client as any).http.authedRequest(
+      'GET',
+      `/rooms/${encodeURIComponent(roomId)}/threads`,
+      { limit: 50 },
+      undefined,
+      { prefix: '/_matrix/client/v1' },
+    ) as { chunk?: Record<string, unknown>[] } | null
+
+    const chunk = result?.chunk ?? []
+    if (chunk.length > 0) {
+      // Build MatrixEvent instances for all root events
+      const rootEvents = chunk.map((raw) => ({
+        raw,
+        event: new matrixSdk.MatrixEvent(raw as any),
+      }))
+
+      // Decrypt encrypted root events in parallel
+      await Promise.all(
+        rootEvents
+          .filter(({ event }) => event.getType() === 'm.room.encrypted')
+          .map(async ({ event }) => {
+            try { await client!.decryptEventIfNeeded(event) } catch { /* shown as fallback */ }
+          }),
+      )
+
+      const summaries: ThreadSummary[] = []
+      for (const { raw, event: matrixEvent } of rootEvents) {
+        const rootMsg = eventToMessage(matrixEvent, roomId)
+        if (!rootMsg) continue
+
+        const unsigned = raw.unsigned as Record<string, unknown> | undefined
+        const relationsBundle = unsigned?.['m.relations'] as Record<string, unknown> | undefined
+        const threadInfo = relationsBundle?.['m.thread'] as Record<string, unknown> | undefined
+        const replyCount = typeof threadInfo?.count === 'number' ? threadInfo.count : 0
+        const latestEventRaw = threadInfo?.latest_event as Record<string, unknown> | undefined
+        const lastReplyTs = typeof latestEventRaw?.origin_server_ts === 'number'
+          ? latestEventRaw.origin_server_ts
+          : rootMsg.timestamp
+        const latestSender = typeof latestEventRaw?.sender === 'string' ? latestEventRaw.sender : rootMsg.sender
+        const latestMember = room.getMember(latestSender)
+
+        summaries.push({
+          rootMessage: rootMsg,
+          replyCount,
+          lastReplyTs,
+          lastReplierName: latestMember?.name ?? latestSender,
+          lastReplierAvatar: memberAvatarHttpUrl(latestMember),
+        })
+      }
+      if (summaries.length > 0) {
+        return summaries.sort((a, b) => b.lastReplyTs - a.lastReplyTs)
+      }
+    }
+  } catch (err) {
+    console.warn('[WaifuTxT] /rooms/threads API failed, trying SDK map:', err)
+  }
+
+  // Fallback A: SDK-native thread map (populated after sync bundles thread data)
+  const sdkThreads = (room as any).threads as Map<string, any> | undefined
+  if (sdkThreads && sdkThreads.size > 0) {
+    const summaries: ThreadSummary[] = []
+    for (const [, thread] of sdkThreads) {
+      const rootEvent = thread.rootEvent as MatrixEvent | null
+      if (!rootEvent) continue
+      const rootMsg = eventToMessage(rootEvent, roomId)
+      if (!rootMsg) continue
+      const lastReplyEvent = thread.lastReply?.() as MatrixEvent | null
+      const lastReplierMember = lastReplyEvent ? room.getMember(lastReplyEvent.getSender() ?? '') : null
+      summaries.push({
+        rootMessage: rootMsg,
+        replyCount: thread.replyCount ?? 0,
+        lastReplyTs: lastReplyEvent?.getTs() ?? rootMsg.timestamp,
+        lastReplierName: lastReplierMember?.name || lastReplyEvent?.getSender() || rootMsg.senderName,
+        lastReplierAvatar: memberAvatarHttpUrl(lastReplierMember),
+      })
+    }
+    if (summaries.length > 0) return summaries.sort((a, b) => b.lastReplyTs - a.lastReplyTs)
+  }
+
+  // Fallback B: derive from what the store already knows (threadInfo or threadMessages)
+  const store = useMessageStore.getState()
+  const messages = store.getMessages(roomId)
+  const summaries: ThreadSummary[] = []
+  const seen = new Set<string>()
+
+  for (const msg of messages) {
+    if (!msg.threadInfo || msg.threadInfo.replyCount === 0) continue
+    seen.add(msg.eventId)
+    summaries.push({
+      rootMessage: msg,
+      replyCount: msg.threadInfo.replyCount,
+      lastReplyTs: msg.threadInfo.lastReplyTs,
+      lastReplierName: msg.threadInfo.lastReplierName,
+      lastReplierAvatar: msg.threadInfo.lastReplierAvatar,
+    })
+  }
+
+  for (const [rootEventId, replies] of store.threadMessages) {
+    if (seen.has(rootEventId) || !replies.length) continue
+    const rootMsg = messages.find((m) => m.eventId === rootEventId)
+    if (!rootMsg) continue
+    const last = replies[replies.length - 1]
+    summaries.push({
+      rootMessage: rootMsg,
+      replyCount: replies.length,
+      lastReplyTs: last.timestamp,
+      lastReplierName: last.senderName,
+      lastReplierAvatar: last.senderAvatar,
+    })
+  }
+
+  return summaries.sort((a, b) => b.lastReplyTs - a.lastReplyTs)
 }
 
 export async function sendEditMessage(roomId: string, eventId: string, body: string): Promise<void> {
@@ -1614,6 +1873,10 @@ export async function loadRoomHistory(roomId: string): Promise<boolean> {
       if (event.getType() !== 'm.room.message' && event.getType() !== 'm.room.encrypted') continue
       const msg = eventToMessage(event, roomId)
       if (!msg) continue
+      if (msg.threadRootId) {
+        useMessageStore.getState().addThreadMessage(msg.threadRootId, msg)
+        continue
+      }
       if (msg.replacesEventId) {
         const existing = byId.get(msg.replacesEventId)
         if (existing) {
@@ -1666,6 +1929,10 @@ export async function loadInitialMessages(roomId: string): Promise<void> {
     if (event.getType() !== 'm.room.message' && event.getType() !== 'm.room.encrypted') continue
     const msg = eventToMessage(event, roomId)
     if (msg) {
+      if (msg.threadRootId) {
+        useMessageStore.getState().addThreadMessage(msg.threadRootId, msg)
+        continue
+      }
       if (msg.replacesEventId) {
         const existing = byId.get(msg.replacesEventId)
         if (existing) {
@@ -1705,10 +1972,22 @@ export async function loadInitialMessages(roomId: string): Promise<void> {
         if (!decrypted) return
         if (decrypted.replacesEventId) {
           applyMessageEdit(roomId, decrypted)
-          // Drop the fallback notice created before decryption for encrypted edit events.
           const decryptedEventId = event.getId()
           if (decryptedEventId) {
             useMessageStore.getState().removeMessage(roomId, decryptedEventId)
+          }
+          return
+        }
+        if (decrypted.threadRootId) {
+          const store = useMessageStore.getState()
+          const existing = store.getThreadMessages(decrypted.threadRootId)
+          const idx = existing.findIndex((m) => m.eventId === decrypted.eventId)
+          if (idx !== -1) {
+            const updated = [...existing]
+            updated[idx] = decrypted
+            store.setThreadMessages(decrypted.threadRootId, updated)
+          } else {
+            store.addThreadMessage(decrypted.threadRootId, decrypted)
           }
           return
         }

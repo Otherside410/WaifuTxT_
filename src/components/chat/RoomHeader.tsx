@@ -13,6 +13,8 @@ export function RoomHeader() {
   const showMemberPanel = useUiStore((s) => s.showMemberPanel)
   const togglePinnedPanel = useUiStore((s) => s.togglePinnedPanel)
   const showPinnedPanel = useUiStore((s) => s.showPinnedPanel)
+  const toggleThreadsListPanel = useUiStore((s) => s.toggleThreadsListPanel)
+  const showThreadsListPanel = useUiStore((s) => s.showThreadsListPanel)
   const pinnedEventIds = useMessageStore((s) => s.pinnedEventIds)
   const pinnedVersion = useMessageStore((s) => s.pinnedVersion)
 

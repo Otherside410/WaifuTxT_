@@ -11,6 +11,8 @@ interface MessageState {
   reactionsVersion: number
   pinnedEventIds: Map<string, string[]>
   pinnedVersion: number
+  threadMessages: Map<string, MessageEvent[]>
+  threadsVersion: number
 
   addMessage: (roomId: string, message: MessageEvent) => void
   removeMessage: (roomId: string, eventId: string) => void
@@ -40,6 +42,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   reactionsVersion: 0,
   pinnedEventIds: new Map(),
   pinnedVersion: 0,
+  threadMessages: new Map(),
+  threadsVersion: 0,
 
   addMessage: (roomId, message) => {
     const allMessages = new Map(get().messages)

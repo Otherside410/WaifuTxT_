@@ -1084,8 +1084,12 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const canDeleteMessage = isSyncedMessage && !message.content.startsWith('🔒') && canUserRedact(message.roomId, message.sender)
   const canCopyMessage = message.type === 'm.text' || message.type === 'm.notice' || message.type === 'm.emote'
   const canPinMessage = isSyncedMessage && !message.content.startsWith('🔒') && canUserPinMessages(message.roomId)
+  const canStartThread = isSyncedMessage && !message.content.startsWith('🔒') && !message.threadRootId
   const pinnedVersion = useMessageStore((s) => s.pinnedVersion)
   const pinnedEventIds = useMessageStore((s) => s.pinnedEventIds)
+  const threadsVersion = useMessageStore((s) => s.threadsVersion)
+  const openThreadPanel = useUiStore((s) => s.openThreadPanel)
+  void threadsVersion // subscribe for live updates on threadInfo
   const isPinned = useMemo(() => {
     const ids = pinnedEventIds.get(message.roomId) || []
     return ids.includes(message.eventId)
@@ -1333,6 +1337,20 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
               >
                 <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5l-7.5-7.5 7.5-7.5M3 12h12a6 6 0 016 6v1.5" />
+                </svg>
+              </button>
+            )}
+
+            {canStartThread && (
+              <button
+                onClick={() => openThreadPanel(message.roomId, message.eventId)}
+                className={actionButtonClass}
+                title="Fil de discussion"
+                aria-label="Ouvrir le fil de discussion"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h8M8 8h5M8 16h6" />
+                  <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
             )}
@@ -1611,6 +1629,25 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
               </button>
             ))}
           </div>
+        )}
+
+        {!isEditing && message.threadInfo && message.threadInfo.replyCount > 0 && (
+          <button
+            onClick={() => openThreadPanel(message.roomId, message.eventId)}
+            className="mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-bg-tertiary/60 px-2.5 py-0.5 text-xs text-text-secondary hover:border-accent-pink/60 hover:text-text-primary transition-colors cursor-pointer"
+          >
+            <Avatar
+              src={message.threadInfo.lastReplierAvatar}
+              name={message.threadInfo.lastReplierName}
+              size={14}
+            />
+            <span className="font-medium text-accent-pink">
+              {message.threadInfo.replyCount} réponse{message.threadInfo.replyCount > 1 ? 's' : ''}
+            </span>
+            <span className="text-text-muted text-[10px]">
+              {format(new Date(message.threadInfo.lastReplyTs), 'HH:mm')}
+            </span>
+          </button>
         )}
 
       </div>

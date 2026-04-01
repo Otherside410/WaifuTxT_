@@ -5,6 +5,8 @@ import { MemberPanel } from './MemberPanel'
 import { SettingsModal } from './SettingsModal'
 import { ChatArea } from '../chat/ChatArea'
 import { PinnedMessagesPanel } from '../chat/PinnedMessagesPanel'
+import { ThreadPanel } from '../chat/ThreadPanel'
+import { ThreadsListPanel } from '../chat/ThreadsListPanel'
 import { VerificationModal } from '../verification/VerificationModal'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
@@ -19,6 +21,8 @@ export function AppShell() {
   const showMemberPanel = useUiStore((s) => s.showMemberPanel)
   const showPinnedPanel = useUiStore((s) => s.showPinnedPanel)
   const showSettingsModal = useUiStore((s) => s.showSettingsModal)
+  const activeThreadRootId = useUiStore((s) => s.activeThreadRootId)
+  const showThreadsListPanel = useUiStore((s) => s.showThreadsListPanel)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
 
   useEffect(() => {
@@ -55,6 +59,8 @@ export function AppShell() {
       <RoomSidebar />
       <ChatArea />
       {showPinnedPanel && activeRoomId && <PinnedMessagesPanel />}
+      {showThreadsListPanel && activeRoomId && <ThreadsListPanel />}
+      {activeThreadRootId && activeRoomId && <ThreadPanel />}
       {showMemberPanel && activeRoomId && <MemberPanel />}
       {showSettingsModal && <SettingsModal />}
       <VerificationModal />
