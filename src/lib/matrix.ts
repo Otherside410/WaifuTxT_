@@ -1719,6 +1719,7 @@ export async function loadInitialMessages(roomId: string): Promise<void> {
   }
   const messages = orderedIds.map((id) => byId.get(id)).filter((m): m is MessageEvent => !!m)
   useMessageStore.getState().setMessages(roomId, messages)
+  useMessageStore.getState().markRoomLoaded(roomId)
 }
 
 export async function loadRoomMembers(roomId: string): Promise<void> {

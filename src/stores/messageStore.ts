@@ -4,6 +4,8 @@ import type { MessageEvent, TypingState } from '../types/matrix'
 interface MessageState {
   messages: Map<string, MessageEvent[]>
   typing: Map<string, string[]>
+  /** RoomIds for which loadInitialMessages has completed this session (in-memory only). */
+  loadedRooms: Set<string>
   isLoadingHistory: boolean
   receiptsVersion: number
   reactionsVersion: number
@@ -24,12 +26,15 @@ interface MessageState {
   setPinnedEventIds: (roomId: string, ids: string[]) => void
   getPinnedEventIds: (roomId: string) => string[]
   bumpPinnedVersion: () => void
+  markRoomLoaded: (roomId: string) => void
+  isRoomLoaded: (roomId: string) => boolean
   reset: () => void
 }
 
 export const useMessageStore = create<MessageState>((set, get) => ({
   messages: new Map(),
   typing: new Map(),
+  loadedRooms: new Set(),
   isLoadingHistory: false,
   receiptsVersion: 0,
   reactionsVersion: 0,
@@ -111,5 +116,22 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   bumpPinnedVersion: () => set((state) => ({ pinnedVersion: state.pinnedVersion + 1 })),
 
-  reset: () => set({ messages: new Map(), typing: new Map(), receiptsVersion: 0, reactionsVersion: 0, pinnedEventIds: new Map(), pinnedVersion: 0 }),
+  markRoomLoaded: (roomId) => {
+    const loadedRooms = new Set(get().loadedRooms)
+    loadedRooms.add(roomId)
+    set({ loadedRooms })
+  },
+
+  isRoomLoaded: (roomId) => get().loadedRooms.has(roomId),
+
+  reset: () =>
+    set({
+      messages: new Map(),
+      typing: new Map(),
+      loadedRooms: new Set(),
+      receiptsVersion: 0,
+      reactionsVersion: 0,
+      pinnedEventIds: new Map(),
+      pinnedVersion: 0,
+    }),
 }))

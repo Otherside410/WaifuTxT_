@@ -21,7 +21,10 @@ export function MessageList() {
     if (activeRoomId && activeRoomId !== prevRoomId.current) {
       prevRoomId.current = activeRoomId
       canLoadMore.current = true
-      loadInitialMessages(activeRoomId)
+      const alreadyLoaded = useMessageStore.getState().isRoomLoaded(activeRoomId)
+      if (!alreadyLoaded) {
+        loadInitialMessages(activeRoomId)
+      }
     }
   }, [activeRoomId])
 
