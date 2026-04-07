@@ -422,7 +422,7 @@ export function ThreadPanel() {
           </div>
         )}
 
-        {threadMessages.map((msg, i) => {
+        {threadMessages.map((msg: MessageEvent, i: number) => {
           const prev = threadMessages[i - 1]
           const showHeader = !prev || prev.sender !== msg.sender || (msg.timestamp - prev.timestamp) > 5 * 60 * 1000
           const replyToMessage = msg.replyTo ? allThreadMessages.find((m) => m.eventId === msg.replyTo) ?? null : null

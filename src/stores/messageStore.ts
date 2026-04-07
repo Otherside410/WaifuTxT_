@@ -14,6 +14,16 @@ interface MessageState {
   threadMessages: Map<string, MessageEvent[]>
   threadsVersion: number
 
+  getThreadMessages: (threadRootId: string) => MessageEvent[]
+  addThreadMessage: (threadRootId: string, message: MessageEvent) => void
+  setThreadMessages: (threadRootId: string, messages: MessageEvent[]) => void
+  updateThreadRootInfo: (roomId: string, threadRootId: string, info: {
+    replyCount: number
+    lastReplyTs: number
+    lastReplierAvatar: string | null
+    lastReplierName: string
+  }) => void
+
   addMessage: (roomId: string, message: MessageEvent) => void
   removeMessage: (roomId: string, eventId: string) => void
   replaceMessage: (roomId: string, eventId: string, message: MessageEvent) => void
@@ -128,6 +138,44 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   isRoomLoaded: (roomId) => get().loadedRooms.has(roomId),
 
+  getThreadMessages: (threadRootId) => get().threadMessages.get(threadRootId) || [],
+
+  addThreadMessage: (threadRootId, message) => {
+    const threadMessages = new Map(get().threadMessages)
+    const existing = threadMessages.get(threadRootId) || []
+    const alreadyExists = existing.some((m) => m.eventId === message.eventId)
+    if (!alreadyExists) {
+      threadMessages.set(threadRootId, [...existing, message])
+      set({ threadMessages, threadsVersion: get().threadsVersion + 1 })
+    }
+  },
+
+  setThreadMessages: (threadRootId, messages) => {
+    const threadMessages = new Map(get().threadMessages)
+    threadMessages.set(threadRootId, messages)
+    set({ threadMessages, threadsVersion: get().threadsVersion + 1 })
+  },
+
+  updateThreadRootInfo: (roomId, threadRootId, info) => {
+    const allMessages = new Map(get().messages)
+    const roomMessages = allMessages.get(roomId)
+    if (!roomMessages) return
+    const idx = roomMessages.findIndex((m) => m.eventId === threadRootId)
+    if (idx === -1) return
+    const updated = [...roomMessages]
+    updated[idx] = {
+      ...updated[idx],
+      threadInfo: {
+        replyCount: info.replyCount,
+        lastReplyTs: info.lastReplyTs,
+        lastReplierAvatar: info.lastReplierAvatar,
+        lastReplierName: info.lastReplierName,
+      },
+    }
+    allMessages.set(roomId, updated)
+    set({ messages: allMessages })
+  },
+
   reset: () =>
     set({
       messages: new Map(),
@@ -137,5 +185,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       reactionsVersion: 0,
       pinnedEventIds: new Map(),
       pinnedVersion: 0,
+      threadMessages: new Map(),
+      threadsVersion: 0,
     }),
 }))

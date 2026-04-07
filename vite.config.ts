@@ -28,6 +28,9 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@matrix-org/matrix-sdk-crypto-wasm'],
   },
+  preview: {
+    allowedHosts: ['waifuchat.duckdns.org'],
+  },
   build: {
     chunkSizeWarningLimit: 2000,
     target: 'esnext',
