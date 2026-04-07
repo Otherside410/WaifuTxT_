@@ -111,6 +111,18 @@ export function RoomHeader() {
             )}
           </button>
           <button
+            onClick={toggleThreadsListPanel}
+            className={`p-1.5 rounded transition-colors cursor-pointer ${
+              showThreadsListPanel ? 'text-text-primary bg-bg-hover' : 'text-text-muted hover:text-text-primary'
+            }`}
+            title="Fils de discussion"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h8M8 8h5M8 16h6" />
+              <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
             onClick={toggleMemberPanel}
             className={`p-1.5 rounded transition-colors cursor-pointer ${
               showMemberPanel ? 'text-text-primary bg-bg-hover' : 'text-text-muted hover:text-text-primary'
