@@ -14,8 +14,11 @@ function SpaceBadge({ mentions, unread, invites }: { mentions: number; unread: n
   }
   if (invites > 0) {
     return (
-      <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-accent-pink text-white text-[10px] font-bold leading-none z-10 ring-2 ring-bg-primary">
-        {invites}
+      <span className="absolute -top-1 -right-1 w-[18px] h-[18px] flex items-center justify-center rounded-full bg-accent-pink text-white z-10 ring-2 ring-bg-primary">
+        <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M2.003 5.884 10 9.882l7.997-3.998A2 2 0 0 0 16 4H4a2 2 0 0 0-1.997 1.884z" />
+          <path d="m18 8.118-8 4-8-4V14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.118z" />
+        </svg>
       </span>
     )
   }
