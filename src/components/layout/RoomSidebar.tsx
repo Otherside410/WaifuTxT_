@@ -222,6 +222,7 @@ export function RoomSidebar() {
   const statusMessageMap = useRoomStore((s) => s.statusMessageMap)
   const session = useAuthStore((s) => s.session)
   const setSettingsModal = useUiStore((s) => s.setSettingsModal)
+  const setMobileMenuOpen = useUiStore((s) => s.setMobileMenuOpen)
   const showRoomMessagePreview = useUiStore((s) => s.showRoomMessagePreview)
   const showUnreadDot = useUiStore((s) => s.showUnreadDot)
   const showMentionBadge = useUiStore((s) => s.showMentionBadge)
@@ -296,7 +297,7 @@ export function RoomSidebar() {
   }
   const handleDeclineInvite = async (roomId: string) => {
     setPendingInvites((s) => new Set(s).add(roomId))
-    try { await declineInvite(roomId) }
+    try { await declineInvite(roomId); setMobileMenuOpen(false) }
     finally { setPendingInvites((s) => { const n = new Set(s); n.delete(roomId); return n }) }
   }
 
@@ -352,13 +353,24 @@ export function RoomSidebar() {
   // ── Main data computation ─────────────────────────────────────────────────
   const { displayItems, layoutItems, spaceKey, invitedRooms, allDisplayedRooms } = useMemo(() => {
     const allRooms = Array.from(rooms.values())
-    const invited = allRooms.filter((r) => r.membership === 'invite')
     const joinedOnly = allRooms.filter((r) => r.membership !== 'invite')
+
+    // Build a global map: invitedRoomId → spaceId that claims it as a child
+    const allSpaceChildIds = new Set<string>()
+    const inviteToSpace = new Map<string, string>()
+    for (const r of allRooms) {
+      if (!r.isSpace) continue
+      for (const childId of r.children) {
+        allSpaceChildIds.add(childId)
+        inviteToSpace.set(childId, r.roomId)
+      }
+    }
 
     const roomMap = new Map(joinedOnly.map((r) => [r.roomId, r]))
 
     if (activeSpaceId === null) {
       // "Messages" view: DMs + private group rooms not belonging to any space
+      // Invites: only those that don't belong to any space
       const key = '_flat'
       const spaceChildIds = new Set<string>()
       for (const r of joinedOnly) {
@@ -367,6 +379,7 @@ export function RoomSidebar() {
       const flatRooms = joinedOnly
         .filter((r) => !r.isSpace && (r.isDirect || !spaceChildIds.has(r.roomId)))
         .sort((a, b) => b.lastMessageTs - a.lastMessageTs)
+      const invited = allRooms.filter((r) => r.membership === 'invite' && !allSpaceChildIds.has(r.roomId))
       const natural: LayoutItem[] = flatRooms.map((r) => ({ t: 'r', id: r.roomId }))
       const ordered = applyStoredLayout(sidebarLayout[key], natural)
       const display: DisplayItem[] = ordered
@@ -379,6 +392,8 @@ export function RoomSidebar() {
     }
 
     // Hierarchical mode: space is active
+    // Invites: only those that are children of this space
+    const invited = allRooms.filter((r) => r.membership === 'invite' && inviteToSpace.get(r.roomId) === activeSpaceId)
     const space = rooms.get(activeSpaceId)
     if (!space) return { displayItems: [], layoutItems: [], spaceKey: activeSpaceId, invitedRooms: invited, allDisplayedRooms: [] }
 
@@ -637,15 +652,15 @@ export function RoomSidebar() {
               Invitations ({invitedRooms.length})
             </p>
             {invitedRooms.map((room) => (
-              <div key={room.roomId} className="flex items-center px-2 py-1.5 rounded-md bg-bg-tertiary/60 mb-0.5">
-                <span className="mr-1.5 text-text-muted/90 shrink-0 text-base leading-none">#</span>
+              <div key={room.roomId} className="flex items-center px-2 py-2 rounded-md bg-bg-tertiary/60 mb-0.5 gap-1.5">
+                <span className="text-text-muted/90 shrink-0 text-base leading-none">#</span>
                 <span className="flex-1 min-w-0 text-sm font-medium text-text-secondary truncate">{room.name}</span>
-                <div className="flex gap-1 shrink-0 ml-1">
+                <div className="flex gap-1 shrink-0">
                   <button onClick={() => handleAcceptInvite(room.roomId)} disabled={pendingInvites.has(room.roomId)}
-                    className="px-2 py-0.5 text-[10px] font-semibold rounded bg-accent-pink text-white hover:bg-accent-pink-hover transition-colors disabled:opacity-50 cursor-pointer"
+                    className="px-2.5 py-1 text-xs font-semibold rounded bg-accent-pink text-white hover:bg-accent-pink-hover transition-colors disabled:opacity-50 cursor-pointer min-h-[28px]"
                     title="Accepter l'invitation">Oui</button>
                   <button onClick={() => handleDeclineInvite(room.roomId)} disabled={pendingInvites.has(room.roomId)}
-                    className="px-2 py-0.5 text-[10px] font-semibold rounded bg-bg-hover text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50 cursor-pointer"
+                    className="px-2.5 py-1 text-xs font-semibold rounded bg-bg-hover text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50 cursor-pointer min-h-[28px]"
                     title="Refuser l'invitation">Non</button>
                 </div>
               </div>
