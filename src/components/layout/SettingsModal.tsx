@@ -378,6 +378,11 @@ function AccountSection() {
         </div>
       </div>
 
+      <div className="px-4 py-2.5 rounded-lg border border-border bg-bg-primary/40 flex items-center justify-between">
+        <span className="text-xs text-text-muted">Version</span>
+        <span className="text-xs font-mono text-text-secondary">{__APP_VERSION__}</span>
+      </div>
+
       <div className="p-4 rounded-lg border border-danger/30 bg-danger/5 space-y-3">
         <div>
           <p className="text-sm font-medium text-text-primary">Déconnexion</p>
