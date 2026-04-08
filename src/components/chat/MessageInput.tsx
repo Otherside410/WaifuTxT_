@@ -213,12 +213,15 @@ export function MessageInput() {
   })
 
   // Focus textarea when the chat area is clicked or when switching rooms
+  // Skip auto-focus on mobile to prevent keyboard popup and zoom
+  const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches
+
   useEffect(() => {
-    if (chatInputFocusBump > 0) textareaRef.current?.focus()
+    if (chatInputFocusBump > 0 && !isMobile) textareaRef.current?.focus()
   }, [chatInputFocusBump])
 
   useEffect(() => {
-    if (activeRoomId) textareaRef.current?.focus()
+    if (activeRoomId && !isMobile) textareaRef.current?.focus()
   }, [activeRoomId])
 
   // Mount the picker on first open, keep it alive after that
@@ -899,7 +902,7 @@ export function MessageInput() {
               <div
                 ref={backdropRef}
                 aria-hidden="true"
-                className="absolute inset-0 pt-[15px] pb-[9px] px-0 text-sm text-text-primary overflow-hidden pointer-events-none whitespace-pre-wrap break-words"
+                className="absolute inset-0 pt-[15px] pb-[9px] px-0 text-sm max-lg:text-base text-text-primary overflow-hidden pointer-events-none whitespace-pre-wrap break-words"
                 dangerouslySetInnerHTML={{ __html: highlightInputText(text, validLocalparts, validRoomTags) }}
               />
               <textarea
@@ -914,7 +917,7 @@ export function MessageInput() {
                 }
                 placeholder={`Envoyer un message dans #${room?.name || '...'}`}
                 rows={1}
-                className="relative z-10 w-full bg-transparent !border-0 resize-none py-0 px-0 text-sm outline-none max-h-40 placeholder:text-text-muted"
+                className="relative z-10 w-full bg-transparent !border-0 resize-none py-0 px-0 text-sm max-lg:text-base outline-none max-h-40 placeholder:text-text-muted"
                 style={{ minHeight: '24px', color: 'transparent', caretColor: 'var(--color-text-primary)' }}
               />
             </div>
