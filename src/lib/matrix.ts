@@ -330,6 +330,19 @@ function setupEventListeners(matrixSdk: typeof import('matrix-js-sdk')) {
     }
   })
 
+  client.on(
+    matrixSdk.RoomEvent.LocalEchoUpdated,
+    (event: MatrixEvent, room: import('matrix-js-sdk').Room, oldEventId?: string) => {
+      if (!room || !oldEventId) return
+      const newEventId = event.getId()
+      if (!newEventId || !newEventId.startsWith('$')) return
+      const store = useMessageStore.getState()
+      const existing = store.getMessages(room.roomId).find((m) => m.eventId === oldEventId)
+      if (!existing) return
+      store.replaceMessage(room.roomId, oldEventId, { ...existing, eventId: newEventId })
+    },
+  )
+
   client.on(matrixSdk.RoomMemberEvent.Typing, (_event: MatrixEvent, member: import('matrix-js-sdk').RoomMember) => {
     try {
       const room = client?.getRoom(member.roomId)
