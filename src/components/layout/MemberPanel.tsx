@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { getStoredOwnStatusMessage } from '../../lib/matrix'
 import { useAuthStore } from '../../stores/authStore'
 import { useRoomStore } from '../../stores/roomStore'
+import { useUiStore } from '../../stores/uiStore'
 import { Avatar } from '../common/Avatar'
 import { UserProfileCard } from '../common/UserProfileCard'
 import type { RoomMember } from '../../types/matrix'
@@ -14,6 +15,7 @@ function presenceOrder(p: PresenceValue | undefined): number {
 }
 
 export function MemberPanel() {
+  const setMemberPanel = useUiStore((s) => s.setMemberPanel)
   const myUserId = useAuthStore((s) => s.session?.userId ?? null)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const members = useRoomStore((s) => (activeRoomId ? s.members.get(activeRoomId) : undefined))
@@ -90,9 +92,19 @@ export function MemberPanel() {
   }
 
   return (
-    <div className="w-60 bg-bg-secondary border-l border-border flex flex-col">
+    <div className="w-full lg:w-60 bg-bg-primary lg:bg-bg-secondary border-0 lg:border-l border-border flex flex-col">
       <div className="h-12 px-4 flex items-center border-b border-border shrink-0">
         <h2 className="text-sm font-semibold text-text-primary">Membres — {members.length}</h2>
+        <button
+          onClick={() => setMemberPanel(false)}
+          className="ml-auto lg:hidden h-8 w-8 inline-flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+          title="Fermer"
+          aria-label="Fermer"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
       </div>
       <div className="flex-1 overflow-y-auto p-2">
         {renderGroup('Admins', admins)}

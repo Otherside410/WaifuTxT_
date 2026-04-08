@@ -360,7 +360,7 @@ export function ThreadPanel() {
   if (!activeThreadRootId || !activeThreadRoomId) return null
 
   return (
-    <div className="w-80 border-l border-border bg-bg-secondary flex flex-col shrink-0">
+    <div className="w-full lg:w-80 border-0 lg:border-l border-border bg-bg-primary lg:bg-bg-secondary flex flex-col shrink-0">
       {/* Header */}
       <div className="h-12 px-4 flex items-center gap-2 border-b border-border shrink-0">
         <svg className="w-4 h-4 text-accent-pink shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
