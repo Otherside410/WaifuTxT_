@@ -15,13 +15,20 @@ export function ChatArea() {
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const rooms = useRoomStore((s) => s.rooms)
 
+  const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches
+
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement
     if (INTERACTIVE_TAGS.has(target.tagName)) return
     if (target.closest('a, button, input, textarea, select, [role="button"], [role="menuitem"]')) return
     if (window.getSelection()?.toString()) return
-    bumpChatInputFocus()
-  }, [bumpChatInputFocus])
+    if (isMobile) {
+      // On mobile, tapping outside the input dismisses the keyboard
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    } else {
+      bumpChatInputFocus()
+    }
+  }, [bumpChatInputFocus, isMobile])
 
   const room = activeRoomId ? rooms.get(activeRoomId) : null
 
