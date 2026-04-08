@@ -542,9 +542,30 @@ function syncRooms() {
 
   for (const room of matrixRooms) {
     const membership = room.getMyMembership()
-    // Keep only rooms the current user is actively joined to.
+    // Keep only rooms the current user is actively joined to or invited to.
     // This prevents stale spaces/rooms from lingering after deletion/leave from another client (e.g. Element).
-    if (membership !== 'join') continue
+    if (membership !== 'join' && membership !== 'invite') continue
+
+    if (membership === 'invite') {
+      const name = room.name || room.roomId
+      const avatarEvent = room.currentState.getStateEvents('m.room.avatar', '')
+      const mxcAvatar = (avatarEvent?.getContent()?.url as string | undefined) ?? null
+      roomMap.set(room.roomId, {
+        roomId: room.roomId,
+        name,
+        avatarUrl: mxcAvatar ? client.mxcUrlToHttp(mxcAvatar, 48, 48, 'crop') : null,
+        topic: '',
+        lastMessage: '',
+        lastMessageTs: 0,
+        unreadCount: 0,
+        mentionCount: 0,
+        isSpace: false,
+        isDirect: false,
+        membership: 'invite',
+        children: [],
+      })
+      continue
+    }
 
     const createEvent = room.currentState.getStateEvents('m.room.create')?.[0]
     const isSpace = createEvent?.getContent()?.type === 'm.space'
