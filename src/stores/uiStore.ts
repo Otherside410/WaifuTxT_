@@ -33,10 +33,12 @@ interface UiState {
   typingIndicatorStyle: TypingIndicatorStyle
 
   toggleMemberPanel: () => void
+  setMemberPanel: (open: boolean) => void
   toggleSettingsModal: () => void
   setSettingsModal: (open: boolean) => void
   togglePinnedPanel: () => void
   toggleMobileMenu: () => void
+  setMobileMenuOpen: (open: boolean) => void
   toggleRoomMessagePreview: () => void
   setRoomMessagePreview: (show: boolean) => void
   setShowUnreadDot: (show: boolean) => void
@@ -138,7 +140,7 @@ function persistTypingIndicatorStyle(style: TypingIndicatorStyle): void {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  showMemberPanel: true,
+  showMemberPanel: typeof window !== 'undefined' ? window.innerWidth >= 1024 : true,
   showSettingsModal: false,
   showPinnedPanel: false,
   isMobileMenuOpen: false,
@@ -152,10 +154,12 @@ export const useUiStore = create<UiState>((set) => ({
   typingIndicatorStyle: readTypingIndicatorStyle(),
 
   toggleMemberPanel: () => set((s) => ({ showMemberPanel: !s.showMemberPanel })),
+  setMemberPanel: (open) => set({ showMemberPanel: open }),
   toggleSettingsModal: () => set((s) => ({ showSettingsModal: !s.showSettingsModal })),
   setSettingsModal: (open) => set({ showSettingsModal: open }),
   togglePinnedPanel: () => set((s) => ({ showPinnedPanel: !s.showPinnedPanel })),
   toggleMobileMenu: () => set((s) => ({ isMobileMenuOpen: !s.isMobileMenuOpen })),
+  setMobileMenuOpen: (open) => set({ isMobileMenuOpen: open }),
   toggleRoomMessagePreview: () =>
     set((s) => {
       const next = !s.showRoomMessagePreview

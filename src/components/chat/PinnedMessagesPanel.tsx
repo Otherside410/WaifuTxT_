@@ -165,7 +165,7 @@ export function PinnedMessagesPanel() {
   }, [activeRoomId])
 
   return (
-    <div className="w-80 border-l border-border bg-bg-secondary flex flex-col shrink-0">
+    <div className="w-full lg:w-80 border-0 lg:border-l border-border bg-bg-primary lg:bg-bg-secondary flex flex-col shrink-0">
       <div className="h-12 px-4 flex items-center gap-2 border-b border-border shrink-0">
         <svg className="w-5 h-5 text-accent-pink" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
