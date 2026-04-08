@@ -38,9 +38,6 @@ interface MessageState {
   setPinnedEventIds: (roomId: string, ids: string[]) => void
   getPinnedEventIds: (roomId: string) => string[]
   bumpPinnedVersion: () => void
-  getThreadMessages: (threadRootId: string) => MessageEvent[]
-  setThreadMessages: (threadRootId: string, messages: MessageEvent[]) => void
-  updateThreadRootInfo: (roomId: string, threadRootId: string, info: { replyCount: number; lastReplyTs: number; lastReplierAvatar: string | null; lastReplierName: string }) => void
   markRoomLoaded: (roomId: string) => void
   isRoomLoaded: (roomId: string) => boolean
   reset: () => void
@@ -132,26 +129,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   getPinnedEventIds: (roomId) => get().pinnedEventIds.get(roomId) || [],
 
   bumpPinnedVersion: () => set((state) => ({ pinnedVersion: state.pinnedVersion + 1 })),
-
-  getThreadMessages: (threadRootId) => get().threadMessages.get(threadRootId) || [],
-
-  setThreadMessages: (threadRootId, messages) => {
-    const threadMessages = new Map(get().threadMessages)
-    threadMessages.set(threadRootId, messages)
-    set({ threadMessages, threadsVersion: get().threadsVersion + 1 })
-  },
-
-  updateThreadRootInfo: (roomId, threadRootId, info) => {
-    const allMessages = new Map(get().messages)
-    const roomMessages = allMessages.get(roomId)
-    if (!roomMessages) return
-    const idx = roomMessages.findIndex((m) => m.eventId === threadRootId)
-    if (idx === -1) return
-    const updated = [...roomMessages]
-    updated[idx] = { ...updated[idx], threadInfo: info }
-    allMessages.set(roomId, updated)
-    set({ messages: allMessages, threadsVersion: get().threadsVersion + 1 })
-  },
 
   markRoomLoaded: (roomId) => {
     const loadedRooms = new Set(get().loadedRooms)
