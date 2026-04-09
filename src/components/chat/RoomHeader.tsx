@@ -73,7 +73,7 @@ export function RoomHeader() {
 
   return (
     <>
-      <div className="h-12 px-4 flex items-center gap-3 border-b border-border bg-bg-primary/50 shrink-0">
+      <div className="h-12 px-4 flex items-center gap-3 border-b border-border bg-bg-primary/95 backdrop-blur-sm shrink-0 sticky top-0 z-10">
         <button
           onClick={toggleMobileMenu}
           className="lg:hidden p-1.5 rounded transition-colors cursor-pointer text-text-muted hover:text-text-primary shrink-0 self-center"
