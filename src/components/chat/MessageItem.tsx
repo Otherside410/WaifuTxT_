@@ -43,9 +43,9 @@ import {
 } from '../../lib/matrix'
 import { useUiStore } from '../../stores/uiStore'
 
-const URL_REGEX = /https?:\/\/[^\s<>"']+/g
+const URL_REGEX = /(?:https?:\/\/[^\s<>"']+|(?:www\.)[^\s<>"']+|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+(?:com|org|net|io|dev|co|me|app|xyz|info|fr|de|uk|eu|gov|edu|tv|gg|ai|sh|cc|be|to|fm|ly|gl|it|us|ca|au|jp|ru|br|in|nl|ch|se|no|fi|es|pt|pl|cz|sk|at|be|dk|ie|nz)(?:\/[^\s<>"']*)?)/gi
 // Matches: URLs, <@user:server>, @user:server, @user (localpart-only), #room
-const TOKEN_REGEX = /(https?:\/\/[^\s<>"']+|<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+(?::[A-Za-z0-9.-]+(?::\d+)?)?|#[A-Za-z0-9._=+\-/]+)/g
+const TOKEN_REGEX = /((?:https?:\/\/[^\s<>"']+|(?:www\.)[^\s<>"']+|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+(?:com|org|net|io|dev|co|me|app|xyz|info|fr|de|uk|eu|gov|edu|tv|gg|ai|sh|cc|be|to|fm|ly|gl|it|us|ca|au|jp|ru|br|in|nl|ch|se|no|fi|es|pt|pl|cz|sk|at|be|dk|ie|nz)(?:\/[^\s<>"']*)?)|<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+(?::[A-Za-z0-9.-]+(?::\d+)?)?|#[A-Za-z0-9._=+\-/]+)/gi
 const MENTION_REGEX = /(<@[^>\s]+>|@[A-Za-z0-9._=+\-/]+(?::[A-Za-z0-9.-]+(?::\d+)?)?|#[A-Za-z0-9._=+\-/]+)/g
 
 function mxidToMentionLabel(raw: string): string {
@@ -112,12 +112,14 @@ function RichText({
     <>
       {parts.map((part, i) => {
         if (!part) return null
-        if (part.startsWith('http://') || part.startsWith('https://')) {
+        if (URL_REGEX.test(part)) {
+          URL_REGEX.lastIndex = 0
           const { cleanUrl, trailing } = splitTrailingPunctuation(part)
+          const href = /^https?:\/\//i.test(cleanUrl) ? cleanUrl : `https://${cleanUrl}`
           return (
             <span key={i}>
               <a
-                href={cleanUrl}
+                href={href}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-link hover:text-link-hover hover:underline break-all"
@@ -283,7 +285,11 @@ function MarkdownText({
 
 function extractUrls(text: string): string[] {
   const raw = text.match(URL_REGEX) || []
-  const cleaned = raw.map((u) => splitTrailingPunctuation(u).cleanUrl).filter(Boolean)
+  const cleaned = raw.map((u) => {
+    const clean = splitTrailingPunctuation(u).cleanUrl
+    if (!clean) return ''
+    return /^https?:\/\//i.test(clean) ? clean : `https://${clean}`
+  }).filter(Boolean)
   return Array.from(new Set(cleaned))
 }
 
