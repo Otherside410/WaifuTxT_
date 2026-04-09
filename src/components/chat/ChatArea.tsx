@@ -7,15 +7,23 @@ import { KeyBackupBanner } from './KeyBackupBanner'
 import { VoiceRoomView } from '../voice/VoiceRoomView'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
+import { useSwipe } from '../../hooks/useSwipe'
 
 const INTERACTIVE_TAGS = new Set(['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'LABEL', 'IMG', 'VIDEO'])
 
 export function ChatArea() {
   const bumpChatInputFocus = useUiStore((s) => s.bumpChatInputFocus)
+  const setMobileMenuOpen = useUiStore((s) => s.setMobileMenuOpen)
+  const setMemberPanel = useUiStore((s) => s.setMemberPanel)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
   const rooms = useRoomStore((s) => s.rooms)
 
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches
+
+  const swipe = useSwipe(
+    useCallback(() => { if (isMobile) setMemberPanel(true) }, [isMobile, setMemberPanel]),
+    useCallback(() => { if (isMobile) setMobileMenuOpen(true) }, [isMobile, setMobileMenuOpen]),
+  )
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement
@@ -41,7 +49,7 @@ export function ChatArea() {
   }
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-bg-primary" onClick={handleClick}>
+    <div className="flex-1 flex flex-col min-w-0 bg-bg-primary" onClick={handleClick} {...swipe}>
       <RoomHeader />
       <KeyBackupBanner />
       <MessageList />
