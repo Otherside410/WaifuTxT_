@@ -5,3 +5,26 @@ services:
     restart: unless-stopped
     ports:
       - "8082:3000"
+    depends_on:
+      - steam-presence
+
+  steam-presence:
+    build: ./services/steam-presence
+    container_name: steam-presence
+    restart: unless-stopped
+    environment:
+      STEAM_API_KEY: ${STEAM_API_KEY}
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-https://matrix.org}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      FRONTEND_URL: ${FRONTEND_URL}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN}
+      PORT: 3000
+      DB_PATH: /data/steam-presence.db
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-60}
+    volumes:
+      - steam-presence-data:/data
+    ports:
+      - "8083:3000"
+
+volumes:
+  steam-presence-data:
