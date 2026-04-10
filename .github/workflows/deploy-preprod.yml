@@ -76,24 +76,32 @@ jobs:
     steps:
       - name: 🟢 Notification Matrix (Succès)
         if: ${{ needs.build.result == 'success' && needs.deploy.result == 'success' }}
-        uses: cbrgm/matrix-message-action@v2
+        uses: lkiesow/matrix-notification@v1.4.1
         with:
-          homeserver: ${{ secrets.MATRIX_HOMESERVER }}
+          server: ${{ secrets.MATRIX_HOMESERVER }}
           token: ${{ secrets.MATRIX_TOKEN }}
           room: ${{ secrets.MATRIX_ROOM_ID }}
           message: |
-            ✅ **Déploiement [Pré-Prod] Réussi !**
-            Le code de **${{ github.actor }}** a été mis en ligne avec succès.
+            ✅ Déploiement [Pré-Prod] Réussi !
+            Le code de ${{ github.actor }} a été mis en ligne avec succès.
+            📝 Commit : ${{ github.event.head_commit.message }}
+          formatted_message: |
+            ✅ <strong>Déploiement [Pré-Prod] Réussi !</strong><br>
+            Le code de <strong>${{ github.actor }}</strong> a été mis en ligne avec succès.<br>
             📝 Commit : ${{ github.event.head_commit.message }}
 
       - name: 🔴 Notification Matrix (Échec)
         if: ${{ needs.build.result == 'failure' || needs.deploy.result == 'failure' }}
-        uses: cbrgm/matrix-message-action@v2
+        uses: lkiesow/matrix-notification@v1.4.1
         with:
-          homeserver: ${{ secrets.MATRIX_HOMESERVER }}
+          server: ${{ secrets.MATRIX_HOMESERVER }}
           token: ${{ secrets.MATRIX_TOKEN }}
           room: ${{ secrets.MATRIX_ROOM_ID }}
           message: |
-            ❌ **Échec du déploiement [Pré-Prod] !**
-            Une erreur est survenue lors de l'intégration du code de **${{ github.actor }}**.
-            🔍 Allez vérifier les logs : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            ❌ Échec du déploiement [Pré-Prod] !
+            Une erreur est survenue lors de l'intégration du code de ${{ github.actor }}.
+            🔍 Logs : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          formatted_message: |
+            ❌ <strong>Échec du déploiement [Pré-Prod] !</strong><br>
+            Une erreur est survenue lors de l'intégration du code de <strong>${{ github.actor }}</strong>.<br>
+            🔍 <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">Vérifier les logs du run</a>
