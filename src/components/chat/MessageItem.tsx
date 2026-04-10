@@ -16,6 +16,8 @@ import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import { EmojiPicker, addRecentEmoji } from '../common/EmojiPicker'
+import { MessageContextMenu } from './MessageContextMenu'
+import { useLongPress } from '../../hooks/useLongPress'
 import type { EncryptedFileInfo, MessageEvent, RoomSummary } from '../../types/matrix'
 import { Avatar } from '../common/Avatar'
 import { UserProfileCard } from '../common/UserProfileCard'
@@ -1079,12 +1081,13 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
     isSyncedMessage &&
     message.type === 'm.text' &&
     !message.content.startsWith('🔒')
-  const canReplyMessage = !message.content.startsWith('🔒')
-  const canReactMessage = !message.content.startsWith('🔒')
-  const canDeleteMessage = isSyncedMessage && !message.content.startsWith('🔒') && canUserRedact(message.roomId, message.sender)
-  const canCopyMessage = message.type === 'm.text' || message.type === 'm.notice' || message.type === 'm.emote'
-  const canPinMessage = isSyncedMessage && !message.content.startsWith('🔒') && canUserPinMessages(message.roomId)
-  const canStartThread = isSyncedMessage && !message.content.startsWith('🔒') && !message.threadRootId
+  const isEncrypted = message.content.startsWith('🔒')
+  const canReplyMessage = isSyncedMessage
+  const canReactMessage = isSyncedMessage
+  const canDeleteMessage = isSyncedMessage && !isEncrypted && canUserRedact(message.roomId, message.sender)
+  const canCopyMessage = !isEncrypted && (message.type === 'm.text' || message.type === 'm.notice' || message.type === 'm.emote')
+  const canPinMessage = isSyncedMessage && !isEncrypted && canUserPinMessages(message.roomId)
+  const canStartThread = isSyncedMessage && !isEncrypted && !message.threadRootId
   const pinnedVersion = useMessageStore((s) => s.pinnedVersion)
   const pinnedEventIds = useMessageStore((s) => s.pinnedEventIds)
   const threadsVersion = useMessageStore((s) => s.threadsVersion)
@@ -1276,6 +1279,10 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [showContextMenu, setShowContextMenu] = useState(false)
+
+  const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches
+  const longPress = useLongPress(() => { if (isMobile && showActionBar) setShowContextMenu(true) })
 
   const handleDelete = useCallback(async () => {
     if (isDeleting) return
@@ -1301,7 +1308,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
   }, [message.content])
 
   return (
-    <div ref={wrapperRef} className={`group relative flex items-start gap-4 px-4 py-0.5 pr-24 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''} ${isPinned ? 'border-l-2 border-l-accent-pink/50' : ''}`}>
+    <div ref={wrapperRef} className={`group relative flex items-start gap-4 px-4 py-0.5 pr-24 hover:bg-bg-hover/30 transition-colors ${showHeader ? 'mt-4' : ''} ${isPinned ? 'border-l-2 border-l-accent-pink/50' : ''}`} {...(isMobile ? longPress : {})}>
       {showHeader ? (
         <Avatar src={message.senderAvatar} name={message.senderName} size={40} className="mt-0.5" />
       ) : (
@@ -1711,6 +1718,27 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
             ? profileCardStatusMessage?.trim() || getStoredOwnStatusMessage().trim() || null
             : profileCardStatusMessage
         }
+      />
+      <MessageContextMenu
+        open={showContextMenu}
+        onClose={() => setShowContextMenu(false)}
+        canReact={canReactMessage}
+        onReact={(emoji) => { addRecentEmoji(emoji); void handleToggleReaction(emoji) }}
+        canReply={canReplyMessage}
+        onReply={() => setPendingReply({ roomId: message.roomId, eventId: message.eventId, senderName: message.senderName, preview: compactPreview(message.content || '(message)') })}
+        canThread={canStartThread}
+        onThread={() => openThreadPanel(message.roomId, message.eventId)}
+        canEdit={canEditMessage}
+        onEdit={() => { setEditError(null); setIsEditing(true) }}
+        canPin={canPinMessage}
+        isPinned={isPinned}
+        isPinning={isPinning}
+        onTogglePin={handleTogglePin}
+        canCopy={canCopyMessage}
+        copied={copied}
+        onCopy={handleCopy}
+        canDelete={canDeleteMessage}
+        onDelete={() => setShowDeleteConfirm(true)}
       />
     </div>
   )

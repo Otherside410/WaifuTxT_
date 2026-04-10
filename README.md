@@ -2,6 +2,8 @@
 
 Client web pour le protocole [Matrix](https://matrix.org), avec une interface inspirée de Discord et un thème cyberpunk / anime.
 
+> Optimisé pour mobile — responsive design, gestes tactiles et menu contextuel Discord-style.
+
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React_19-61DAFB?logo=react&logoColor=black)
 ![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)
@@ -12,32 +14,34 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 
 ### Connexion & chiffrement
 
-- **Authentification Matrix** — identifiant / mot de passe, choix du **homeserver** sur l’écran de connexion + persistance de session optionnelle
+- **Authentification Matrix** — identifiant / mot de passe, choix du **homeserver** sur l'écran de connexion + persistance de session optionnelle
 - **Chiffrement de bout en bout (E2EE)** — via `matrix-sdk-crypto-wasm` (crypto Rust)
-- **Restauration de clés** — déchiffrement de l’historique via la clé de récupération (Secret Storage / 4S)
-- **Vérification croisée** — flux de vérification d’appareils (modal dédiée)
+- **Restauration de clés** — déchiffrement de l'historique via la clé de récupération (Secret Storage / 4S)
+- **Vérification croisée** — flux de vérification d'appareils (modal dédiée)
 
 ### Navigation & salons
 
 - **Spaces, salons et DMs** — barres latérales type Discord (serveurs, canaux, messages directs)
 - **Création de salon** — dans un espace, si les droits Matrix le permettent (`m.space.child`)
-- **Renommer un salon** — depuis l’en-tête du salon (selon les power levels)
-- **Quitter un salon** — confirmation depuis l’en-tête
+- **Renommer un salon** — depuis l'en-tête du salon (selon les power levels)
+- **Quitter un salon** — confirmation depuis l'en-tête
 - **Salons vocaux (expérimental)** — appels vocaux Matrix / groupe (panneau dédié, réglages audio)
+- **Navigation mobile** — menu hamburger avec panneau latéral animé, fermeture automatique à la sélection d'un salon
 
 ### Messagerie
 
-- **Temps réel** — timeline, réception des événements, **cache en mémoire** : un salon déjà visité n’est pas rechargé entièrement depuis le SDK au prochain focus (évite un `setMessages` inutile)
-- **Historique** — pagination vers le haut (`prependMessages`, indépendant du cache ci-dessus)
+- **Temps réel** — timeline, réception des événements, **cache en mémoire** : un salon déjà visité n'est pas rechargé entièrement depuis le SDK au prochain focus
+- **Historique** — pagination vers le haut (`prependMessages`)
+- **Threads** — fils de discussion type Discord via la relation Matrix `m.thread` ; panneau latéral de réponses + liste de tous les threads du salon
 - **Édition** — `m.replace` avec indicateur « modifié »
 - **Réponses** — `m.in_reply_to` avec aperçu type Discord
 - **Réactions** — picker emoji (catégories, recherche), réactions rapides personnalisables
 - **Épinglage** — état `m.room.pinned_events`, panneau « Messages épinglés » (aperçu texte / médias, désépinglage)
 - **Suppression (redaction)** — selon les droits Matrix, avec confirmation
 - **Copier le contenu** — bouton sur les messages éligibles
-- **Mentions** — `@localpart` étendu en MXID à l’envoi, mise en forme à l’affichage
+- **Mentions** — `@localpart` étendu en MXID à l'envoi, mise en forme à l'affichage
 - **Markdown** — `react-markdown`, GFM, coloration syntaxique
-- **Emoji** — `:` pour l’autocomplétion, shortcodes → emoji, bouton dans la barre de saisie
+- **Emoji** — `:` pour l'autocomplétion, shortcodes → emoji, bouton dans la barre de saisie
 - **Saisie** — capitalisation automatique en début de message et après `.` `!` `?`
 - **Indicateurs de frappe** — temps réel, style « points » ou « waifu »
 - **Accusés de lecture** — avatars des lecteurs sur vos messages envoyés
@@ -46,16 +50,17 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 
 - **Images, vidéos, fichiers** — envoi et affichage (y compris contenus chiffrés, déchiffrement côté client)
 - **Messages vocaux** — enregistrement micro, envoi `m.audio` avec drapeaux vocaux (MSC3245 / MSC1767), lecteur dans la timeline
-- **Aperçus d’URL** — récupération Open Graph côté client quand c’est possible
+- **Aperçus d'URL** — récupération Open Graph côté client quand c'est possible
 
 ### Profil & interface
 
 - **Statut personnalisé** — message de statut, visible en ligne / profil
 - **Avatar profil** — recadrage / upload
-- **Thème & accent** — clair / sombre, couleur d’accent
+- **Thème & accent** — clair / sombre, couleur d'accent
 - **Waifu (opt-in)** — Miku / Airi en local
 - **Notifications** — API Notifications du navigateur
 - **Raccourcis clavier** — hooks dédiés selon les écrans
+- **Version** — numéro de version de l'application visible dans les paramètres (section Compte)
 
 ## Stack technique
 
@@ -73,7 +78,7 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 | Dates | `date-fns` |
 | Qualité dev | ESLint + Husky |
 
-Pas d’**axios** : HTTP via `fetch` / SDK Matrix.
+Pas d'**axios** : HTTP via `fetch` / SDK Matrix.
 
 ## Installation
 
@@ -85,7 +90,7 @@ npm install
 
 ### Homeserver
 
-L’URL du homeserver est saisie **sur l’écran de connexion** (champ dédié, valeur par défaut `https://matrix.org`). Aucune constante obligatoire à modifier dans le code pour un usage normal.
+L'URL du homeserver est saisie **sur l'écran de connexion** (champ dédié, valeur par défaut `https://matrix.org`). Aucune constante obligatoire à modifier dans le code pour un usage normal.
 
 ## Lancement
 
@@ -102,6 +107,16 @@ npm run build
 npm run preview
 ```
 
+## Déploiement continu (CI/CD)
+
+Un workflow GitHub Actions (`deploy.yml`) se déclenche sur chaque push sur `main` :
+
+1. **Build** — `npm ci` + `npm run build` (Node 20, natif)
+2. **Image Docker** — construction pour `linux/arm64` via QEMU + Buildx, push sur GHCR (`ghcr.io/otherside410/waifutxt`)
+3. **Déploiement** — connexion SSH au serveur cible et pull de la nouvelle image
+
+Les tags publiés sont `:latest` et `:<sha_du_commit>`.
+
 ## Structure du projet
 
 ```
@@ -110,7 +125,8 @@ src/
 ├── components/
 │   ├── auth/               # LoginScreen
 │   ├── chat/               # ChatArea, MessageList, MessageItem, MessageInput,
-│   │                       # PinnedMessagesPanel, RoomHeader, KeyBackupBanner, TypingIndicator
+│   │                       # PinnedMessagesPanel, RoomHeader, ThreadPanel,
+│   │                       # ThreadsListPanel, KeyBackupBanner, TypingIndicator
 │   ├── common/             # Avatar, EmojiPicker, Tooltip, etc.
 │   ├── layout/             # AppShell, SpaceSidebar, RoomSidebar, MemberPanel,
 │   │                       # VoicePanel, SettingsModal
@@ -119,18 +135,19 @@ src/
 │   └── voice/              # Vue salon vocal
 ├── hooks/                  # useNotifications, useKeyboardShortcuts
 ├── lib/
-│   ├── matrix.ts           # Client SDK, sync, médias, pièces jointes, pins, vocaux, rooms
+│   ├── matrix.ts           # Client SDK, sync, médias, pièces jointes, pins, threads, vocaux, rooms
 │   ├── voice.ts            # Flux audio appels groupe
 │   ├── verification.ts
 │   └── waifu.ts
 ├── stores/
 │   ├── authStore.ts
 │   ├── roomStore.ts
-│   ├── messageStore.ts     # Messages, typing, pins, loadedRooms (cache init par salon)
-│   ├── uiStore.ts
+│   ├── messageStore.ts     # Messages, typing, pins, threads, loadedRooms (cache init par salon)
+│   ├── uiStore.ts          # Panneaux (members, pins, threads, thread actif), mobile menu
 │   ├── voiceStore.ts
 │   └── verificationStore.ts
 ├── types/matrix.ts
+├── globals.d.ts            # Déclaration __APP_VERSION__ (injecté par Vite)
 ├── styles/theme.css
 ├── App.tsx
 └── main.tsx
@@ -138,14 +155,15 @@ src/
 
 ## Performances & UX
 
-- **Salons déjà chargés** — `loadedRooms` dans le store : `loadInitialMessages` ne réécrit pas la timeline si le salon a déjà été initialisé dans la session (les événements temps réel continuent d’alimenter le store)
+- **Salons déjà chargés** — `loadedRooms` dans le store : `loadInitialMessages` ne réécrit pas la timeline si le salon a déjà été initialisé dans la session (les événements temps réel continuent d'alimenter le store)
 - **React.memo / picker emoji** — limitation des re-renders, rendu progressif des catégories (`requestIdleCallback`)
 - **Picker monté de façon persistante** — transitions CSS plutôt que remontage complet
 - **`content-visibility: auto`** — sections hors écran du picker moins coûteuses à peindre
+- **Animations des panneaux** — ouverture / fermeture animée (slide + fondu) sur desktop et mobile pour tous les panneaux latéraux
 
 ## Problèmes connus
 
-- **Image + texte dans un même message** : sur certains messages venant d’autres clients (ex. Element), l’image peut mal se charger alors qu’un média seul fonctionne. Piste : tracer les URLs media et codes HTTP au rendu.
+- **Image + texte dans un même message** : sur certains messages venant d'autres clients (ex. Element), l'image peut mal se charger alors qu'un média seul fonctionne. Piste : tracer les URLs media et codes HTTP au rendu.
 
 ## Versioning automatique sur commit
 

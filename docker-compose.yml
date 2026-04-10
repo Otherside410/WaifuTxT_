@@ -1,7 +1,7 @@
 services:
-  waifutxt-app:
-    image: ghcr.io/otherside410/waifutxt:latest
-    container_name: waifutxt-app
+  waifutxt-preprod:
+    image: ghcr.io/otherside410/waifutxt:preprod
+    container_name: waifutxt-preprod
     restart: unless-stopped
     ports:
-      - "8081:3000"
+      - "8082:3000"

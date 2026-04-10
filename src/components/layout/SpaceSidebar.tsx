@@ -4,6 +4,32 @@ import { Avatar } from '../common/Avatar'
 import { Tooltip } from '../common/Tooltip'
 import { createSpace } from '../../lib/matrix'
 
+function SpaceBadge({ mentions, unread, invites }: { mentions: number; unread: number; invites: number }) {
+  if (mentions > 0) {
+    return (
+      <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-danger text-white text-[10px] font-bold leading-none z-10 ring-2 ring-bg-primary">
+        {mentions > 99 ? '99+' : mentions}
+      </span>
+    )
+  }
+  if (invites > 0) {
+    return (
+      <span className="absolute -top-1 -right-1 w-[18px] h-[18px] flex items-center justify-center rounded-full bg-accent-pink text-white z-10 ring-2 ring-bg-primary">
+        <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M2.003 5.884 10 9.882l7.997-3.998A2 2 0 0 0 16 4H4a2 2 0 0 0-1.997 1.884z" />
+          <path d="m18 8.118-8 4-8-4V14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.118z" />
+        </svg>
+      </span>
+    )
+  }
+  if (unread > 0) {
+    return (
+      <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-text-secondary z-10 ring-2 ring-bg-primary" />
+    )
+  }
+  return null
+}
+
 export function SpaceSidebar() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [spaceType, setSpaceType] = useState<'public' | 'private'>('private')
@@ -25,6 +51,42 @@ export function SpaceSidebar() {
     }
     return allSpaces.filter((s) => !childSpaceIds.has(s.roomId))
   }, [rooms])
+
+  // Badge counts: mentions, unread, invitations — per space and for the home button
+  const badges = useMemo(() => {
+    const allRooms = Array.from(rooms.values())
+
+    // Room IDs that belong to ANY space (all levels) — same logic as RoomSidebar
+    const allSpacedRoomIds = new Set<string>()
+    for (const r of allRooms) {
+      if (!r.isSpace) continue
+      for (const childId of r.children) allSpacedRoomIds.add(childId)
+    }
+
+    // Home = DMs + rooms not in any space (joined or invited)
+    const homeRooms = allRooms.filter((r) => !r.isSpace && (r.isDirect || !allSpacedRoomIds.has(r.roomId)))
+    const home = {
+      mentions: homeRooms.filter((r) => r.membership === 'join').reduce((s, r) => s + r.mentionCount, 0),
+      unread:   homeRooms.filter((r) => r.membership === 'join').reduce((s, r) => s + r.unreadCount, 0),
+      invites:  homeRooms.filter((r) => r.membership === 'invite').length,
+    }
+
+    // Per space
+    const spaceMap = new Map<string, { mentions: number; unread: number; invites: number }>()
+    for (const space of spaces) {
+      let mentions = 0, unread = 0, invites = 0
+      for (const childId of space.children) {
+        const r = rooms.get(childId)
+        if (!r || r.isSpace) continue
+        mentions += r.mentionCount
+        unread   += r.unreadCount
+        if (r.membership === 'invite') invites++
+      }
+      spaceMap.set(space.roomId, { mentions, unread, invites })
+    }
+
+    return { home, spaces: spaceMap }
+  }, [rooms, spaces])
 
   const submitCreateSpace = async (e: FormEvent) => {
     e.preventDefault()
@@ -53,7 +115,7 @@ export function SpaceSidebar() {
             if (e.button === 0) setActiveSpace(null)
           }}
           onClick={() => setActiveSpace(null)}
-          className={`w-12 h-12 flex items-center justify-center transition-[border-radius,background-color,color,box-shadow,transform] duration-100 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer ${
+          className={`relative w-12 h-12 flex items-center justify-center transition-[border-radius,background-color,color,box-shadow,transform] duration-100 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer ${
             activeSpaceId === null
               ? 'bg-accent-pink rounded-xl text-white'
               : 'bg-bg-tertiary text-text-secondary rounded-full hover:bg-accent-pink hover:text-white'
@@ -62,33 +124,38 @@ export function SpaceSidebar() {
           <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
           </svg>
+          <SpaceBadge {...badges.home} />
         </button>
       </Tooltip>
 
       <div className="w-8 h-0.5 bg-border rounded-full my-1" />
 
-      {spaces.map((space) => (
-        <Tooltip key={space.roomId} content={space.name}>
-          <button
-            onMouseDown={(e) => {
-              if (e.button === 0) setActiveSpace(space.roomId)
-            }}
-            onClick={() => setActiveSpace(space.roomId)}
-            className={`w-12 h-12 flex items-center justify-center transition-[border-radius,box-shadow,transform] duration-100 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer overflow-hidden ${
-              activeSpaceId === space.roomId
-                ? 'rounded-xl ring-2 ring-accent-pink'
-                : 'rounded-full'
-            }`}
-          >
-            <Avatar
-              src={space.avatarUrl}
-              name={space.name}
-              size={48}
-              shape={activeSpaceId === space.roomId ? 'rounded' : 'circle'}
-            />
-          </button>
-        </Tooltip>
-      ))}
+      {spaces.map((space) => {
+        const b = badges.spaces.get(space.roomId) ?? { mentions: 0, unread: 0, invites: 0 }
+        return (
+          <Tooltip key={space.roomId} content={space.name}>
+            <button
+              onMouseDown={(e) => {
+                if (e.button === 0) setActiveSpace(space.roomId)
+              }}
+              onClick={() => setActiveSpace(space.roomId)}
+              className={`relative w-12 h-12 flex items-center justify-center transition-[border-radius,box-shadow,transform] duration-100 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer overflow-visible ${
+                activeSpaceId === space.roomId
+                  ? 'rounded-xl ring-2 ring-accent-pink'
+                  : 'rounded-full'
+              }`}
+            >
+              <Avatar
+                src={space.avatarUrl}
+                name={space.name}
+                size={48}
+                shape={activeSpaceId === space.roomId ? 'rounded' : 'circle'}
+              />
+              <SpaceBadge {...b} />
+            </button>
+          </Tooltip>
+        )
+      })}
 
       <Tooltip content="Créer un serveur">
         <button

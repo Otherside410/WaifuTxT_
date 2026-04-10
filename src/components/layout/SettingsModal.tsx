@@ -378,6 +378,11 @@ function AccountSection() {
         </div>
       </div>
 
+      <div className="px-4 py-2.5 rounded-lg border border-border bg-bg-primary/40 flex items-center justify-between">
+        <span className="text-xs text-text-muted">Version</span>
+        <span className="text-xs font-mono text-text-secondary">{__APP_VERSION__}</span>
+      </div>
+
       <div className="p-4 rounded-lg border border-danger/30 bg-danger/5 space-y-3">
         <div>
           <p className="text-sm font-medium text-text-primary">Déconnexion</p>
@@ -418,6 +423,7 @@ export function SettingsModal() {
   const typingIndicatorStyle = useUiStore((s) => s.typingIndicatorStyle)
   const setTypingIndicatorStyle = useUiStore((s) => s.setTypingIndicatorStyle)
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('profile')
+  const [showNav, setShowNav] = useState(true)
   const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(null)
   const rooms = useRoomStore((s) => s.rooms)
 
@@ -452,35 +458,78 @@ export function SettingsModal() {
   }, [ownAvatarUrl, selectedWaifuId, waifuOptIn])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-stretch sm:items-center sm:justify-center">
       <button
-        className="absolute inset-0 bg-black/65 backdrop-blur-[2px]"
+        className="absolute inset-0 bg-black/65 backdrop-blur-[2px] hidden sm:block"
         aria-label="Fermer les paramètres"
         onClick={() => setSettingsModal(false)}
       />
 
-      <div className="relative w-[900px] max-w-[92vw] h-[620px] max-h-[88vh] rounded-xl overflow-hidden border border-border bg-bg-secondary shadow-2xl flex">
-        <div className="w-60 border-r border-border bg-bg-primary/60 p-3">
-          <h2 className="text-xs uppercase tracking-wide text-text-muted px-2 py-2">Paramètres</h2>
-          <div className="space-y-1">
+      <div className="relative w-full sm:w-[900px] sm:max-w-[92vw] h-full sm:h-[620px] sm:max-h-[88vh] rounded-none sm:rounded-xl overflow-hidden border-0 sm:border border-border bg-bg-secondary shadow-2xl flex flex-col sm:flex-row">
+
+        {/* ── Nav sidebar ─────────────────────────────────────────────── */}
+        <div className={`flex-col w-full sm:w-60 sm:border-r border-border bg-bg-primary/60 ${showNav ? 'flex' : 'hidden sm:flex'}`}>
+          <div className="flex items-center justify-between px-4 pt-4 pb-2 sm:px-3 sm:pt-3 sm:pb-0">
+            <h2 className="text-xs uppercase tracking-wide text-text-muted">Paramètres</h2>
+            <button
+              onClick={() => setSettingsModal(false)}
+              className="sm:hidden p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+              aria-label="Fermer"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-0.5">
             {SETTINGS_SECTIONS.map((section) => (
               <button
                 key={section.id}
-                onClick={() => setActiveSection(section.id)}
-                className={`w-full px-2.5 py-2 rounded-md text-left text-sm transition-colors cursor-pointer ${
+                onClick={() => { setActiveSection(section.id); setShowNav(false) }}
+                className={`w-full px-3 py-3 sm:px-2.5 sm:py-2 rounded-md text-left text-sm transition-colors cursor-pointer flex items-center justify-between ${
                   activeSection === section.id
                     ? 'bg-bg-hover text-text-primary'
                     : 'text-text-secondary hover:bg-bg-hover/60 hover:text-text-primary'
-                }`}
+                } ${section.id === 'shortcuts' ? 'hidden sm:flex' : ''}`}
               >
-                {section.label}
+                <span>{section.label}</span>
+                <svg className="w-4 h-4 text-text-muted sm:hidden" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                </svg>
               </button>
             ))}
           </div>
         </div>
 
-        <div className="flex-1 min-w-0 p-6 overflow-y-auto">
-          <div className="flex items-start justify-between gap-4">
+        {/* ── Content area ─────────────────────────────────────────────── */}
+        <div className={`flex-col flex-1 min-w-0 min-h-0 ${!showNav ? 'flex' : 'hidden sm:flex'}`}>
+          {/* Mobile top bar */}
+          <div className="sm:hidden flex items-center gap-2 px-3 py-3 border-b border-border shrink-0">
+            <button
+              onClick={() => setShowNav(true)}
+              className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+              aria-label="Retour"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+              </svg>
+            </button>
+            <h3 className="flex-1 text-base font-semibold text-text-primary">
+              {SETTINGS_SECTIONS.find((s) => s.id === activeSection)?.label}
+            </h3>
+            <button
+              onClick={() => setSettingsModal(false)}
+              className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+              aria-label="Fermer"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+        <div className="flex-1 min-w-0 min-h-0 p-4 sm:p-6 overflow-y-auto">
+          <div className="hidden sm:flex items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-semibold text-text-primary">
                 {SETTINGS_SECTIONS.find((s) => s.id === activeSection)?.label}
@@ -556,7 +605,7 @@ export function SettingsModal() {
                   role="switch"
                   aria-checked={showRoomMessagePreview}
                   onClick={() => setRoomMessagePreview(!showRoomMessagePreview)}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
                     showRoomMessagePreview ? 'bg-accent-pink' : 'bg-bg-hover'
                   }`}
                   title="Activer ou désactiver l'aperçu des messages"
@@ -763,6 +812,7 @@ export function SettingsModal() {
           {activeSection === 'account' && (
             <AccountSection />
           )}
+        </div>
         </div>
       </div>
     </div>
