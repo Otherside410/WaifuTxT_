@@ -67,3 +67,33 @@ jobs:
             cd ~/docker/waifu-matrix
             docker compose pull
             docker compose up -d --remove-orphans
+
+  notify:
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: 🟢 Notification Matrix (Succès)
+        if: ${{ needs.build.result == 'success' && needs.deploy.result == 'success' }}
+        uses: cbrgm/matrix-message-action@v2
+        with:
+          homeserver: ${{ secrets.MATRIX_HOMESERVER }}
+          token: ${{ secrets.MATRIX_TOKEN }}
+          room: ${{ secrets.MATRIX_ROOM_ID }}
+          message: |
+            ✅ **Déploiement [Prod] Réussi !**
+            Le code de **${{ github.actor }}** a été mis en ligne avec succès.
+            📝 Commit : ${{ github.event.head_commit.message }}
+
+      - name: 🔴 Notification Matrix (Échec)
+        if: ${{ needs.build.result == 'failure' || needs.deploy.result == 'failure' }}
+        uses: cbrgm/matrix-message-action@v2
+        with:
+          homeserver: ${{ secrets.MATRIX_HOMESERVER }}
+          token: ${{ secrets.MATRIX_TOKEN }}
+          room: ${{ secrets.MATRIX_ROOM_ID }}
+          message: |
+            ❌ **Échec du déploiement [Prod] !**
+            Une erreur est survenue lors de l'intégration du code de **${{ github.actor }}**.
+            🔍 Allez vérifier les logs : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
