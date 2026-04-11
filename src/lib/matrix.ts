@@ -2307,14 +2307,19 @@ export function reapplyStoredOwnStatusToStore(): void {
 
 export async function setOwnPresence(presence: 'online' | 'unavailable' | 'offline'): Promise<void> {
   if (!client) return
-  const status_msg = getStoredOwnStatusMessage().slice(0, MAX_PRESENCE_STATUS_MSG_LEN)
+  // Only include status_msg if we have a locally stored value.
+  // Sending an empty string would clear the status on the server (and on other devices).
+  const storedMsg = getStoredOwnStatusMessage().trim()
+  const status_msg: string | undefined = storedMsg
+    ? storedMsg.slice(0, MAX_PRESENCE_STATUS_MSG_LEN)
+    : undefined
   if (isPresenceDebugEnabled()) {
     console.info('[WaifuTxT presence] setOwnPresence → PUT …/presence/{userId}/status', {
       presence,
       status_msg,
     })
   }
-  await client.setPresence({ presence, status_msg })
+  await client.setPresence({ presence, ...(status_msg !== undefined && { status_msg }) })
 }
 
 /**
@@ -2361,7 +2366,10 @@ export async function initOwnPresence(): Promise<void> {
   if (userId) {
     useRoomStore.getState().updatePresence(userId, presence)
     const msg = getStoredOwnStatusMessage().trim()
-    useRoomStore.getState().setStatusMessage(userId, msg || null)
+    // Only push to store if there's a locally stored value.
+    // If empty (e.g. mobile / different device), leave the store as-is so that
+    // seedPresenceFromUsers / User.presence can populate it from the server.
+    if (msg) useRoomStore.getState().setStatusMessage(userId, msg)
   }
   await setOwnPresence(presence)
 }
