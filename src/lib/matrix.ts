@@ -19,9 +19,12 @@ const mediaBlobPromiseCache = new Map<string, Promise<string | null>>()
 const decryptedUrlCache = new Map<string, string>()
 const decryptPromiseCache = new Map<string, Promise<string>>()
 const userProfileCache = new Map<string, { displayName: string | null; avatarUrl: string | null }>()
+const userBannerCache = new Map<string, string | null>()
 const roomJoinedMembersCache = new Map<string, Map<string, { displayName: string | null; avatarMxc: string | null }>>()
 
 const OWN_STATUS_MSG_STORAGE_KEY = 'waifutxt_status_msg'
+const OWN_BANNER_MXC_STORAGE_KEY = 'waifutxt_banner_mxc'
+const BANNER_PROFILE_KEY = 'io.waifu.banner'
 export const MAX_PRESENCE_STATUS_MSG_LEN = 200
 
 let ownStatusStorageListenerBound = false
@@ -2440,6 +2443,108 @@ export async function uploadProfileAvatarGif(file: File): Promise<{ mxcUrl: stri
   const httpPreviewUrl = mxcToAvatarHttpUrl(contentUri)
 
   return { mxcUrl: contentUri, httpPreviewUrl }
+}
+
+/**
+ * Returns the HTTP URL of the current user's profile banner from localStorage (no network call).
+ */
+export function getOwnBannerUrl(): string | null {
+  try {
+    const mxc = localStorage.getItem(OWN_BANNER_MXC_STORAGE_KEY)
+    if (!mxc) return null
+    return mxcToAvatarHttpUrl(mxc)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Uploads a PNG or GIF as profile banner and stores the MXC URI in the custom Matrix
+ * profile field `io.waifu.banner` (publicly readable by other users via GET /profile/.../io.waifu.banner).
+ */
+export async function uploadProfileBanner(file: File): Promise<{ mxcUrl: string; httpUrl: string | null }> {
+  const c = await ensureClientReady()
+  const userId = c.getUserId()
+  if (!userId) throw new Error('Non connecté')
+
+  const allowed = ['image/png', 'image/gif', 'image/jpeg', 'image/webp']
+  if (!allowed.includes(file.type)) throw new Error('Format non supporté. Utilisez PNG, GIF, JPEG ou WebP.')
+  if (file.size > 8 * 1024 * 1024) throw new Error('Fichier trop volumineux (max 8 Mo).')
+
+  const upload = await c.uploadContent(file)
+  const mxcUrl = upload.content_uri
+  if (!mxcUrl) throw new Error("Le serveur n'a pas renvoyé d'URI média")
+
+  const token = c.getAccessToken()
+  const res = await fetch(
+    `${c.baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${BANNER_PROFILE_KEY}`,
+    {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [BANNER_PROFILE_KEY]: { url: mxcUrl } }),
+    },
+  )
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(body?.error ?? `Erreur serveur ${res.status}`)
+  }
+
+  try { localStorage.setItem(OWN_BANNER_MXC_STORAGE_KEY, mxcUrl) } catch { /* ignore */ }
+  const httpUrl = mxcToAvatarHttpUrl(mxcUrl)
+  userBannerCache.set(userId, httpUrl)
+  return { mxcUrl, httpUrl }
+}
+
+/**
+ * Clears the profile banner by setting an empty URL in the custom profile field.
+ */
+export async function removeProfileBanner(): Promise<void> {
+  const c = await ensureClientReady()
+  const userId = c.getUserId()
+  if (!userId) throw new Error('Non connecté')
+
+  const token = c.getAccessToken()
+  const res = await fetch(
+    `${c.baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${BANNER_PROFILE_KEY}`,
+    {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [BANNER_PROFILE_KEY]: { url: '' } }),
+    },
+  )
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(body?.error ?? `Erreur serveur ${res.status}`)
+  }
+
+  try { localStorage.removeItem(OWN_BANNER_MXC_STORAGE_KEY) } catch { /* ignore */ }
+  userBannerCache.set(userId, null)
+}
+
+/**
+ * Fetches the profile banner HTTP URL for any user. Cached per session.
+ */
+export async function getUserBannerUrl(userId: string): Promise<string | null> {
+  if (userBannerCache.has(userId)) return userBannerCache.get(userId) ?? null
+  if (!client) return null
+
+  const token = client.getAccessToken()
+  try {
+    const res = await fetch(
+      `${client.baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${BANNER_PROFILE_KEY}`,
+      token ? { headers: { 'Authorization': `Bearer ${token}` } } : undefined,
+    )
+    if (!res.ok) { userBannerCache.set(userId, null); return null }
+    const data = await res.json() as { [key: string]: { url?: string } }
+    const inner = data?.[BANNER_PROFILE_KEY]
+    const mxc = typeof inner?.url === 'string' && inner.url.startsWith('mxc://') ? inner.url : null
+    const httpUrl = mxc ? mxcToAvatarHttpUrl(mxc) : null
+    userBannerCache.set(userId, httpUrl)
+    return httpUrl
+  } catch {
+    userBannerCache.set(userId, null)
+    return null
+  }
 }
 
 export async function getSessions(): Promise<DeviceInfo[]> {

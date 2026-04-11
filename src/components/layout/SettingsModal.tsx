@@ -9,6 +9,7 @@ import { startSelfVerification } from '../../lib/verification'
 import { AccentColorPicker } from '../settings/AccentColorPicker'
 import { ThemePicker } from '../settings/ThemePicker'
 import { ProfileAvatarUpload } from '../settings/ProfileAvatarUpload'
+import { ProfileBannerUpload } from '../settings/ProfileBannerUpload'
 import { ProfileStatusSettings } from '../settings/ProfileStatusSettings'
 import { CustomizationSettings } from '../settings/CustomizationSettings'
 import { AudioSettings } from '../settings/AudioSettings'
@@ -580,6 +581,7 @@ export function SettingsModal() {
                       />
                     </div>
                   </div>
+                  <ProfileBannerUpload disabled={!session} />
                   <ProfileStatusSettings disabled={!session} />
                 </div>
               </div>

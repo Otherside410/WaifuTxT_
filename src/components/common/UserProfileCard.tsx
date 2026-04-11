@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import { Avatar } from './Avatar'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
-import { getOrCreateDmRoom } from '../../lib/matrix'
+import { getOrCreateDmRoom, getUserBannerUrl } from '../../lib/matrix'
 
 const CARD_WIDTH = 320
 
@@ -31,8 +31,15 @@ export function UserProfileCard({
   const cardRef = useRef<HTMLDivElement | null>(null)
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
   const [dmLoading, setDmLoading] = useState(false)
+  const [bannerUrl, setBannerUrl] = useState<string | null>(null)
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
+
+  useEffect(() => {
+    if (!open) return
+    setBannerUrl(null)
+    getUserBannerUrl(userId).then(setBannerUrl).catch(() => null)
+  }, [open, userId])
 
   useEffect(() => {
     if (!open) return
@@ -112,7 +119,13 @@ export function UserProfileCard({
       style={{ top: coords.top, left: coords.left, width: CARD_WIDTH }}
     >
       {/* Banner */}
-      <div className="h-16 bg-gradient-to-r from-purple-500/80 to-accent-pink/70" />
+      {bannerUrl ? (
+        <div className="h-20 overflow-hidden">
+          <img src={bannerUrl} alt="" className="w-full h-full object-cover" />
+        </div>
+      ) : (
+        <div className="h-16 bg-gradient-to-r from-purple-500/80 to-accent-pink/70" />
+      )}
 
       {/* Body */}
       <div className="px-4 pb-4">
