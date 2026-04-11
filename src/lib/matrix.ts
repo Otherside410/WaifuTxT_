@@ -24,9 +24,12 @@ const roomJoinedMembersCache = new Map<string, Map<string, { displayName: string
 
 const OWN_STATUS_MSG_STORAGE_KEY = 'waifutxt_status_msg'
 const OWN_BANNER_MXC_STORAGE_KEY = 'waifutxt_banner_mxc'
+const OWN_BIO_STORAGE_KEY = 'waifutxt_bio'
 const BANNER_PROFILE_KEY = 'io.waifu.banner'
 const STATUS_MSG_PROFILE_KEY = 'io.waifu.status_msg'
+const BIO_PROFILE_KEY = 'io.waifu.bio'
 export const MAX_PRESENCE_STATUS_MSG_LEN = 200
+export const MAX_BIO_LEN = 280
 
 let ownStatusStorageListenerBound = false
 
@@ -2584,6 +2587,62 @@ export async function getUserBannerUrl(userId: string): Promise<string | null> {
     return httpUrl
   } catch {
     userBannerCache.set(userId, null)
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Profile bio
+// ---------------------------------------------------------------------------
+
+export function getOwnBio(): string {
+  try {
+    return localStorage.getItem(OWN_BIO_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export async function setOwnBio(text: string): Promise<void> {
+  const c = await ensureClientReady()
+  const userId = c.getUserId()
+  if (!userId) throw new Error('Non connecté')
+  const trimmed = text.trim().slice(0, MAX_BIO_LEN)
+  try {
+    localStorage.setItem(OWN_BIO_STORAGE_KEY, trimmed)
+  } catch { /* ignore */ }
+  const token = c.getAccessToken()
+  const res = await fetch(
+    `${c.baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${BIO_PROFILE_KEY}`,
+    {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [BIO_PROFILE_KEY]: { text: trimmed } }),
+    },
+  )
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { errcode?: string; error?: string }
+    throw new Error(body.error ?? `HTTP ${res.status}`)
+  }
+}
+
+/**
+ * Fetches the bio for any user from the Matrix profile field `io.waifu.bio`.
+ */
+export async function getUserBio(userId: string): Promise<string | null> {
+  if (!client) return null
+  const token = client.getAccessToken()
+  try {
+    const res = await fetch(
+      `${client.baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${BIO_PROFILE_KEY}`,
+      token ? { headers: { 'Authorization': `Bearer ${token}` } } : undefined,
+    )
+    if (!res.ok) return null
+    const data = await res.json() as { [key: string]: { text?: string } }
+    const inner = data?.[BIO_PROFILE_KEY]
+    const text = typeof inner?.text === 'string' ? inner.text.trim() : null
+    return text || null
+  } catch {
     return null
   }
 }

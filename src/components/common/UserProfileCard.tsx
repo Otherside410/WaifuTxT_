@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import { Avatar } from './Avatar'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
-import { getOrCreateDmRoom, getUserBannerUrl, getUserStatusMessage } from '../../lib/matrix'
+import { getOrCreateDmRoom, getUserBannerUrl, getUserStatusMessage, getUserBio } from '../../lib/matrix'
 
 const CARD_WIDTH = 320
 
@@ -33,6 +33,7 @@ export function UserProfileCard({
   const [dmLoading, setDmLoading] = useState(false)
   const [bannerUrl, setBannerUrl] = useState<string | null>(null)
   const [profileStatusMsg, setProfileStatusMsg] = useState<string | null>(null)
+  const [bio, setBio] = useState<string | null>(null)
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
 
@@ -40,8 +41,10 @@ export function UserProfileCard({
     if (!open) return
     setBannerUrl(null)
     setProfileStatusMsg(null)
+    setBio(null)
     getUserBannerUrl(userId).then(setBannerUrl).catch(() => null)
     getUserStatusMessage(userId).then(setProfileStatusMsg).catch(() => null)
+    getUserBio(userId).then(setBio).catch(() => null)
   }, [open, userId])
 
   useEffect(() => {
@@ -156,6 +159,12 @@ export function UserProfileCard({
         {(statusMessage?.trim() || profileStatusMsg) ? (
           <p className="mt-2 text-xs font-semibold text-text-secondary leading-snug line-clamp-3 border-t border-border/60 pt-2">
             {statusMessage?.trim() || profileStatusMsg}
+          </p>
+        ) : null}
+
+        {bio ? (
+          <p className="mt-2 text-xs text-text-secondary leading-relaxed line-clamp-4 border-t border-border/60 pt-2 whitespace-pre-wrap">
+            {bio}
           </p>
         ) : null}
 

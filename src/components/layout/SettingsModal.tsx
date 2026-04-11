@@ -11,6 +11,7 @@ import { ThemePicker } from '../settings/ThemePicker'
 import { ProfileAvatarUpload } from '../settings/ProfileAvatarUpload'
 import { ProfileBannerUpload } from '../settings/ProfileBannerUpload'
 import { ProfileStatusSettings } from '../settings/ProfileStatusSettings'
+import { ProfileBioSettings } from '../settings/ProfileBioSettings'
 import { CustomizationSettings } from '../settings/CustomizationSettings'
 import { AudioSettings } from '../settings/AudioSettings'
 import { WAIFU_OPTIONS, getWaifuById } from '../../lib/waifu'
@@ -583,6 +584,7 @@ export function SettingsModal() {
                   </div>
                   <ProfileBannerUpload disabled={!session} />
                   <ProfileStatusSettings disabled={!session} />
+                  <ProfileBioSettings disabled={!session} />
                 </div>
               </div>
             </div>
