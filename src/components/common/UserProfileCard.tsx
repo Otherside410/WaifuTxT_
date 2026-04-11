@@ -3,6 +3,7 @@ import { Avatar } from './Avatar'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
 import { getOrCreateDmRoom } from '../../lib/matrix'
+import { getSteamStatus, type SteamStatus } from '../../lib/steamPresence'
 
 const CARD_WIDTH = 320
 
@@ -31,8 +32,23 @@ export function UserProfileCard({
   const cardRef = useRef<HTMLDivElement | null>(null)
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
   const [dmLoading, setDmLoading] = useState(false)
+  const [steamStatus, setSteamStatus] = useState<SteamStatus | null>(null)
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
+
+  useEffect(() => {
+    if (!open) {
+      setSteamStatus(null)
+      return
+    }
+    let cancelled = false
+    getSteamStatus(userId).then((s) => {
+      if (!cancelled) setSteamStatus(s)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, userId])
 
   useEffect(() => {
     if (!open) return
@@ -141,6 +157,16 @@ export function UserProfileCard({
           <p className="mt-2 text-xs font-semibold text-text-secondary leading-snug line-clamp-3 border-t border-border/60 pt-2">
             {statusMessage.trim()}
           </p>
+        ) : null}
+
+        {steamStatus?.game ? (
+          <div className="mt-2 flex items-center gap-2 border-t border-border/60 pt-2">
+            <span className="w-2 h-2 rounded-full shrink-0 bg-success" />
+            <span className="text-xs text-text-muted">En train de jouer à</span>
+            <span className="text-xs font-semibold text-text-primary truncate">
+              {steamStatus.game}
+            </span>
+          </div>
         ) : null}
 
         {/* Actions */}
