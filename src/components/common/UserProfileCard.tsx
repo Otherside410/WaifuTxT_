@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import { Avatar } from './Avatar'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
-import { getOrCreateDmRoom, getUserBannerUrl } from '../../lib/matrix'
+import { getOrCreateDmRoom, getUserBannerUrl, getUserStatusMessage } from '../../lib/matrix'
 
 const CARD_WIDTH = 320
 
@@ -32,13 +32,16 @@ export function UserProfileCard({
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
   const [dmLoading, setDmLoading] = useState(false)
   const [bannerUrl, setBannerUrl] = useState<string | null>(null)
+  const [profileStatusMsg, setProfileStatusMsg] = useState<string | null>(null)
   const setPendingMention = useUiStore((s) => s.setPendingMention)
   const setActiveRoom = useRoomStore((s) => s.setActiveRoom)
 
   useEffect(() => {
     if (!open) return
     setBannerUrl(null)
+    setProfileStatusMsg(null)
     getUserBannerUrl(userId).then(setBannerUrl).catch(() => null)
+    getUserStatusMessage(userId).then(setProfileStatusMsg).catch(() => null)
   }, [open, userId])
 
   useEffect(() => {
@@ -150,9 +153,9 @@ export function UserProfileCard({
           <span className="text-xs text-text-secondary">{role}</span>
         </div>
 
-        {statusMessage?.trim() ? (
+        {(statusMessage?.trim() || profileStatusMsg) ? (
           <p className="mt-2 text-xs font-semibold text-text-secondary leading-snug line-clamp-3 border-t border-border/60 pt-2">
-            {statusMessage.trim()}
+            {statusMessage?.trim() || profileStatusMsg}
           </p>
         ) : null}
 

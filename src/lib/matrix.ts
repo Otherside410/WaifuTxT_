@@ -25,6 +25,7 @@ const roomJoinedMembersCache = new Map<string, Map<string, { displayName: string
 const OWN_STATUS_MSG_STORAGE_KEY = 'waifutxt_status_msg'
 const OWN_BANNER_MXC_STORAGE_KEY = 'waifutxt_banner_mxc'
 const BANNER_PROFILE_KEY = 'io.waifu.banner'
+const STATUS_MSG_PROFILE_KEY = 'io.waifu.status_msg'
 export const MAX_PRESENCE_STATUS_MSG_LEN = 200
 
 let ownStatusStorageListenerBound = false
@@ -2339,6 +2340,16 @@ export async function setOwnStatusMessage(text: string): Promise<void> {
       userId,
     })
   }
+  // Store in Matrix profile field so other users can read it even when offline
+  const token = c.getAccessToken()
+  fetch(
+    `${c.baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${STATUS_MSG_PROFILE_KEY}`,
+    {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [STATUS_MSG_PROFILE_KEY]: { text: trimmed } }),
+    },
+  ).catch(() => { /* best-effort, presence is the primary source */ })
   await c.setPresence({ presence, status_msg: trimmed })
 }
 
@@ -2443,6 +2454,28 @@ export async function uploadProfileAvatarGif(file: File): Promise<{ mxcUrl: stri
   const httpPreviewUrl = mxcToAvatarHttpUrl(contentUri)
 
   return { mxcUrl: contentUri, httpPreviewUrl }
+}
+
+/**
+ * Fetches the status message for any user from the Matrix profile field `io.waifu.status_msg`.
+ * Use as fallback when presence is not available (user offline, server doesn't support it, etc.).
+ */
+export async function getUserStatusMessage(userId: string): Promise<string | null> {
+  if (!client) return null
+  const token = client.getAccessToken()
+  try {
+    const res = await fetch(
+      `${client.baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${STATUS_MSG_PROFILE_KEY}`,
+      token ? { headers: { 'Authorization': `Bearer ${token}` } } : undefined,
+    )
+    if (!res.ok) return null
+    const data = await res.json() as { [key: string]: { text?: string } }
+    const inner = data?.[STATUS_MSG_PROFILE_KEY]
+    const text = typeof inner?.text === 'string' ? inner.text.trim() : null
+    return text || null
+  } catch {
+    return null
+  }
 }
 
 /**
