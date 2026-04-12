@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Avatar } from './Avatar'
 import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
@@ -163,9 +165,25 @@ export function UserProfileCard({
         ) : null}
 
         {bio ? (
-          <p className="mt-2 text-xs text-text-secondary leading-relaxed line-clamp-4 border-t border-border/60 pt-2 whitespace-pre-wrap">
-            {bio}
-          </p>
+          <div className="mt-2 text-xs text-text-secondary leading-relaxed border-t border-border/60 pt-2 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:my-1 [&_strong]:font-semibold [&_em]:italic [&_code]:bg-bg-tertiary [&_code]:border [&_code]:border-border [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_blockquote]:border-l-2 [&_blockquote]:border-border-strong [&_blockquote]:pl-2 [&_blockquote]:italic line-clamp-6">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-link hover:text-link-hover hover:underline break-all"
+                  >
+                    {children}
+                  </a>
+                ),
+              }}
+            >
+              {bio}
+            </ReactMarkdown>
+          </div>
         ) : null}
 
         {/* Actions */}
