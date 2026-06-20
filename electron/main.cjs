@@ -127,12 +127,16 @@ function createWindow() {
     autoHideMenuBar: true,
     // icon is resolved at runtime so missing icon never crashes the app
     icon: (() => {
+      // dist/ is packaged inside the asar; process.resourcesPath points to
+      // the app's resources dir at runtime. Check several candidates.
       for (const p of [
+        path.join(__dirname, '..', 'dist', 'icon.png'),
+        path.join(process.resourcesPath || '', 'app.asar', 'dist', 'icon.png'),
         path.join(__dirname, '..', 'build', 'icon.png'),
-        path.join(__dirname, '..', 'public', 'favicon.png'),
-        path.join(__dirname, '..', 'public', 'favicon.ico'),
+        path.join(__dirname, '..', 'dist', 'favicon.png'),
+        path.join(__dirname, '..', 'dist', 'favicon.ico'),
       ]) {
-        if (fs.existsSync(p)) return p;
+        try { if (fs.existsSync(p)) return p; } catch (_) {}
       }
       return undefined;
     })(),
