@@ -1,111 +1,315 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useCallback, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
-import { useVoiceStore } from '../../stores/voiceStore'
+import { useVoiceStore, volumeKey } from '../../stores/voiceStore'
 import { useAuthStore } from '../../stores/authStore'
 import { joinVoiceRoom, leaveVoiceRoom, getOwnAvatarUrl, getUserProfileBasics } from '../../lib/matrix'
-import { setVoiceMuted, setVoiceDeafened, toggleCamera, toggleScreenShare } from '../../lib/voice'
+import { setVoiceMuted, setVoiceDeafened, setUserVolume, toggleCamera, toggleScreenShare } from '../../lib/voice'
 import { Avatar } from '../common/Avatar'
 import { RoomHeader } from '../chat/RoomHeader'
 import type { RoomSummary } from '../../types/matrix'
 
-// ── Local video preview element ───────────────────────────────────────────────
+// ── Tile model ────────────────────────────────────────────────────────────────
 
-function LocalVideoPreview({ stream }: { stream: MediaStream }) {
-  const ref = useRef<HTMLVideoElement>(null)
+interface TileModel {
+  id: string
+  userId: string
+  displayName: string
+  avatarUrl: string | null
+  kind: 'user' | 'screen'
+  stream: MediaStream | null
+  isSelf: boolean
+  isSpeaking: boolean
+  isMuted?: boolean
+  /** Remote tiles only: which audio this tile's volume slider controls. */
+  volumeSource?: 'mic' | 'screen'
+}
 
+// ── Video element ─────────────────────────────────────────────────────────────
+
+function StreamVideo({
+  stream,
+  videoRef,
+  mirrored,
+  fit,
+}: {
+  stream: MediaStream
+  videoRef: React.RefObject<HTMLVideoElement | null>
+  mirrored: boolean
+  fit: 'cover' | 'contain'
+}) {
   useEffect(() => {
-    if (ref.current) {
-      ref.current.srcObject = stream
-    }
-  }, [stream])
+    const el = videoRef.current
+    if (el && el.srcObject !== stream) el.srcObject = stream
+  }, [stream, videoRef])
 
+  // Audio is played by separate elements (see lib/voice.ts), so the video itself stays muted.
   return (
     <video
-      ref={ref}
+      ref={videoRef}
       autoPlay
       muted
       playsInline
-      className="w-full h-full object-cover rounded-2xl"
+      className={[
+        'w-full h-full bg-black',
+        fit === 'cover' ? 'object-cover' : 'object-contain',
+        mirrored ? '-scale-x-100' : '',
+      ].join(' ')}
     />
   )
 }
 
-// ── Single participant tile ───────────────────────────────────────────────────
+// ── Tile toolbar button ───────────────────────────────────────────────────────
 
-interface ParticipantTileProps {
-  userId: string
-  displayName: string
-  avatarUrl: string | null
-  isSpeaking: boolean
-  isSelf?: boolean
-  localVideoStream?: MediaStream | null
-  isScreenSharing?: boolean
-  isMuted?: boolean
+function TileBtn({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      title={label}
+      aria-label={label}
+      onClick={(e) => { e.stopPropagation(); onClick() }}
+      onDoubleClick={(e) => e.stopPropagation()}
+      className="w-7 h-7 flex items-center justify-center rounded-md bg-black/60 hover:bg-black/80 text-white transition-colors cursor-pointer"
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">{children}</svg>
+    </button>
+  )
 }
 
-function ParticipantTile({
-  userId,
-  displayName,
-  avatarUrl,
-  isSpeaking,
-  isSelf,
-  localVideoStream,
-  isScreenSharing,
-  isMuted,
-}: ParticipantTileProps) {
-  const showVideo = isSelf && !!localVideoStream
+// ── Media tile (participant or screen share) ──────────────────────────────────
+
+function MediaTile({
+  tile,
+  pinned,
+  compact,
+  onTogglePin,
+}: {
+  tile: TileModel
+  pinned: boolean
+  compact: boolean
+  onTogglePin: () => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isPip, setIsPip] = useState(false)
+  const volume = useVoiceStore((s) =>
+    tile.volumeSource ? s.volumes[volumeKey(tile.userId, tile.volumeSource)] ?? 1 : 1,
+  )
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current)
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el) return
+    const onEnter = () => setIsPip(true)
+    const onLeave = () => setIsPip(false)
+    el.addEventListener('enterpictureinpicture', onEnter)
+    el.addEventListener('leavepictureinpicture', onLeave)
+    return () => {
+      el.removeEventListener('enterpictureinpicture', onEnter)
+      el.removeEventListener('leavepictureinpicture', onLeave)
+    }
+  }, [tile.stream])
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {})
+    } else {
+      void containerRef.current?.requestFullscreen().catch((err) => console.error('[voice] fullscreen failed', err))
+    }
+  }, [])
+
+  const togglePip = useCallback(() => {
+    const el = videoRef.current
+    if (!el) return
+    if (document.pictureInPictureElement === el) {
+      void document.exitPictureInPicture().catch(() => {})
+    } else {
+      void el.requestPictureInPicture().catch((err) => console.error('[voice] PiP failed', err))
+    }
+  }, [])
+
+  const hasVideo = !!tile.stream
+  const canPip = hasVideo && typeof document !== 'undefined' && document.pictureInPictureEnabled
+  const isScreen = tile.kind === 'screen'
+  const label = isScreen ? `Écran de ${tile.displayName}` : tile.displayName
+
+  const onDoubleClick = (e: ReactMouseEvent) => {
+    e.stopPropagation()
+    if (hasVideo) toggleFullscreen()
+  }
 
   return (
-    <div className="flex flex-col items-center gap-3 select-none">
-      {/* Avatar / video wrapper */}
-      <div
-        className={[
-          'relative flex items-center justify-center rounded-2xl overflow-hidden',
-          'transition-all duration-200',
-          showVideo ? 'w-48 h-36' : 'w-24 h-24',
-          isSpeaking
-            ? 'ring-4 ring-accent-pink shadow-[0_0_20px_4px_rgba(255,45,120,0.45)]'
-            : '',
-        ].join(' ')}
-      >
-        {showVideo ? (
-          <LocalVideoPreview stream={localVideoStream} />
-        ) : (
+    <div
+      ref={containerRef}
+      onClick={onTogglePin}
+      onDoubleClick={onDoubleClick}
+      className={[
+        'group relative w-full h-full overflow-hidden bg-bg-secondary select-none cursor-pointer',
+        isFullscreen ? '' : 'rounded-xl',
+        tile.isSpeaking && !isScreen
+          ? 'ring-4 ring-accent-pink shadow-[0_0_20px_4px_rgba(255,45,120,0.45)]'
+          : 'ring-1 ring-border',
+        'transition-shadow duration-200',
+      ].join(' ')}
+    >
+      {hasVideo && tile.stream ? (
+        <StreamVideo
+          stream={tile.stream}
+          videoRef={videoRef}
+          mirrored={tile.isSelf && !isScreen}
+          fit={isScreen || pinned || isFullscreen ? 'contain' : 'cover'}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center">
           <Avatar
-            src={avatarUrl}
-            name={displayName || userId}
-            size={96}
+            src={tile.avatarUrl}
+            name={tile.displayName || tile.userId}
+            size={compact ? 40 : 88}
             shape="rounded"
           />
-        )}
+        </div>
+      )}
 
-        {/* Screen share badge */}
-        {isSelf && isScreenSharing && (
-          <div className="absolute bottom-1.5 right-1.5 bg-bg-primary/80 rounded px-1.5 py-0.5 flex items-center gap-1">
-            <svg className="w-3 h-3 text-info" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <rect x="2" y="3" width="20" height="14" rx="2" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8 21h8M12 17v4" />
-            </svg>
-            <span className="text-[10px] text-info font-medium">Partage</span>
-          </div>
-        )}
+      {isPip && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70 text-xs text-white">
+          Lecture en image dans l&apos;image
+        </div>
+      )}
 
-        {/* Muted badge */}
-        {isMuted && (
-          <div className="absolute bottom-1.5 left-1.5 bg-danger/90 rounded-full p-1">
-            <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <line x1="2" y1="2" x2="22" y2="22" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M18.89 13.23A7.12 7.12 0 0019 12v-2M5 10v2a7 7 0 0012 4.9M15 9.34V5a3 3 0 00-5.94-.6M9 9v3a3 3 0 005.12 2.12" />
-            </svg>
-          </div>
+      {/* Name / status */}
+      <div className="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] flex items-center gap-1 bg-black/60 rounded-md px-1.5 py-0.5">
+        {tile.isMuted && (
+          <svg className="w-3 h-3 shrink-0 text-danger" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <line x1="2" y1="2" x2="22" y2="22" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M18.89 13.23A7.12 7.12 0 0019 12v-2M5 10v2a7 7 0 0012 4.9M15 9.34V5a3 3 0 00-5.94-.6M9 9v3a3 3 0 005.12 2.12" />
+          </svg>
         )}
+        {isScreen && (
+          <svg className="w-3 h-3 shrink-0 text-info" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <rect x="2" y="3" width="20" height="14" rx="2" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 21h8M12 17v4" />
+          </svg>
+        )}
+        <span className={`${compact ? 'text-[10px]' : 'text-xs'} font-medium text-white truncate`}>
+          {label}
+          {tile.isSelf && <span className="ml-1 text-white/60">(vous)</span>}
+        </span>
       </div>
 
-      {/* Name */}
-      <span className="text-sm font-medium text-text-primary truncate max-w-[10rem] text-center">
-        {displayName || userId.split(':')[0]?.replace('@', '') || userId}
-        {isSelf && <span className="ml-1 text-xs text-text-muted">(vous)</span>}
-      </span>
+      {/* Hover toolbar */}
+      {!compact && (
+        <div className="absolute top-1.5 right-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <TileBtn label={pinned ? 'Désépingler' : 'Épingler'} onClick={onTogglePin}>
+            {pinned ? (
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4h6v5l3 4H6l3-4zM12 13v8M3 3l18 18" />
+            ) : (
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4h6v5l3 4H6l3-4zM12 13v8" />
+            )}
+          </TileBtn>
+          {canPip && (
+            <TileBtn label={isPip ? 'Quitter l\'image dans l\'image' : 'Image dans l\'image'} onClick={togglePip}>
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <rect x="12" y="11" width="7" height="6" rx="1" />
+            </TileBtn>
+          )}
+          {hasVideo && (
+            <TileBtn label={isFullscreen ? 'Quitter le plein écran' : 'Plein écran'} onClick={toggleFullscreen}>
+              {isFullscreen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" />
+              )}
+            </TileBtn>
+          )}
+        </div>
+      )}
+
+      {/* Volume */}
+      {!compact && tile.volumeSource && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          className="absolute bottom-1.5 right-1.5 flex items-center gap-1.5 bg-black/60 rounded-md px-1.5 py-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
+        >
+          <button
+            title={volume === 0 ? 'Rétablir le son' : 'Couper le son'}
+            aria-label={volume === 0 ? 'Rétablir le son' : 'Couper le son'}
+            onClick={() => setUserVolume(tile.userId, tile.volumeSource!, volume === 0 ? 1 : 0)}
+            className="text-white cursor-pointer"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11 5L6 9H2v6h4l5 4V5z" />
+              {volume === 0 ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M23 9l-6 6M17 9l6 6" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.54 8.46a5 5 0 010 7.07M19.07 4.93a10 10 0 010 14.14" />
+              )}
+            </svg>
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(volume * 100)}
+            onChange={(e) => setUserVolume(tile.userId, tile.volumeSource!, Number(e.target.value) / 100)}
+            aria-label={`Volume de ${label}`}
+            className="w-20 accent-accent-pink cursor-pointer"
+          />
+          <span className="w-8 text-right text-[10px] tabular-nums text-white">{Math.round(volume * 100)}%</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Tile layouts ──────────────────────────────────────────────────────────────
+
+function TileGrid({ tiles, onTogglePin }: { tiles: TileModel[]; onTogglePin: (id: string) => void }) {
+  const cols = tiles.length <= 1 ? 1 : tiles.length <= 4 ? 2 : tiles.length <= 9 ? 3 : 4
+  return (
+    <div className="flex-1 min-h-0 flex items-center justify-center p-4 sm:p-6 overflow-auto">
+      <div
+        className="grid gap-3 w-full max-w-6xl"
+        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+      >
+        {tiles.map((t) => (
+          <div key={t.id} className="aspect-video">
+            <MediaTile tile={t} pinned={false} compact={false} onTogglePin={() => onTogglePin(t.id)} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function StageLayout({
+  pinned,
+  others,
+  onTogglePin,
+}: {
+  pinned: TileModel
+  others: TileModel[]
+  onTogglePin: (id: string) => void
+}) {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-3 p-3 sm:p-4">
+      <div className="flex-1 min-h-0">
+        <MediaTile tile={pinned} pinned compact={false} onTogglePin={() => onTogglePin(pinned.id)} />
+      </div>
+      {others.length > 0 && (
+        <div className="shrink-0 flex gap-2 overflow-x-auto p-1.5">
+          {others.map((t) => (
+            <div key={t.id} className="shrink-0 h-24 aspect-video">
+              <MediaTile tile={t} pinned={false} compact onTogglePin={() => onTogglePin(t.id)} />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -199,11 +403,16 @@ export function VoiceRoomView() {
   const isCameraOn = useVoiceStore((s) => s.isCameraOn)
   const isScreenSharing = useVoiceStore((s) => s.isScreenSharing)
   const speakingUsers = useVoiceStore((s) => s.speakingUsers)
-  const localVideoStream = useVoiceStore((s) => s.localVideoStream)
+  const localCameraStream = useVoiceStore((s) => s.localCameraStream)
+  const localScreenStream = useVoiceStore((s) => s.localScreenStream)
+  const remoteMedia = useVoiceStore((s) => s.remoteMedia)
 
   const room = activeRoomId ? rooms.get(activeRoomId) : null
   const isJoined = !!activeRoomId && joinedRoomId === activeRoomId
   const myUserId = session?.userId ?? ''
+
+  const [pinnedId, setPinnedId] = useState<string | null>(null)
+  const [mediaError, setMediaError] = useState<string | null>(null)
 
   // Own avatar
   const [ownAvatarUrl, setOwnAvatarUrl] = useState<string | null>(() => getOwnAvatarUrl())
@@ -232,6 +441,12 @@ export function VoiceRoomView() {
     return () => { cancelled = true }
   }, [room, myUserId, extraProfiles])
 
+  useEffect(() => {
+    if (!mediaError) return
+    const t = setTimeout(() => setMediaError(null), 6000)
+    return () => clearTimeout(t)
+  }, [mediaError])
+
   const handleJoin = useCallback(async () => {
     if (!activeRoomId) return
     try { await joinVoiceRoom(activeRoomId) } catch (err) { console.error('[voice] join failed', err) }
@@ -239,6 +454,7 @@ export function VoiceRoomView() {
 
   const handleLeave = useCallback(async () => {
     if (!activeRoomId) return
+    setPinnedId(null)
     try { await leaveVoiceRoom(activeRoomId) } catch (err) { console.error('[voice] leave failed', err) }
   }, [activeRoomId])
 
@@ -251,23 +467,104 @@ export function VoiceRoomView() {
   }, [isDeafened])
 
   const handleToggleCamera = useCallback(async () => {
-    try { await toggleCamera() } catch (err) { console.error('[voice] camera toggle failed', err) }
+    try {
+      await toggleCamera()
+    } catch (err) {
+      console.error('[voice] camera toggle failed', err)
+      setMediaError(err instanceof Error && err.name === 'NotAllowedError'
+        ? 'Accès à la caméra refusé.'
+        : 'Impossible d\'activer la caméra.')
+    }
   }, [])
 
   const handleToggleScreenShare = useCallback(async () => {
-    try { await toggleScreenShare() } catch (err) { console.error('[voice] screenshare toggle failed', err) }
+    try {
+      await toggleScreenShare()
+    } catch (err) {
+      console.error('[voice] screenshare toggle failed', err)
+      setMediaError('Impossible de partager l\'écran.')
+    }
+  }, [])
+
+  const handleTogglePin = useCallback((id: string) => {
+    setPinnedId((prev) => (prev === id ? null : id))
   }, [])
 
   if (!room) return null
 
   // Participants from room state, excluding self
-  const otherParticipants = (room.voiceParticipants ?? [])
-    .filter((p) => p.userId !== myUserId)
-    .map((p) => ({
-      ...p,
+  const participantById = new Map<string, { displayName: string; avatarUrl: string | null }>()
+  for (const p of room.voiceParticipants ?? []) {
+    if (p.userId === myUserId) continue
+    participantById.set(p.userId, {
       avatarUrl: p.avatarUrl || extraProfiles[p.userId]?.avatarUrl || null,
       displayName: p.displayName || extraProfiles[p.userId]?.displayName || p.userId,
-    }))
+    })
+  }
+  // Someone may publish media before their membership shows up in room state.
+  for (const m of remoteMedia) {
+    if (m.userId !== myUserId && !participantById.has(m.userId)) {
+      participantById.set(m.userId, { displayName: m.userId, avatarUrl: null })
+    }
+  }
+
+  const myName = session?.userId?.split(':')[0]?.replace('@', '') ?? 'Moi'
+  const tiles: TileModel[] = [
+    {
+      id: 'self',
+      userId: myUserId,
+      displayName: myName,
+      avatarUrl: ownAvatarUrl,
+      kind: 'user',
+      stream: localCameraStream,
+      isSelf: true,
+      isSpeaking: speakingUsers.has(myUserId),
+      isMuted,
+    },
+  ]
+  if (localScreenStream) {
+    tiles.push({
+      id: 'self:screen',
+      userId: myUserId,
+      displayName: myName,
+      avatarUrl: ownAvatarUrl,
+      kind: 'screen',
+      stream: localScreenStream,
+      isSelf: true,
+      isSpeaking: false,
+    })
+  }
+  for (const [userId, p] of participantById) {
+    const camera = remoteMedia.find((m) => m.userId === userId && m.source === 'camera' && !m.muted)
+    tiles.push({
+      id: `user:${userId}`,
+      userId,
+      displayName: p.displayName,
+      avatarUrl: p.avatarUrl,
+      kind: 'user',
+      stream: camera?.stream ?? null,
+      isSelf: false,
+      isSpeaking: speakingUsers.has(userId),
+      volumeSource: 'mic',
+    })
+  }
+  for (const m of remoteMedia) {
+    if (m.source !== 'screen' || m.muted) continue
+    const p = participantById.get(m.userId)
+    tiles.push({
+      id: `screen:${m.id}`,
+      userId: m.userId,
+      displayName: p?.displayName ?? m.userId,
+      avatarUrl: p?.avatarUrl ?? null,
+      kind: 'screen',
+      stream: m.stream,
+      isSelf: false,
+      isSpeaking: false,
+      volumeSource: 'screen',
+    })
+  }
+
+  const pinnedTile = pinnedId ? tiles.find((t) => t.id === pinnedId) ?? null : null
 
   return (
     <div className="flex flex-col h-full bg-bg-primary">
@@ -275,35 +572,25 @@ export function VoiceRoomView() {
 
       {isJoined ? (
         <>
-          {/* Participant grid */}
-          <div className="flex-1 flex flex-wrap content-center items-center justify-center gap-8 p-8 overflow-auto">
-            {/* Self tile */}
-            <ParticipantTile
-              userId={myUserId}
-              displayName={session?.userId?.split(':')[0]?.replace('@', '') ?? 'Moi'}
-              avatarUrl={ownAvatarUrl}
-              isSpeaking={speakingUsers.has(myUserId)}
-              isSelf
-              localVideoStream={localVideoStream}
-              isScreenSharing={isScreenSharing}
-              isMuted={isMuted}
+          {pinnedTile ? (
+            <StageLayout
+              pinned={pinnedTile}
+              others={tiles.filter((t) => t.id !== pinnedTile.id)}
+              onTogglePin={handleTogglePin}
             />
+          ) : (
+            <TileGrid tiles={tiles} onTogglePin={handleTogglePin} />
+          )}
 
-            {/* Other participants */}
-            {otherParticipants.map((p) => (
-              <ParticipantTile
-                key={p.userId}
-                userId={p.userId}
-                displayName={p.displayName}
-                avatarUrl={p.avatarUrl}
-                isSpeaking={speakingUsers.has(p.userId)}
-              />
-            ))}
+          {participantById.size === 0 && (
+            <p className="shrink-0 pb-3 text-center text-sm text-text-muted">Personne d&apos;autre pour l&apos;instant...</p>
+          )}
 
-            {otherParticipants.length === 0 && (
-              <p className="text-sm text-text-muted">Personne d&apos;autre pour l&apos;instant...</p>
-            )}
-          </div>
+          {mediaError && (
+            <div role="alert" className="shrink-0 mx-auto mb-2 px-3 py-1.5 rounded-lg bg-danger/15 text-danger text-sm">
+              {mediaError}
+            </div>
+          )}
 
           {/* Control bar */}
           <div className="shrink-0 flex items-center justify-center gap-2 px-6 py-4 bg-bg-secondary border-t border-border">
