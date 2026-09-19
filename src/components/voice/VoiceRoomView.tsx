@@ -67,7 +67,7 @@ function TileBtn({ label, onClick, children }: { label: string; onClick: () => v
       aria-label={label}
       onClick={(e) => { e.stopPropagation(); onClick() }}
       onDoubleClick={(e) => e.stopPropagation()}
-      className="w-7 h-7 flex items-center justify-center rounded-md bg-black/60 hover:bg-black/80 text-white transition-colors cursor-pointer"
+      className="w-7 h-7 flex items-center justify-center rounded-md bg-bg-primary/80 backdrop-blur-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-pink"
     >
       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">{children}</svg>
     </button>
@@ -135,7 +135,7 @@ function MediaTile({
   const hasVideo = !!tile.stream
   const canPip = hasVideo && typeof document !== 'undefined' && document.pictureInPictureEnabled
   const isScreen = tile.kind === 'screen'
-  const label = isScreen ? `Écran de ${tile.displayName}` : tile.displayName
+  const label = isScreen ? (tile.isSelf ? 'Ton écran' : `Écran de ${tile.displayName}`) : tile.displayName
 
   const onDoubleClick = (e: ReactMouseEvent) => {
     e.stopPropagation()
@@ -151,7 +151,7 @@ function MediaTile({
         'group relative w-full h-full overflow-hidden bg-bg-secondary select-none cursor-pointer',
         isFullscreen ? '' : 'rounded-xl',
         tile.isSpeaking && !isScreen
-          ? 'ring-4 ring-accent-pink shadow-[0_0_20px_4px_rgba(255,45,120,0.45)]'
+          ? 'ring-4 ring-accent-pink shadow-[0_0_20px_4px_var(--color-accent-pink-dim)]'
           : 'ring-1 ring-border',
         'transition-shadow duration-200',
       ].join(' ')}
@@ -175,13 +175,31 @@ function MediaTile({
       )}
 
       {isPip && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/70 text-xs text-white">
+        <div className="absolute inset-0 flex items-center justify-center bg-bg-secondary/90 text-xs text-text-secondary">
           Lecture en image dans l&apos;image
         </div>
       )}
 
+      {/* Own screen share: make the broadcast state explicit and stoppable from the tile */}
+      {tile.isSelf && isScreen && !compact && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          className="absolute top-1.5 left-1.5 flex items-center gap-2 bg-bg-primary/80 backdrop-blur-sm rounded-md pl-2 pr-1 py-1 border border-accent-pink/40"
+        >
+          <span className="w-2 h-2 rounded-full bg-accent-pink" aria-hidden />
+          <span className="text-xs font-medium text-text-primary">Tu partages ton écran</span>
+          <button
+            onClick={() => { void toggleScreenShare().catch((err) => console.error('[voice] stop share failed', err)) }}
+            className="px-2 py-0.5 rounded bg-danger/20 hover:bg-danger/40 text-danger text-xs font-medium cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-pink"
+          >
+            Arrêter
+          </button>
+        </div>
+      )}
+
       {/* Name / status */}
-      <div className="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] flex items-center gap-1 bg-black/60 rounded-md px-1.5 py-0.5">
+      <div className="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] flex items-center gap-1 bg-bg-primary/80 backdrop-blur-sm rounded-md px-1.5 py-0.5">
         {tile.isMuted && (
           <svg className="w-3 h-3 shrink-0 text-danger" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <line x1="2" y1="2" x2="22" y2="22" />
@@ -194,9 +212,9 @@ function MediaTile({
             <path strokeLinecap="round" strokeLinejoin="round" d="M8 21h8M12 17v4" />
           </svg>
         )}
-        <span className={`${compact ? 'text-[10px]' : 'text-xs'} font-medium text-white truncate`}>
+        <span className={`${compact ? 'text-[10px]' : 'text-xs'} font-medium text-text-primary truncate`}>
           {label}
-          {tile.isSelf && <span className="ml-1 text-white/60">(vous)</span>}
+          {tile.isSelf && !isScreen && <span className="ml-1 text-text-muted">(vous)</span>}
         </span>
       </div>
 
@@ -233,13 +251,13 @@ function MediaTile({
         <div
           onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
-          className="absolute bottom-1.5 right-1.5 flex items-center gap-1.5 bg-black/60 rounded-md px-1.5 py-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
+          className="absolute bottom-1.5 right-1.5 flex items-center gap-1.5 bg-bg-primary/80 backdrop-blur-sm rounded-md px-1.5 py-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
         >
           <button
             title={volume === 0 ? 'Rétablir le son' : 'Couper le son'}
             aria-label={volume === 0 ? 'Rétablir le son' : 'Couper le son'}
             onClick={() => setUserVolume(tile.userId, tile.volumeSource!, volume === 0 ? 1 : 0)}
-            className="text-white cursor-pointer"
+            className="text-text-secondary hover:text-text-primary cursor-pointer rounded outline-none focus-visible:ring-2 focus-visible:ring-accent-pink"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M11 5L6 9H2v6h4l5 4V5z" />
@@ -260,7 +278,7 @@ function MediaTile({
             aria-label={`Volume de ${label}`}
             className="w-20 accent-accent-pink cursor-pointer"
           />
-          <span className="w-8 text-right text-[10px] tabular-nums text-white">{Math.round(volume * 100)}%</span>
+          <span className="w-8 text-right text-[10px] tabular-nums text-text-secondary">{Math.round(volume * 100)}%</span>
         </div>
       )}
     </div>
@@ -318,24 +336,37 @@ function StageLayout({
 
 interface ControlBtnProps {
   label: string
+  /** Tooltip describing what a click does; defaults to the label. */
+  title?: string
   active?: boolean
   danger?: boolean
+  /**
+   * Broadcast toggles (camera, screen share) are neutral when off and use the accent while
+   * something is being sent. Mic/sound keep the red "off" state since muting is the unusual case.
+   */
+  broadcast?: boolean
   disabled?: boolean
   onClick: () => void
   children: React.ReactNode
 }
 
-function ControlBtn({ label, active = true, danger, disabled, onClick, children }: ControlBtnProps) {
+function ControlBtn({ label, title, active = true, danger, broadcast, disabled, onClick, children }: ControlBtnProps) {
   return (
     <button
-      title={label}
+      title={title ?? label}
       disabled={disabled}
       onClick={onClick}
+      aria-pressed={danger ? undefined : broadcast ? active : !active}
       className={[
-        'flex flex-col items-center gap-1.5 px-3 py-2 rounded-xl transition-all duration-150 cursor-pointer',
+        'flex flex-col items-center gap-1.5 min-w-14 px-3 py-2 rounded-xl transition-colors duration-150 cursor-pointer',
+        'outline-none focus-visible:ring-2 focus-visible:ring-accent-pink',
         'disabled:opacity-40 disabled:cursor-not-allowed',
         danger
           ? 'bg-danger/20 hover:bg-danger/40 text-danger'
+          : broadcast
+          ? active
+            ? 'bg-accent-pink-dim hover:bg-accent-pink/30 text-accent-pink'
+            : 'bg-bg-hover hover:bg-bg-active text-text-primary'
           : active
           ? 'bg-bg-hover hover:bg-bg-active text-text-primary'
           : 'bg-danger/15 hover:bg-danger/30 text-danger',
@@ -621,7 +652,13 @@ export function VoiceRoomView() {
               )}
             </ControlBtn>
 
-            <ControlBtn label={isCameraOn ? 'Caméra on' : 'Caméra'} active={isCameraOn} onClick={handleToggleCamera}>
+            <ControlBtn
+              label="Caméra"
+              title={isCameraOn ? 'Couper la caméra' : 'Activer la caméra'}
+              active={isCameraOn}
+              broadcast
+              onClick={handleToggleCamera}
+            >
               {isCameraOn ? (
                 <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-6 h-6">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.361a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
@@ -634,11 +671,19 @@ export function VoiceRoomView() {
               )}
             </ControlBtn>
 
-            <ControlBtn label={isScreenSharing ? 'Partage on' : 'Partager'} active={isScreenSharing} onClick={handleToggleScreenShare}>
+            <ControlBtn
+              label="Écran"
+              title={isScreenSharing ? 'Arrêter le partage d\'écran' : 'Partager ton écran'}
+              active={isScreenSharing}
+              broadcast
+              onClick={handleToggleScreenShare}
+            >
               <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-6 h-6">
                 <rect x="2" y="3" width="20" height="14" rx="2" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 21h8M12 17v4" />
-                {isScreenSharing && <path strokeLinecap="round" strokeLinejoin="round" d="M9 10l2 2 4-4" />}
+                {isScreenSharing
+                  ? <path strokeLinecap="round" strokeLinejoin="round" d="M9 8l6 4-6 4V8z" />
+                  : <path strokeLinecap="round" strokeLinejoin="round" d="M12 14V7M9 10l3-3 3 3" />}
               </svg>
             </ControlBtn>
 
