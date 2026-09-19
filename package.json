@@ -1,7 +1,7 @@
 {
   "name": "waifutxt-",
   "private": true,
-  "version": "0.58.1",
+  "version": "0.58.2",
   "type": "module",
   "main": "electron/main.cjs",
   "description": "Client Matrix — interface Discord, thème cyberpunk/anime. E2EE, threads, voix, DMs, waifus.",
@@ -76,6 +76,7 @@
     "date-fns": "^4.1.0",
     "emoji-picker-react": "^4.18.0",
     "emojibase-data": "^17.0.0",
+    "livekit-client": "^2.22.3",
     "matrix-js-sdk": "^41.1.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",

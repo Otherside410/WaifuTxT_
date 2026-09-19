@@ -3,7 +3,7 @@ import { useMessageStore } from '../stores/messageStore'
 import { useRoomStore } from '../stores/roomStore'
 import { useAuthStore } from '../stores/authStore'
 import { useVoiceStore } from '../stores/voiceStore'
-import { setupVoiceStreams, cleanupVoiceStreams } from './voice'
+import { cleanupVoiceStreams, prepareVoiceMedia, connectVoiceMedia, getActiveLivekitRoom } from './voice'
 import { setupVerificationListeners } from './verification'
 
 type MatrixClient = import('matrix-js-sdk').MatrixClient
@@ -1589,114 +1589,121 @@ function isMyVoiceMembership(
   return false
 }
 
+// ── Voice rooms (MatrixRTC + LiveKit, compatible with Element Call) ─────────
+
+const RTC_FOCI_KEY = 'org.matrix.msc4143.rtc_foci'
+const livekitServiceUrlCache = new Map<string, string>()
+
+interface LivekitFocus {
+  type: 'livekit'
+  livekit_service_url: string
+  livekit_alias: string
+}
+
+function isLivekitFocus(value: unknown): value is { type: 'livekit'; livekit_service_url: string; livekit_alias?: string } {
+  const v = value as { type?: unknown; livekit_service_url?: unknown } | null
+  return !!v && v.type === 'livekit' && typeof v.livekit_service_url === 'string' && !!v.livekit_service_url
+}
+
+/** Finds the LiveKit JWT service advertised by the user's homeserver (e.g. livekit-jwt.call.matrix.org). */
+async function getLivekitServiceUrl(): Promise<string> {
+  if (!client) throw new Error('Client non initialisé')
+  const serverName = (client.getUserId() || '').split(':').slice(1).join(':')
+  const cached = livekitServiceUrlCache.get(serverName)
+  if (cached) return cached
+
+  const candidates: unknown[] = []
+  try {
+    const res = await fetch(`https://${serverName}/.well-known/matrix/client`)
+    if (res.ok) {
+      const wellKnown = await res.json() as Record<string, unknown>
+      if (Array.isArray(wellKnown[RTC_FOCI_KEY])) candidates.push(...(wellKnown[RTC_FOCI_KEY] as unknown[]))
+    }
+  } catch {
+    voiceDebugLog('rtc foci: well-known fetch failed', { serverName })
+  }
+  if (candidates.length === 0) {
+    try {
+      const res = await fetch(`${client.baseUrl}/_matrix/client/unstable/org.matrix.msc4143/rtc/transports`, {
+        headers: { Authorization: `Bearer ${client.getAccessToken()}` },
+      })
+      if (res.ok) {
+        const body = await res.json() as { rtc_transports?: unknown[] }
+        if (Array.isArray(body.rtc_transports)) candidates.push(...body.rtc_transports)
+      }
+    } catch {
+      voiceDebugLog('rtc foci: transports endpoint failed', { serverName })
+    }
+  }
+
+  const focus = candidates.find(isLivekitFocus)
+  if (!focus) throw new Error('Ton serveur Matrix n\'annonce aucun serveur LiveKit pour les appels.')
+  const url = focus.livekit_service_url.replace(/\/+$/, '')
+  livekitServiceUrlCache.set(serverName, url)
+  return url
+}
+
+/** Exchanges a Matrix OpenID token for a LiveKit URL + JWT (same endpoint as Element Call). */
+async function getSfuConfig(focus: LivekitFocus): Promise<{ url: string; jwt: string }> {
+  if (!client) throw new Error('Client non initialisé')
+  const openIdToken = await client.getOpenIdToken()
+  const res = await fetch(`${focus.livekit_service_url.replace(/\/+$/, '')}/sfu/get`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      room: focus.livekit_alias,
+      openid_token: openIdToken,
+      device_id: client.getDeviceId(),
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    voiceDebugLog('sfu/get failed', { status: res.status, text })
+    throw new Error(`Connexion au serveur vocal impossible (${res.status}).`)
+  }
+  const body = await res.json() as { url?: string; jwt?: string }
+  if (!body.url || !body.jwt) throw new Error('Réponse invalide du serveur vocal.')
+  return { url: body.url, jwt: body.jwt }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function resolveVoiceIdentity(session: any, identity: string): string | null {
+  const memberships = Array.isArray(session?.memberships) ? session.memberships : []
+  for (const m of memberships) {
+    if (m?.rtcBackendIdentity === identity && typeof m.userId === 'string') return m.userId
+  }
+  // Legacy identities are "<userId>:<deviceId>".
+  const idx = identity.lastIndexOf(':')
+  return normalizeVoiceUserId(idx > 0 ? identity.slice(0, idx) : identity)
+}
+
+let voiceJoinSeq = 0
+
 export async function joinVoiceRoom(roomId: string): Promise<void> {
   if (!client) throw new Error('Client non initialisé')
   const room = client.getRoom(roomId)
   if (!room) throw new Error('Salon introuvable')
-
-  const matrixSdk = await getSDK()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const clientAny = client as any
-  const canUseGroupCall =
-    typeof clientAny.getGroupCallForRoom === 'function' &&
-    typeof clientAny.createGroupCall === 'function' &&
-    typeof clientAny.waitUntilRoomReadyForGroupCalls === 'function'
-
-  if (canUseGroupCall) {
-    voiceDebugLog('join: using GroupCall path', { roomId })
-    try {
-      await clientAny.waitUntilRoomReadyForGroupCalls(roomId)
-    } catch {
-      // ignore readiness race and continue
-      voiceDebugLog('join: waitUntilRoomReadyForGroupCalls failed (ignored)', { roomId })
-    }
-
-    // Discord-like behavior: one active voice room at a time.
-    const prevVoiceRoom = useVoiceStore.getState().joinedRoomId
-    if (prevVoiceRoom && prevVoiceRoom !== roomId) {
-      cleanupVoiceStreams()
-      useVoiceStore.getState().reset()
-    }
-    for (const r of client.getRooms()) {
-      if (r.roomId === roomId) continue
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const otherCall = clientAny.getGroupCallForRoom(r.roomId) as any
-        if (otherCall?.hasLocalParticipant?.()) {
-          voiceDebugLog('join: leaving previous GroupCall', { roomId: r.roomId })
-          otherCall.leave?.()
-        }
-      } catch {
-        voiceDebugLog('join: failed to leave previous GroupCall (ignored)', { roomId: r.roomId })
-      }
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let targetCall = clientAny.getGroupCallForRoom(roomId) as any
-    if (!targetCall) {
-      try {
-        voiceDebugLog('join: creating GroupCall', { roomId })
-        targetCall = await clientAny.createGroupCall(
-          roomId,
-          matrixSdk.GroupCallType.Voice,
-          false,
-          matrixSdk.GroupCallIntent.Room,
-        )
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        // Another client may have created it in the meantime.
-        if (!/already has an existing group call/i.test(msg)) {
-          voiceDebugLog('join: createGroupCall failed', { roomId, msg })
-          throw err
-        }
-        voiceDebugLog('join: GroupCall already exists, reloading', { roomId })
-        targetCall = clientAny.getGroupCallForRoom(roomId)
-      }
-    }
-
-    if (targetCall) {
-      const alreadyInCall = !!targetCall.hasLocalParticipant?.()
-      if (!alreadyInCall) {
-        voiceDebugLog('join: entering GroupCall', { roomId })
-        cleanupVoiceStreams()
-        try {
-          await targetCall.enter?.()
-        } catch (enterErr) {
-          const msg = enterErr instanceof Error ? enterErr.message : String(enterErr)
-          if (/permission|denied|not allowed|notallowed/i.test(msg)) {
-            throw new Error('Accès au microphone refusé. Autorise le micro dans les paramètres de ton navigateur.')
-          }
-          throw enterErr
-        }
-        try {
-          await targetCall.setMicrophoneMuted?.(false)
-        } catch {
-          voiceDebugLog('join: unable to unmute mic after enter (ignored)', { roomId })
-        }
-      }
-      await setupVoiceStreams(targetCall, matrixSdk)
-      useVoiceStore.getState().setJoinedRoom(roomId)
-      voiceDebugLog('join: GroupCall success', { roomId, alreadyInCall })
-      syncRooms()
-      setTimeout(() => {
-        try { syncRooms() } catch { /* ignore */ }
-      }, 800)
-      return
-    }
-  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rtcManager = (client as any).matrixRTC
   if (!rtcManager || typeof rtcManager.getRoomSession !== 'function') {
     throw new Error('Fonction vocal non disponible')
   }
-  voiceDebugLog('join: fallback MatrixRTC path', { roomId })
 
   const myUserId = client.getUserId()
   const myDeviceId = client.getDeviceId() || ''
   if (!myUserId) throw new Error('Utilisateur non identifié')
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const targetSession = rtcManager.getRoomSession(room) as any
+  if (!targetSession) throw new Error('Session vocale indisponible')
+
+  if (useVoiceStore.getState().joinedRoomId === roomId && getActiveLivekitRoom() && targetSession.isJoined?.()) return
+
+  const seq = ++voiceJoinSeq
+
   // Discord-like behavior: one active voice channel at a time, switch in one click.
+  cleanupVoiceStreams()
   for (const r of client.getRooms()) {
     if (r.roomId === roomId) continue
     try {
@@ -1704,36 +1711,56 @@ export async function joinVoiceRoom(roomId: string): Promise<void> {
       const session = (rtcManager.getActiveRoomSession?.(r) || rtcManager.getRoomSession(r)) as any
       if (!session) continue
       const iAmInThisSession = isMyVoiceMembership(session, myUserId, myDeviceId) || !!session.isJoined?.()
-      if (iAmInThisSession) {
-        await session.leaveRoomSession?.(5000)
-      }
+      if (iAmInThisSession) await session.leaveRoomSession?.(5000)
     } catch {
       // ignore room switch failures and keep trying target room
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const targetSession = rtcManager.getRoomSession(room) as any
-  if (!targetSession) throw new Error('Session vocale indisponible')
+  const serviceUrl = await getLivekitServiceUrl()
+  const ownFocus: LivekitFocus = { type: 'livekit', livekit_service_url: serviceUrl, livekit_alias: roomId }
 
-  const alreadyInTarget = isMyVoiceMembership(targetSession, myUserId, myDeviceId) || !!targetSession.isJoined?.()
-  if (!alreadyInTarget) {
-    // Some stacks require an explicit focus candidate. Reuse the oldest member transport when available.
-    const oldest = targetSession.getOldestMembership?.()
-    const preferredFocus = oldest?.getTransport?.(oldest)
-    const fociPreferred = preferredFocus ? [preferredFocus] : []
-
-    targetSession.joinRoomSession?.(
-      fociPreferred,
-      undefined,
-      {
-        callIntent: 'audio',
-        notificationType: 'notification',
-      },
-    )
+  // Like Element Call ("compatibility" mode), announce a multi-SFU membership and publish to our own
+  // homeserver's SFU. Members on the same SFU (all matrix.org users) share one LiveKit room.
+  try { await targetSession.initialMembershipCalculated } catch { /* ignore */ }
+  for (const m of targetSession.memberships ?? []) {
+    const transport = m?.getTransport?.(targetSession.getOldestMembership?.())
+    if (isLivekitFocus(transport) && transport.livekit_service_url.replace(/\/+$/, '') !== serviceUrl) {
+      voiceDebugLog('join: member uses another SFU, their media will not be received', { userId: m.userId, transport })
+    }
   }
 
-  useVoiceStore.getState().setJoinedRoom(roomId)
+  // Element Call only enables per-participant media encryption in encrypted rooms.
+  const e2ee = room.hasEncryptionStateEvent()
+  const mediaSession = {
+    rtcSession: targetSession,
+    resolveUserId: (identity: string) => resolveVoiceIdentity(targetSession, identity),
+  }
+  voiceDebugLog('join: MatrixRTC + LiveKit', { roomId, ownFocus, e2ee })
+
+  const livekitRoom = prepareVoiceMedia(mediaSession, e2ee)
+  try {
+    const sfu = await getSfuConfig(ownFocus)
+    if (seq !== voiceJoinSeq) return
+    if (!targetSession.isJoined?.()) {
+      targetSession.joinRoomSession([], ownFocus, {
+        manageMediaKeys: e2ee,
+        callIntent: 'audio',
+      })
+    }
+    useVoiceStore.getState().setJoinedRoom(roomId)
+    await connectVoiceMedia(livekitRoom, mediaSession, sfu, e2ee)
+  } catch (err) {
+    voiceDebugLog('join failed', err)
+    if (seq === voiceJoinSeq) {
+      cleanupVoiceStreams()
+      useVoiceStore.getState().reset()
+      try { await targetSession.leaveRoomSession?.(5000) } catch { /* ignore */ }
+      syncRooms()
+    }
+    throw err
+  }
+
   syncRooms()
   setTimeout(() => {
     try { syncRooms() } catch { /* ignore */ }
@@ -1745,38 +1772,9 @@ export async function leaveVoiceRoom(roomId: string): Promise<void> {
   const room = client.getRoom(roomId)
   if (!room) throw new Error('Salon introuvable')
 
+  voiceJoinSeq++
   cleanupVoiceStreams()
   useVoiceStore.getState().reset()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const clientAny = client as any
-  const canUseGroupCall =
-    typeof clientAny.getGroupCallForRoom === 'function' &&
-    typeof clientAny.waitUntilRoomReadyForGroupCalls === 'function'
-  if (canUseGroupCall) {
-    voiceDebugLog('leave: using GroupCall path', { roomId })
-    try {
-      await clientAny.waitUntilRoomReadyForGroupCalls(roomId)
-    } catch {
-      voiceDebugLog('leave: waitUntilRoomReadyForGroupCalls failed (ignored)', { roomId })
-    }
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const call = clientAny.getGroupCallForRoom(roomId) as any
-      if (call?.hasLocalParticipant?.()) {
-        voiceDebugLog('leave: leaving GroupCall', { roomId })
-        call.leave?.()
-        syncRooms()
-        setTimeout(() => {
-          try { syncRooms() } catch { /* ignore */ }
-        }, 500)
-        return
-      }
-      voiceDebugLog('leave: no local GroupCall participant, fallback MatrixRTC', { roomId })
-    } catch {
-      voiceDebugLog('leave: GroupCall leave failed, fallback MatrixRTC', { roomId })
-    }
-  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rtcManager = (client as any).matrixRTC

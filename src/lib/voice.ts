@@ -1,10 +1,23 @@
+import {
+  BaseKeyProvider,
+  createKeyMaterialFromBuffer,
+  Room as LivekitRoom,
+  RoomEvent,
+  Track,
+  type Participant,
+  type RemoteTrack,
+} from 'livekit-client'
+import E2EEWorker from 'livekit-client/e2ee-worker?worker'
 import { useVoiceStore } from '../stores/voiceStore'
 import { useAuthStore } from '../stores/authStore'
 import { playJoinOther, playLeaveOther } from './voiceNotifications'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let activeGroupCall: any = null
-const remoteAudioElements = new Map<string, HTMLAudioElement>()
+// Media for voice rooms goes through LiveKit, like Element Call: MatrixRTC (in matrix.ts) announces the
+// membership, the LiveKit SFU carries the audio, and per-participant E2EE keys come from the RTC session.
+
+let activeLivekitRoom: LivekitRoom | null = null
+let activeSessionCleanup: (() => void) | null = null
+const remoteAudioElements = new Map<string, HTMLMediaElement>()
 let localCameraStream: MediaStream | null = null
 let localScreenStream: MediaStream | null = null
 
@@ -28,6 +41,13 @@ function startLocalVAD(stream: MediaStream): void {
     const data = new Float32Array(analyser.frequencyBinCount)
     let speaking = false
     vadInterval = setInterval(() => {
+      if (useVoiceStore.getState().isMuted) {
+        if (speaking) {
+          speaking = false
+          useVoiceStore.getState().setSpeaking(myUserId, false)
+        }
+        return
+      }
       analyser.getFloatFrequencyData(data)
       // Compute RMS in linear scale then convert to dB
       let sum = 0
@@ -56,7 +76,7 @@ function stopLocalVAD(): void {
 }
 
 // ── Output device helper ─────────────────────────────────────────────────────
-function applyOutputDevice(el: HTMLAudioElement): void {
+function applyOutputDevice(el: HTMLMediaElement): void {
   const deviceId = useVoiceStore.getState().outputDeviceId
   if (!deviceId) return
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,8 +89,6 @@ function applyOutputDevice(el: HTMLAudioElement): void {
 export function applyOutputDeviceToAll(): void {
   for (const el of remoteAudioElements.values()) applyOutputDevice(el)
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const feedListeners = new Map<string, { feed: any; cleanup: () => void }>()
 
 function voiceLog(msg: string, extra?: unknown) {
   try {
@@ -80,183 +98,200 @@ function voiceLog(msg: string, extra?: unknown) {
   else console.log(`[voice] ${msg}`)
 }
 
-function feedKey(feed: { userId: string; stream?: MediaStream }): string {
-  return `${feed.userId}:${feed.stream?.id ?? 'no-stream'}`
-}
-
-function playRemoteStream(feed: { userId: string; stream: MediaStream; isLocal: () => boolean }) {
-  if (feed.isLocal()) return
-  const key = feedKey(feed)
-  const existing = remoteAudioElements.get(key)
-  if (existing) {
-    existing.srcObject = feed.stream
-    return
+// ── E2EE key bridge (MatrixRTC → LiveKit) ────────────────────────────────────
+// Same parameters as Element Call's MatrixKeyProvider so both clients derive identical frame keys.
+class MatrixKeyProvider extends BaseKeyProvider {
+  constructor() {
+    super({ ratchetWindowSize: 10, keyringSize: 256 })
   }
 
-  const el = document.createElement('audio')
-  el.autoplay = true
+  async setMatrixKey(key: Uint8Array, keyIndex: number, participantIdentity: string): Promise<void> {
+    const material = await createKeyMaterialFromBuffer(new Uint8Array(key).buffer)
+    this.onSetEncryptionKey(material, participantIdentity, keyIndex)
+    voiceLog('e2ee key set', { participantIdentity, keyIndex })
+  }
+}
+
+// ── Remote audio ─────────────────────────────────────────────────────────────
+function trackKey(participant: Participant, track: RemoteTrack): string {
+  return `${participant.identity}:${track.sid ?? track.mediaStreamTrack.id}`
+}
+
+function attachRemoteAudio(track: RemoteTrack, participant: Participant): void {
+  if (track.kind !== Track.Kind.Audio) return
+  const key = trackKey(participant, track)
+  if (remoteAudioElements.has(key)) return
+  const el = track.attach()
   el.setAttribute('data-voice-feed', key)
-  el.srcObject = feed.stream
-
-  const store = useVoiceStore.getState()
-  if (store.isDeafened) el.volume = 0
+  el.style.display = 'none'
+  document.body.appendChild(el)
+  el.volume = useVoiceStore.getState().isDeafened ? 0 : 1
   applyOutputDevice(el)
-
-  el.play().catch(() => voiceLog('autoplay blocked for feed', { userId: feed.userId }))
   remoteAudioElements.set(key, el)
-  voiceLog('playing remote stream', { userId: feed.userId, streamId: feed.stream.id })
+  voiceLog('playing remote audio', { identity: participant.identity })
 }
 
-function removeRemoteStream(key: string) {
+function detachRemoteAudio(track: RemoteTrack, participant: Participant): void {
+  const key = trackKey(participant, track)
   const el = remoteAudioElements.get(key)
-  if (!el) return
-  el.srcObject = null
-  el.remove()
-  remoteAudioElements.delete(key)
+  if (el) {
+    track.detach(el)
+    el.remove()
+    remoteAudioElements.delete(key)
+  }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function attachFeedListeners(feed: any, sdk: any, isNew = false) {
-  if (feed.isLocal()) return
-  const key = feedKey(feed)
-  if (feedListeners.has(key)) return
+export interface VoiceMediaSession {
+  /** MatrixRTC session of the room (matrix-js-sdk MatrixRTCSession). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rtcSession: any
+  /** Maps a LiveKit participant identity to its Matrix user id. */
+  resolveUserId: (identity: string) => string | null
+}
 
-  if (isNew) playJoinOther()
+/**
+ * Prepares the E2EE key bridge. Must be called before joining the MatrixRTC session so that
+ * no key emitted during the join is missed.
+ */
+export function prepareVoiceMedia(session: VoiceMediaSession, e2ee: boolean): LivekitRoom {
+  cleanupVoiceStreams()
+  const { inputDeviceId, outputDeviceId } = useVoiceStore.getState()
 
-  const onSpeaking = (speaking: boolean) => {
-    useVoiceStore.getState().setSpeaking(feed.userId, speaking)
+  let keyProvider: MatrixKeyProvider | null = null
+  if (e2ee) {
+    keyProvider = new MatrixKeyProvider()
+    const onKey = (key: Uint8Array, keyIndex: number, _membership: unknown, rtcBackendIdentity: string) => {
+      keyProvider?.setMatrixKey(key, keyIndex, rtcBackendIdentity).catch((err) => voiceLog('setMatrixKey failed', err))
+    }
+    session.rtcSession.on('encryption_key_changed', onKey)
+    activeSessionCleanup = () => session.rtcSession.off('encryption_key_changed', onKey)
   }
-  const onNewStream = (stream: MediaStream) => {
-    const el = remoteAudioElements.get(key)
-    if (el) el.srcObject = stream
-  }
-  const onDisposed = () => {
-    playLeaveOther()
-    detachFeedListeners(key)
-  }
 
-  feed.on(sdk.CallFeedEvent.Speaking, onSpeaking)
-  feed.on(sdk.CallFeedEvent.NewStream, onNewStream)
-  feed.on(sdk.CallFeedEvent.Disposed, onDisposed)
-  feed.measureVolumeActivity?.(true)
-
-  feedListeners.set(key, {
-    feed,
-    cleanup: () => {
-      feed.off(sdk.CallFeedEvent.Speaking, onSpeaking)
-      feed.off(sdk.CallFeedEvent.NewStream, onNewStream)
-      feed.off(sdk.CallFeedEvent.Disposed, onDisposed)
-      feed.measureVolumeActivity?.(false)
+  const room = new LivekitRoom({
+    adaptiveStream: false,
+    dynacast: false,
+    audioCaptureDefaults: {
+      deviceId: inputDeviceId ?? undefined,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
     },
+    audioOutput: outputDeviceId ? { deviceId: outputDeviceId } : undefined,
+    e2ee: keyProvider ? { keyProvider, worker: new E2EEWorker() } : undefined,
   })
-}
 
-function detachFeedListeners(key: string) {
-  const entry = feedListeners.get(key)
-  if (!entry) return
-  entry.cleanup()
-  feedListeners.delete(key)
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void> {
-  activeGroupCall = groupCall
-  const store = useVoiceStore.getState()
-
-  // Play existing remote feeds
-  const feeds = groupCall.userMediaFeeds ?? []
-  for (const feed of feeds) {
-    if (!feed.isLocal() && feed.stream) playRemoteStream(feed)
-    attachFeedListeners(feed, sdk)
-  }
-
-  // Store local stream reference and start VAD
-  const localFeed = groupCall.localCallFeed
-  if (localFeed?.stream) {
-    store.setLocalStream(localFeed.stream)
-    startLocalVAD(localFeed.stream)
-  }
-
-  // Listen for new/removed feeds
-  const onFeedsChanged = (newFeeds: unknown[]) => {
-    voiceLog('UserMediaFeedsChanged', { count: (newFeeds as unknown[]).length })
-    const currentKeys = new Set<string>()
-    for (const feed of newFeeds as { userId: string; stream: MediaStream; isLocal: () => boolean }[]) {
-      currentKeys.add(feedKey(feed))
-      if (!feed.isLocal() && feed.stream) playRemoteStream(feed)
-      const isNew = !feedListeners.has(feedKey(feed))
-      attachFeedListeners(feed, sdk, isNew)
-    }
-    // Remove stale audio elements and feed listeners
-    for (const [key] of remoteAudioElements) {
-      if (!currentKeys.has(key)) {
-        removeRemoteStream(key)
-        detachFeedListeners(key)
+  room
+    .on(RoomEvent.TrackSubscribed, (track, _pub, participant) => attachRemoteAudio(track, participant))
+    .on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => detachRemoteAudio(track, participant))
+    .on(RoomEvent.ParticipantConnected, () => playJoinOther())
+    .on(RoomEvent.ParticipantDisconnected, (participant) => {
+      playLeaveOther()
+      const userId = session.resolveUserId(participant.identity)
+      if (userId) useVoiceStore.getState().setSpeaking(userId, false)
+    })
+    .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      const store = useVoiceStore.getState()
+      const myUserId = useAuthStore.getState().session?.userId
+      const speakingNow = new Set<string>()
+      for (const p of speakers) {
+        if (p === room.localParticipant) continue
+        const userId = session.resolveUserId(p.identity)
+        if (userId) speakingNow.add(userId)
       }
+      for (const userId of store.speakingUsers) {
+        if (userId !== myUserId && !speakingNow.has(userId)) store.setSpeaking(userId, false)
+      }
+      for (const userId of speakingNow) store.setSpeaking(userId, true)
+    })
+    .on(RoomEvent.EncryptionError, (err) => voiceLog('e2ee error', err))
+    .on(RoomEvent.Disconnected, (reason) => voiceLog('livekit disconnected', { reason }))
+
+  activeLivekitRoom = room
+  return room
+}
+
+/** Connects the prepared LiveKit room to the SFU and publishes the microphone. */
+export async function connectVoiceMedia(
+  room: LivekitRoom,
+  session: VoiceMediaSession,
+  sfu: { url: string; jwt: string },
+  e2ee: boolean,
+): Promise<void> {
+  if (e2ee) await room.setE2EEEnabled(true)
+  await room.connect(sfu.url, sfu.jwt, { autoSubscribe: true })
+  voiceLog('livekit connected', { url: sfu.url, e2ee })
+
+  // Keys may have been received before the LiveKit room existed.
+  if (e2ee) session.rtcSession.reemitEncryptionKeys?.()
+
+  // Joining is triggered by a click, so the browser allows audio playback now.
+  await room.startAudio().catch(() => voiceLog('startAudio blocked'))
+
+  const store = useVoiceStore.getState()
+  try {
+    await room.localParticipant.setMicrophoneEnabled(!store.isMuted)
+  } catch (err) {
+    const msg = err instanceof Error ? `${err.name} ${err.message}` : String(err)
+    if (/permission|denied|not allowed|notallowed/i.test(msg)) {
+      throw new Error('Accès au microphone refusé. Autorise le micro dans les paramètres de ton navigateur.')
     }
-    for (const [key] of feedListeners) {
-      if (!currentKeys.has(key)) detachFeedListeners(key)
-    }
-    // Update local stream
-    const lf = groupCall.localCallFeed
-    const prevStream = useVoiceStore.getState().localStream
-    const nextStream = lf?.stream ?? null
-    useVoiceStore.getState().setLocalStream(nextStream)
-    if (nextStream && nextStream !== prevStream) startLocalVAD(nextStream)
+    throw err
   }
+  refreshLocalStream()
+}
 
-  groupCall.on(sdk.GroupCallEvent.UserMediaFeedsChanged, onFeedsChanged)
-
-  // Store the cleanup reference for the group-level listener
-  ;(groupCall as { _waifuFeedsCleanup?: () => void })._waifuFeedsCleanup = () => {
-    groupCall.off(sdk.GroupCallEvent.UserMediaFeedsChanged, onFeedsChanged)
+function refreshLocalStream(): void {
+  const track = activeLivekitRoom?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track
+  const stream = track?.mediaStream ?? null
+  const store = useVoiceStore.getState()
+  if (stream && stream !== store.localStream) {
+    store.setLocalStream(stream)
+    startLocalVAD(stream)
   }
-
-  voiceLog('setupVoiceStreams complete', { feedCount: feeds.length })
 }
 
 export function cleanupVoiceStreams(): void {
   voiceLog('cleanupVoiceStreams')
 
-  // Remove group-level listener
-  if (activeGroupCall?._waifuFeedsCleanup) {
-    activeGroupCall._waifuFeedsCleanup()
-    delete activeGroupCall._waifuFeedsCleanup
+  activeSessionCleanup?.()
+  activeSessionCleanup = null
+
+  if (activeLivekitRoom) {
+    const room = activeLivekitRoom
+    activeLivekitRoom = null
+    room.removeAllListeners()
+    room.disconnect().catch(() => {})
   }
 
-  // Detach all feed listeners
-  for (const [key] of feedListeners) detachFeedListeners(key)
-  feedListeners.clear()
-
-  // Remove all remote audio elements
-  for (const [key] of remoteAudioElements) removeRemoteStream(key)
+  for (const el of remoteAudioElements.values()) {
+    el.srcObject = null
+    el.remove()
+  }
   remoteAudioElements.clear()
 
-  // Stop VAD
   stopLocalVAD()
 
-  // Stop local audio stream tracks
+  // LiveKit stops its own tracks on disconnect; this covers a stream left over from a failed join.
   const store = useVoiceStore.getState()
   if (store.localStream) {
     for (const track of store.localStream.getTracks()) track.stop()
   }
 
-  // Stop local video/screen streams
   stopLocalVideo()
 
   store.clearSpeaking()
   store.setLocalStream(null)
-  activeGroupCall = null
 }
 
 export async function setVoiceMuted(muted: boolean): Promise<void> {
   useVoiceStore.getState().setMuted(muted)
-  if (!activeGroupCall) return
+  if (!activeLivekitRoom) return
   try {
-    await activeGroupCall.setMicrophoneMuted?.(muted)
-    voiceLog('setMicrophoneMuted', { muted })
+    await activeLivekitRoom.localParticipant.setMicrophoneEnabled(!muted)
+    refreshLocalStream()
+    voiceLog('setMicrophoneEnabled', { enabled: !muted })
   } catch (err) {
-    voiceLog('setMicrophoneMuted failed', err)
+    voiceLog('setMicrophoneEnabled failed', err)
   }
 }
 
@@ -268,8 +303,8 @@ export function setVoiceDeafened(deafened: boolean): void {
   voiceLog('setVoiceDeafened', { deafened })
 }
 
-export function getActiveGroupCall(): unknown {
-  return activeGroupCall
+export function getActiveLivekitRoom(): LivekitRoom | null {
+  return activeLivekitRoom
 }
 
 export async function toggleCamera(): Promise<void> {
