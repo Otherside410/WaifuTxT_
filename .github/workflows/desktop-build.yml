@@ -1,0 +1,110 @@
+name: Desktop builds
+
+# Builds the Electron app for Linux (AppImage) and Windows (NSIS installer + portable exe).
+# - Pull requests / manual runs: binaries are attached to the run as downloadable artifacts.
+# - Pushes to main: binaries are also published as a GitHub Release tagged v<package.json version>.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            target: --linux
+            files: |
+              release/*.AppImage
+              release/latest-linux.yml
+          - name: windows
+            os: windows-latest
+            target: --win
+            files: |
+              release/*.exe
+              release/*.blockmap
+              release/latest.yml
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Package Electron app
+        run: npx electron-builder ${{ matrix.target }} --publish never
+        env:
+          # No code-signing certificate is configured: skip signing instead of failing.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waifutxt-${{ matrix.name }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether the release already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.version.outputs.tag }} already exists, skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.existing.outputs.exists == 'false'
+        with:
+          path: dist-desktop
+          merge-multiple: true
+
+      - name: Create GitHub release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" dist-desktop/* \
+            --target "${{ github.sha }}" \
+            --title "WaifuTxT_ ${{ steps.version.outputs.tag }}" \
+            --generate-notes

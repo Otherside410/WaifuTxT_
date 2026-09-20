@@ -1,12 +1,28 @@
-import { useVoiceStore } from '../stores/voiceStore'
+import {
+  BaseKeyProvider,
+  createKeyMaterialFromBuffer,
+  Room as LivekitRoom,
+  RoomEvent,
+  ScreenSharePresets,
+  Track,
+  VideoPresets,
+  type Participant,
+  type RemoteTrack,
+  type TrackPublication,
+} from 'livekit-client'
+import E2EEWorker from 'livekit-client/e2ee-worker?worker'
+import { useVoiceStore, volumeKey } from '../stores/voiceStore'
 import { useAuthStore } from '../stores/authStore'
 import { playJoinOther, playLeaveOther } from './voiceNotifications'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let activeGroupCall: any = null
-const remoteAudioElements = new Map<string, HTMLAudioElement>()
-let localCameraStream: MediaStream | null = null
-let localScreenStream: MediaStream | null = null
+// Media for voice rooms goes through LiveKit, like Element Call: MatrixRTC (in matrix.ts) announces the
+// membership, the LiveKit SFU carries audio/video, and per-participant E2EE keys come from the RTC session.
+
+let activeLivekitRoom: LivekitRoom | null = null
+let activeSessionCleanup: (() => void) | null = null
+let activeResolveUserId: ((identity: string) => string | null) | null = null
+const remoteAudioElements = new Map<string, HTMLMediaElement>()
+const remoteAudioVolumeKeys = new Map<string, string>()
 
 // ── Local VAD (Web Audio API) ────────────────────────────────────────────────
 let vadCtx: AudioContext | null = null
@@ -28,6 +44,13 @@ function startLocalVAD(stream: MediaStream): void {
     const data = new Float32Array(analyser.frequencyBinCount)
     let speaking = false
     vadInterval = setInterval(() => {
+      if (useVoiceStore.getState().isMuted) {
+        if (speaking) {
+          speaking = false
+          useVoiceStore.getState().setSpeaking(myUserId, false)
+        }
+        return
+      }
       analyser.getFloatFrequencyData(data)
       // Compute RMS in linear scale then convert to dB
       let sum = 0
@@ -56,7 +79,7 @@ function stopLocalVAD(): void {
 }
 
 // ── Output device helper ─────────────────────────────────────────────────────
-function applyOutputDevice(el: HTMLAudioElement): void {
+function applyOutputDevice(el: HTMLMediaElement): void {
   const deviceId = useVoiceStore.getState().outputDeviceId
   if (!deviceId) return
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,8 +92,6 @@ function applyOutputDevice(el: HTMLAudioElement): void {
 export function applyOutputDeviceToAll(): void {
   for (const el of remoteAudioElements.values()) applyOutputDevice(el)
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const feedListeners = new Map<string, { feed: any; cleanup: () => void }>()
 
 function voiceLog(msg: string, extra?: unknown) {
   try {
@@ -80,269 +101,351 @@ function voiceLog(msg: string, extra?: unknown) {
   else console.log(`[voice] ${msg}`)
 }
 
-function feedKey(feed: { userId: string; stream?: MediaStream }): string {
-  return `${feed.userId}:${feed.stream?.id ?? 'no-stream'}`
+// ── E2EE key bridge (MatrixRTC → LiveKit) ────────────────────────────────────
+// Same parameters as Element Call's MatrixKeyProvider so both clients derive identical frame keys.
+class MatrixKeyProvider extends BaseKeyProvider {
+  constructor() {
+    super({ ratchetWindowSize: 10, keyringSize: 256 })
+  }
+
+  async setMatrixKey(key: Uint8Array, keyIndex: number, participantIdentity: string): Promise<void> {
+    const material = await createKeyMaterialFromBuffer(new Uint8Array(key).buffer)
+    this.onSetEncryptionKey(material, participantIdentity, keyIndex)
+    voiceLog('e2ee key set', { participantIdentity, keyIndex })
+  }
 }
 
-function playRemoteStream(feed: { userId: string; stream: MediaStream; isLocal: () => boolean }) {
-  if (feed.isLocal()) return
-  const key = feedKey(feed)
-  const existing = remoteAudioElements.get(key)
-  if (existing) {
-    existing.srcObject = feed.stream
+// ── Remote tracks ────────────────────────────────────────────────────────────
+function trackKey(participant: Participant, track: RemoteTrack): string {
+  return `${participant.identity}:${track.sid ?? track.mediaStreamTrack.id}`
+}
+
+function effectiveVolume(volKey: string | undefined): number {
+  const { isDeafened, volumes } = useVoiceStore.getState()
+  if (isDeafened) return 0
+  return volKey ? volumes[volKey] ?? 1 : 1
+}
+
+/** Re-applies deafen state and per-user volumes to every remote audio element. */
+export function applyVolumes(): void {
+  for (const [key, el] of remoteAudioElements) el.volume = effectiveVolume(remoteAudioVolumeKeys.get(key))
+}
+
+function attachRemoteAudio(track: RemoteTrack, participant: Participant): void {
+  const key = trackKey(participant, track)
+  if (remoteAudioElements.has(key)) return
+  const userId = activeResolveUserId?.(participant.identity) ?? null
+  const volKey = userId ? volumeKey(userId, track.source === Track.Source.ScreenShareAudio ? 'screen' : 'mic') : undefined
+  const el = track.attach()
+  el.setAttribute('data-voice-feed', key)
+  el.style.display = 'none'
+  document.body.appendChild(el)
+  if (volKey) remoteAudioVolumeKeys.set(key, volKey)
+  el.volume = effectiveVolume(volKey)
+  applyOutputDevice(el)
+  remoteAudioElements.set(key, el)
+  voiceLog('playing remote audio', { identity: participant.identity, source: track.source })
+}
+
+function attachRemoteVideo(track: RemoteTrack, participant: Participant): void {
+  const userId = activeResolveUserId?.(participant.identity)
+  if (!userId || !track.sid) return
+  useVoiceStore.getState().upsertRemoteMedia({
+    id: track.sid,
+    userId,
+    source: track.source === Track.Source.ScreenShare ? 'screen' : 'camera',
+    stream: new MediaStream([track.mediaStreamTrack]),
+    muted: track.isMuted,
+  })
+  voiceLog('remote video', { identity: participant.identity, source: track.source })
+}
+
+function onTrackSubscribed(track: RemoteTrack, participant: Participant): void {
+  if (track.kind === Track.Kind.Audio) attachRemoteAudio(track, participant)
+  else if (track.kind === Track.Kind.Video) attachRemoteVideo(track, participant)
+}
+
+function onTrackUnsubscribed(track: RemoteTrack, participant: Participant): void {
+  if (track.kind === Track.Kind.Video) {
+    if (track.sid) useVoiceStore.getState().removeRemoteMedia(track.sid)
     return
   }
-
-  const el = document.createElement('audio')
-  el.autoplay = true
-  el.setAttribute('data-voice-feed', key)
-  el.srcObject = feed.stream
-
-  const store = useVoiceStore.getState()
-  if (store.isDeafened) el.volume = 0
-  applyOutputDevice(el)
-
-  el.play().catch(() => voiceLog('autoplay blocked for feed', { userId: feed.userId }))
-  remoteAudioElements.set(key, el)
-  voiceLog('playing remote stream', { userId: feed.userId, streamId: feed.stream.id })
-}
-
-function removeRemoteStream(key: string) {
+  const key = trackKey(participant, track)
   const el = remoteAudioElements.get(key)
-  if (!el) return
-  el.srcObject = null
-  el.remove()
-  remoteAudioElements.delete(key)
+  if (el) {
+    track.detach(el)
+    el.remove()
+    remoteAudioElements.delete(key)
+    remoteAudioVolumeKeys.delete(key)
+  }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function attachFeedListeners(feed: any, sdk: any, isNew = false) {
-  if (feed.isLocal()) return
-  const key = feedKey(feed)
-  if (feedListeners.has(key)) return
-
-  if (isNew) playJoinOther()
-
-  const onSpeaking = (speaking: boolean) => {
-    useVoiceStore.getState().setSpeaking(feed.userId, speaking)
-  }
-  const onNewStream = (stream: MediaStream) => {
-    const el = remoteAudioElements.get(key)
-    if (el) el.srcObject = stream
-  }
-  const onDisposed = () => {
-    playLeaveOther()
-    detachFeedListeners(key)
-  }
-
-  feed.on(sdk.CallFeedEvent.Speaking, onSpeaking)
-  feed.on(sdk.CallFeedEvent.NewStream, onNewStream)
-  feed.on(sdk.CallFeedEvent.Disposed, onDisposed)
-  feed.measureVolumeActivity?.(true)
-
-  feedListeners.set(key, {
-    feed,
-    cleanup: () => {
-      feed.off(sdk.CallFeedEvent.Speaking, onSpeaking)
-      feed.off(sdk.CallFeedEvent.NewStream, onNewStream)
-      feed.off(sdk.CallFeedEvent.Disposed, onDisposed)
-      feed.measureVolumeActivity?.(false)
-    },
-  })
-}
-
-function detachFeedListeners(key: string) {
-  const entry = feedListeners.get(key)
-  if (!entry) return
-  entry.cleanup()
-  feedListeners.delete(key)
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function setupVoiceStreams(groupCall: any, sdk: any): Promise<void> {
-  activeGroupCall = groupCall
+function onTrackMuteChanged(publication: TrackPublication, muted: boolean): void {
+  if (publication.kind !== Track.Kind.Video || !publication.trackSid) return
   const store = useVoiceStore.getState()
+  const media = store.remoteMedia.find((m) => m.id === publication.trackSid)
+  if (media && media.muted !== muted) store.upsertRemoteMedia({ ...media, muted })
+}
 
-  // Play existing remote feeds
-  const feeds = groupCall.userMediaFeeds ?? []
-  for (const feed of feeds) {
-    if (!feed.isLocal() && feed.stream) playRemoteStream(feed)
-    attachFeedListeners(feed, sdk)
-  }
+export interface VoiceMediaSession {
+  /** MatrixRTC session of the room (matrix-js-sdk MatrixRTCSession). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rtcSession: any
+  /** Maps a LiveKit participant identity to its Matrix user id. */
+  resolveUserId: (identity: string) => string | null
+}
 
-  // Store local stream reference and start VAD
-  const localFeed = groupCall.localCallFeed
-  if (localFeed?.stream) {
-    store.setLocalStream(localFeed.stream)
-    startLocalVAD(localFeed.stream)
-  }
+/**
+ * Prepares the E2EE key bridge. Must be called before joining the MatrixRTC session so that
+ * no key emitted during the join is missed.
+ */
+export function prepareVoiceMedia(session: VoiceMediaSession, e2ee: boolean): LivekitRoom {
+  cleanupVoiceStreams()
+  const { inputDeviceId, outputDeviceId } = useVoiceStore.getState()
 
-  // Listen for new/removed feeds
-  const onFeedsChanged = (newFeeds: unknown[]) => {
-    voiceLog('UserMediaFeedsChanged', { count: (newFeeds as unknown[]).length })
-    const currentKeys = new Set<string>()
-    for (const feed of newFeeds as { userId: string; stream: MediaStream; isLocal: () => boolean }[]) {
-      currentKeys.add(feedKey(feed))
-      if (!feed.isLocal() && feed.stream) playRemoteStream(feed)
-      const isNew = !feedListeners.has(feedKey(feed))
-      attachFeedListeners(feed, sdk, isNew)
+  let keyProvider: MatrixKeyProvider | null = null
+  if (e2ee) {
+    keyProvider = new MatrixKeyProvider()
+    const onKey = (key: Uint8Array, keyIndex: number, _membership: unknown, rtcBackendIdentity: string) => {
+      keyProvider?.setMatrixKey(key, keyIndex, rtcBackendIdentity).catch((err) => voiceLog('setMatrixKey failed', err))
     }
-    // Remove stale audio elements and feed listeners
-    for (const [key] of remoteAudioElements) {
-      if (!currentKeys.has(key)) {
-        removeRemoteStream(key)
-        detachFeedListeners(key)
+    session.rtcSession.on('encryption_key_changed', onKey)
+    activeSessionCleanup = () => session.rtcSession.off('encryption_key_changed', onKey)
+  }
+
+  const room = new LivekitRoom({
+    adaptiveStream: false,
+    dynacast: false,
+    audioCaptureDefaults: {
+      deviceId: inputDeviceId ?? undefined,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+    audioOutput: outputDeviceId ? { deviceId: outputDeviceId } : undefined,
+    e2ee: keyProvider ? { keyProvider, worker: new E2EEWorker() } : undefined,
+  })
+
+  activeResolveUserId = session.resolveUserId
+
+  room
+    .on(RoomEvent.TrackSubscribed, (track, _pub, participant) => onTrackSubscribed(track, participant))
+    .on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => onTrackUnsubscribed(track, participant))
+    .on(RoomEvent.TrackMuted, (pub, participant) => { if (participant !== room.localParticipant) onTrackMuteChanged(pub, true) })
+    .on(RoomEvent.TrackUnmuted, (pub, participant) => { if (participant !== room.localParticipant) onTrackMuteChanged(pub, false) })
+    // Covers the user stopping a screen share from the browser/OS UI.
+    .on(RoomEvent.LocalTrackUnpublished, (pub) => syncLocalVideo(pub.source))
+    .on(RoomEvent.ParticipantConnected, () => playJoinOther())
+    .on(RoomEvent.ParticipantDisconnected, (participant) => {
+      playLeaveOther()
+      const userId = session.resolveUserId(participant.identity)
+      if (userId) useVoiceStore.getState().setSpeaking(userId, false)
+    })
+    .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      const store = useVoiceStore.getState()
+      const myUserId = useAuthStore.getState().session?.userId
+      const speakingNow = new Set<string>()
+      for (const p of speakers) {
+        if (p === room.localParticipant) continue
+        const userId = session.resolveUserId(p.identity)
+        if (userId) speakingNow.add(userId)
       }
+      for (const userId of store.speakingUsers) {
+        if (userId !== myUserId && !speakingNow.has(userId)) store.setSpeaking(userId, false)
+      }
+      for (const userId of speakingNow) store.setSpeaking(userId, true)
+    })
+    .on(RoomEvent.EncryptionError, (err) => voiceLog('e2ee error', err))
+    .on(RoomEvent.Disconnected, (reason) => voiceLog('livekit disconnected', { reason }))
+
+  activeLivekitRoom = room
+  return room
+}
+
+/** Connects the prepared LiveKit room to the SFU and publishes the microphone. */
+export async function connectVoiceMedia(
+  room: LivekitRoom,
+  session: VoiceMediaSession,
+  sfu: { url: string; jwt: string },
+  e2ee: boolean,
+): Promise<void> {
+  if (e2ee) await room.setE2EEEnabled(true)
+  await room.connect(sfu.url, sfu.jwt, { autoSubscribe: true })
+  voiceLog('livekit connected', { url: sfu.url, e2ee })
+
+  // Keys may have been received before the LiveKit room existed.
+  if (e2ee) session.rtcSession.reemitEncryptionKeys?.()
+
+  // Joining is triggered by a click, so the browser allows audio playback now.
+  await room.startAudio().catch(() => voiceLog('startAudio blocked'))
+
+  const store = useVoiceStore.getState()
+  try {
+    await room.localParticipant.setMicrophoneEnabled(!store.isMuted)
+  } catch (err) {
+    const msg = err instanceof Error ? `${err.name} ${err.message}` : String(err)
+    if (/permission|denied|not allowed|notallowed/i.test(msg)) {
+      throw new Error('Accès au microphone refusé. Autorise le micro dans les paramètres de ton navigateur.')
     }
-    for (const [key] of feedListeners) {
-      if (!currentKeys.has(key)) detachFeedListeners(key)
-    }
-    // Update local stream
-    const lf = groupCall.localCallFeed
-    const prevStream = useVoiceStore.getState().localStream
-    const nextStream = lf?.stream ?? null
-    useVoiceStore.getState().setLocalStream(nextStream)
-    if (nextStream && nextStream !== prevStream) startLocalVAD(nextStream)
+    throw err
   }
+  refreshLocalStream()
+}
 
-  groupCall.on(sdk.GroupCallEvent.UserMediaFeedsChanged, onFeedsChanged)
-
-  // Store the cleanup reference for the group-level listener
-  ;(groupCall as { _waifuFeedsCleanup?: () => void })._waifuFeedsCleanup = () => {
-    groupCall.off(sdk.GroupCallEvent.UserMediaFeedsChanged, onFeedsChanged)
+function refreshLocalStream(): void {
+  const track = activeLivekitRoom?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track
+  const stream = track?.mediaStream ?? null
+  const store = useVoiceStore.getState()
+  if (stream && stream !== store.localStream) {
+    store.setLocalStream(stream)
+    startLocalVAD(stream)
   }
-
-  voiceLog('setupVoiceStreams complete', { feedCount: feeds.length })
 }
 
 export function cleanupVoiceStreams(): void {
   voiceLog('cleanupVoiceStreams')
 
-  // Remove group-level listener
-  if (activeGroupCall?._waifuFeedsCleanup) {
-    activeGroupCall._waifuFeedsCleanup()
-    delete activeGroupCall._waifuFeedsCleanup
+  activeSessionCleanup?.()
+  activeSessionCleanup = null
+  activeResolveUserId = null
+
+  if (activeLivekitRoom) {
+    const room = activeLivekitRoom
+    activeLivekitRoom = null
+    room.removeAllListeners()
+    room.disconnect().catch(() => {})
   }
 
-  // Detach all feed listeners
-  for (const [key] of feedListeners) detachFeedListeners(key)
-  feedListeners.clear()
-
-  // Remove all remote audio elements
-  for (const [key] of remoteAudioElements) removeRemoteStream(key)
+  for (const el of remoteAudioElements.values()) {
+    el.srcObject = null
+    el.remove()
+  }
   remoteAudioElements.clear()
+  remoteAudioVolumeKeys.clear()
 
-  // Stop VAD
   stopLocalVAD()
 
-  // Stop local audio stream tracks
+  // LiveKit stops its own tracks on disconnect; this covers a stream left over from a failed join.
   const store = useVoiceStore.getState()
   if (store.localStream) {
     for (const track of store.localStream.getTracks()) track.stop()
   }
 
-  // Stop local video/screen streams
   stopLocalVideo()
 
   store.clearSpeaking()
   store.setLocalStream(null)
-  activeGroupCall = null
+  for (const media of store.remoteMedia) store.removeRemoteMedia(media.id)
 }
 
 export async function setVoiceMuted(muted: boolean): Promise<void> {
   useVoiceStore.getState().setMuted(muted)
-  if (!activeGroupCall) return
+  if (!activeLivekitRoom) return
   try {
-    await activeGroupCall.setMicrophoneMuted?.(muted)
-    voiceLog('setMicrophoneMuted', { muted })
+    await activeLivekitRoom.localParticipant.setMicrophoneEnabled(!muted)
+    refreshLocalStream()
+    voiceLog('setMicrophoneEnabled', { enabled: !muted })
   } catch (err) {
-    voiceLog('setMicrophoneMuted failed', err)
+    voiceLog('setMicrophoneEnabled failed', err)
   }
 }
 
 export function setVoiceDeafened(deafened: boolean): void {
   useVoiceStore.getState().setDeafened(deafened)
-  for (const el of remoteAudioElements.values()) {
-    el.volume = deafened ? 0 : 1
-  }
+  applyVolumes()
   voiceLog('setVoiceDeafened', { deafened })
 }
 
-export function getActiveGroupCall(): unknown {
-  return activeGroupCall
+/** Sets the playback volume (0–1) of a user's microphone or screen share audio. */
+export function setUserVolume(userId: string, source: 'mic' | 'screen', volume: number): void {
+  useVoiceStore.getState().setVolume(volumeKey(userId, source), volume)
+  applyVolumes()
+}
+
+export function getActiveLivekitRoom(): LivekitRoom | null {
+  return activeLivekitRoom
+}
+
+// ── Camera / screen share ────────────────────────────────────────────────────
+
+function publishedVideoStream(source: Track.Source): MediaStream | null {
+  const pub = activeLivekitRoom?.localParticipant.getTrackPublication(source)
+  const track = pub?.track
+  if (!track || pub.isMuted || track.mediaStreamTrack.readyState === 'ended') return null
+  return new MediaStream([track.mediaStreamTrack])
+}
+
+/** Mirrors the local camera / screen share publications into the voice store. */
+function syncLocalVideo(source?: Track.Source): void {
+  const store = useVoiceStore.getState()
+  if (source === undefined || source === Track.Source.Camera) {
+    const stream = publishedVideoStream(Track.Source.Camera)
+    store.setLocalCameraStream(stream)
+    store.setCameraOn(!!stream)
+  }
+  if (source === undefined || source === Track.Source.ScreenShare) {
+    const stream = publishedVideoStream(Track.Source.ScreenShare)
+    store.setLocalScreenStream(stream)
+    store.setScreenSharing(!!stream)
+  }
+}
+
+function requireActiveRoom(): LivekitRoom {
+  if (!activeLivekitRoom) throw new Error('Rejoins un salon vocal pour activer la vidéo.')
+  return activeLivekitRoom
 }
 
 export async function toggleCamera(): Promise<void> {
-  const store = useVoiceStore.getState()
-  if (store.isCameraOn) {
-    if (localCameraStream) {
-      for (const track of localCameraStream.getTracks()) track.stop()
-      localCameraStream = null
-    }
-    store.setCameraOn(false)
-    store.setLocalVideoStream(localScreenStream)
-  } else {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-      if (localScreenStream) {
-        for (const track of localScreenStream.getTracks()) track.stop()
-        localScreenStream = null
-        store.setScreenSharing(false)
-      }
-      localCameraStream = stream
-      store.setCameraOn(true)
-      store.setLocalVideoStream(stream)
-    } catch (err) {
-      voiceLog('toggleCamera: getUserMedia failed', err)
-      throw err
-    }
+  const room = requireActiveRoom()
+  const enable = !useVoiceStore.getState().isCameraOn
+  try {
+    await room.localParticipant.setCameraEnabled(enable, {
+      resolution: VideoPresets.h720.resolution,
+    })
+  } catch (err) {
+    voiceLog('toggleCamera failed', err)
+    throw err
+  } finally {
+    syncLocalVideo(Track.Source.Camera)
   }
 }
 
 export async function toggleScreenShare(): Promise<void> {
-  const store = useVoiceStore.getState()
-  if (store.isScreenSharing) {
-    if (localScreenStream) {
-      for (const track of localScreenStream.getTracks()) track.stop()
-      localScreenStream = null
-    }
-    store.setScreenSharing(false)
-    store.setLocalVideoStream(localCameraStream)
-  } else {
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
-      if (localCameraStream) {
-        for (const track of localCameraStream.getTracks()) track.stop()
-        localCameraStream = null
-        store.setCameraOn(false)
-      }
-      localScreenStream = stream
-      store.setScreenSharing(true)
-      store.setLocalVideoStream(stream)
-      // Handle user stopping share via browser UI
-      stream.getTracks()[0].addEventListener('ended', () => {
-        localScreenStream = null
-        useVoiceStore.getState().setScreenSharing(false)
-        useVoiceStore.getState().setLocalVideoStream(null)
-      })
-    } catch (err) {
-      voiceLog('toggleScreenShare: getDisplayMedia failed', err)
+  const room = requireActiveRoom()
+  const enable = !useVoiceStore.getState().isScreenSharing
+  try {
+    await room.localParticipant.setScreenShareEnabled(
+      enable,
+      {
+        audio: true,
+        systemAudio: 'include',
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'include',
+        resolution: ScreenSharePresets.h1080fps30.resolution,
+      },
+      { screenShareEncoding: ScreenSharePresets.h1080fps30.encoding },
+    )
+  } catch (err) {
+    // Cancelling the picker is not an error worth surfacing.
+    if (err instanceof Error && err.name === 'NotAllowedError') voiceLog('screen share cancelled')
+    else {
+      voiceLog('toggleScreenShare failed', err)
       throw err
     }
+  } finally {
+    syncLocalVideo(Track.Source.ScreenShare)
   }
 }
 
 export function stopLocalVideo(): void {
-  if (localCameraStream) {
-    for (const track of localCameraStream.getTracks()) track.stop()
-    localCameraStream = null
-  }
-  if (localScreenStream) {
-    for (const track of localScreenStream.getTracks()) track.stop()
-    localScreenStream = null
+  const room = activeLivekitRoom
+  if (room) {
+    room.localParticipant.setCameraEnabled(false).catch(() => {})
+    room.localParticipant.setScreenShareEnabled(false).catch(() => {})
   }
   const store = useVoiceStore.getState()
   store.setCameraOn(false)
   store.setScreenSharing(false)
-  store.setLocalVideoStream(null)
+  store.setLocalCameraStream(null)
+  store.setLocalScreenStream(null)
 }
