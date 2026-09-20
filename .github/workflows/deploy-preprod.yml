@@ -56,10 +56,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
       - name: Deploy pre-prod via SSH
         uses: appleboy/ssh-action@v1
         with:
-          host: waifuchat.duckdns.org
+          # Tailscale IP of orangepi5ultra (MagicDNS: orangepi5ultra.taile540e0.ts.net).
+          # The Pi is no longer reachable from the public internet.
+          host: 100.123.32.111
           port: 7200
           username: orangepi
           key: ${{ secrets.SSH_PRIVATE_KEY }}
