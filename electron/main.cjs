@@ -525,13 +525,57 @@ async function removeInstalledUpdateCache() {
 }
 
 // ── Launch at startup ───────────────────────────────────────────────────────────
-// Renderer toggle in Settings > Compte. Backed by the OS's native login-item
-// mechanism (registry Run key on Windows, autostart .desktop entry on Linux).
+// Renderer toggle in Settings > Compte. Windows/macOS use Electron's login-item
+// API (registry Run key / Login Items). That API is a no-op on Linux, so there we
+// manage an XDG autostart .desktop entry ourselves.
+const linuxAutostartFile = () => path.join(
+  process.env.XDG_CONFIG_HOME || path.join(app.getPath('home'), '.config'),
+  'autostart',
+  'waifuchat.desktop',
+);
+
+// Desktop Entry spec: quote the path and backslash-escape ", `, $ and \.
+const desktopExecArg = (arg) => `"${arg.replace(/(["`$\\])/g, '\\$1')}"`;
+
+function getLaunchAtStartup() {
+  if (process.platform !== 'linux') return app.getLoginItemSettings().openAtLogin;
+  return fs.existsSync(linuxAutostartFile());
+}
+
+function setLaunchAtStartup(enabled) {
+  if (process.platform !== 'linux') {
+    app.setLoginItemSettings({ openAtLogin: enabled });
+    return;
+  }
+  const file = linuxAutostartFile();
+  if (!enabled) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  // AppImage runs from a temporary mount that changes every launch; $APPIMAGE is
+  // the stable path of the .AppImage file itself.
+  const exec = process.env.APPIMAGE || process.execPath;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=WaifuChat',
+    `Exec=${desktopExecArg(exec)}`,
+    'Terminal=false',
+    'X-GNOME-Autostart-enabled=true',
+    '',
+  ].join('\n'));
+}
+
 function setupStartupSettings() {
-  ipcMain.handle('startup:get', () => app.getLoginItemSettings().openAtLogin);
+  ipcMain.handle('startup:get', () => getLaunchAtStartup());
   ipcMain.handle('startup:set', (_event, enabled) => {
-    app.setLoginItemSettings({ openAtLogin: !!enabled });
-    return app.getLoginItemSettings().openAtLogin;
+    try {
+      setLaunchAtStartup(!!enabled);
+    } catch (err) {
+      console.error('[startup] failed to update launch at startup:', err);
+    }
+    return getLaunchAtStartup();
   });
 }
 
