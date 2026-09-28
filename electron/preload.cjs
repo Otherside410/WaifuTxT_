@@ -25,3 +25,19 @@ contextBridge.exposeInMainWorld('waifuSystem', {
 contextBridge.exposeInMainWorld('waifuSteam', {
   request: (method, path, token) => ipcRenderer.invoke('steam:request', { method, path, token }),
 });
+
+// Only the frameless Windows/Linux window draws its own title bar; macOS keeps
+// the native frame (same check as main.cjs), so the API is left undefined there.
+if (process.platform !== 'darwin') {
+  contextBridge.exposeInMainWorld('waifuWindow', {
+    minimize: () => ipcRenderer.send('window:minimize'),
+    toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
+    close: () => ipcRenderer.send('window:close'),
+    getState: () => ipcRenderer.invoke('window:get-state'),
+    onState(callback) {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('window:state', listener);
+      return () => ipcRenderer.removeListener('window:state', listener);
+    },
+  });
+}

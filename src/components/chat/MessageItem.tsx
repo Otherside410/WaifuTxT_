@@ -42,6 +42,7 @@ import {
   type UrlPreviewData,
 } from '../../lib/matrix'
 import { useUiStore } from '../../stores/uiStore'
+import { getTitleBarHeight } from '../../lib/titleBar'
 
 const URL_REGEX = /(?:https?:\/\/[^\s<>"']+|(?:www\.)[^\s<>"']+|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+(?:com|org|net|io|dev|co|me|app|xyz|info|fr|de|uk|eu|gov|edu|tv|gg|ai|sh|cc|be|to|fm|ly|gl|it|us|ca|au|jp|ru|br|in|nl|ch|se|no|fi|es|pt|pl|cz|sk|at|be|dk|ie|nz)(?:\/[^\s<>"']*)?)/gi
 // Matches: URLs, <@user:server>, @user:server, @user (localpart-only), #room
@@ -1247,7 +1248,7 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
     if (wrapperRef.current) {
       const rect = wrapperRef.current.getBoundingClientRect()
       // 444 = hauteur du picker, 40 = marge de sécurité
-      setPickerDir(rect.top >= 484 ? 'up' : 'down')
+      setPickerDir(rect.top - getTitleBarHeight() >= 484 ? 'up' : 'down')
     }
     const onClickOutside = (event: MouseEvent) => {
       if (!reactionPickerRef.current) return

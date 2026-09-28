@@ -39,8 +39,23 @@ interface WaifuSteamApi {
   ) => Promise<{ status: number; body: string }>
 }
 
+interface WaifuWindowState {
+  maximized: boolean
+  fullscreen: boolean
+}
+
+interface WaifuWindowApi {
+  minimize: () => void
+  toggleMaximize: () => void
+  close: () => void
+  getState: () => Promise<WaifuWindowState>
+  onState: (callback: (state: WaifuWindowState) => void) => () => void
+}
+
 interface Window {
   waifuUpdater?: WaifuUpdaterApi
   waifuSystem?: WaifuSystemApi
   waifuSteam?: WaifuSteamApi
+  // Frameless Windows/Linux desktop window only.
+  waifuWindow?: WaifuWindowApi
 }

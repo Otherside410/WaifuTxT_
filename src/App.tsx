@@ -4,6 +4,7 @@ import { initClient } from './lib/matrix'
 import { LoginScreen } from './components/auth/LoginScreen'
 import { AppShell } from './components/layout/AppShell'
 import { UpdateBanner } from './components/common/UpdateBanner'
+import { TitleBar } from './components/common/TitleBar'
 import { useNotifications } from './hooks/useNotifications'
 
 class ErrorBoundary extends Component<{ children: ReactNode; onReset: () => void }, { error: Error | null }> {
@@ -20,7 +21,7 @@ class ErrorBoundary extends Component<{ children: ReactNode; onReset: () => void
   render() {
     if (this.state.error) {
       return (
-        <div className="h-screen w-screen flex items-center justify-center bg-bg-primary">
+        <div className="h-app w-screen flex items-center justify-center bg-bg-primary">
           <div className="text-center max-w-md px-6">
             <h2 className="text-2xl font-bold text-accent-pink mb-2">ワイフ</h2>
             <p className="text-text-primary font-semibold mb-4">Une erreur est survenue</p>
@@ -78,7 +79,7 @@ function AppInner() {
 
   if (isRestoring) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-bg-primary">
+      <div className="h-app w-screen flex items-center justify-center bg-bg-primary">
         <div className="text-center">
           <div className="mb-4">
             <svg className="animate-spin h-8 w-8 text-accent-pink mx-auto" viewBox="0 0 24 24">
@@ -95,7 +96,7 @@ function AppInner() {
 
   if (restoreError) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-bg-primary">
+      <div className="h-app w-screen flex items-center justify-center bg-bg-primary">
         <div className="text-center max-w-md px-6">
           <h2 className="text-2xl font-bold text-accent-pink mb-2">ワイフ</h2>
           <p className="text-text-primary font-semibold mb-4">Session expirée</p>
@@ -123,6 +124,7 @@ function AppInner() {
 export function App() {
   return (
     <>
+      <TitleBar />
       <AppInner />
       <UpdateBanner />
     </>

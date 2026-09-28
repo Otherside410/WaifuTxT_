@@ -143,6 +143,7 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+  setupWindowControls();
   setupAutoUpdater();
   setupStartupSettings();
   setupSteamProxy();
@@ -322,6 +323,10 @@ async function pickDisplaySource(sources) {
   });
 }
 
+// Windows/Linux draw their own title bar in the renderer (TitleBar.tsx); macOS
+// keeps the native frame. preload.cjs applies the same check.
+const useCustomTitleBar = process.platform !== 'darwin';
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width:  1280,
@@ -330,6 +335,7 @@ function createWindow() {
     minHeight: 520,
     backgroundColor: '#0b0b12',
     autoHideMenuBar: true,
+    frame: !useCustomTitleBar,
     // icon is resolved at runtime so missing icon never crashes the app
     icon: (() => {
       // dist/ is packaged inside the asar; process.resourcesPath points to
@@ -368,6 +374,47 @@ function createWindow() {
   });
 
   mainWindow.loadURL('waifutxt://app/index.html');
+
+  if (useCustomTitleBar) {
+    const win = mainWindow;
+    // The hidden menu bar's F11 accelerator isn't reliable on a frameless window.
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.key === 'F11' && !input.alt && !input.control && !input.meta && !input.shift) {
+        event.preventDefault();
+        win.setFullScreen(!win.isFullScreen());
+      }
+    });
+
+    const sendState = () => {
+      if (!win.isDestroyed()) win.webContents.send('window:state', getWindowState(win));
+    };
+    for (const evt of ['maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen', 'enter-html-full-screen', 'leave-html-full-screen']) {
+      win.on(evt, sendState);
+    }
+  }
+}
+
+// ── Custom title bar controls ───────────────────────────────────────────────────
+// Backs the renderer-drawn title bar on the frameless Windows/Linux window.
+function getWindowState(win) {
+  return { maximized: win.isMaximized(), fullscreen: win.isFullScreen() };
+}
+
+function setupWindowControls() {
+  if (!useCustomTitleBar) return;
+  const senderWindow = (event) => BrowserWindow.fromWebContents(event.sender);
+  ipcMain.handle('window:get-state', (event) => {
+    const win = senderWindow(event);
+    return win ? getWindowState(win) : { maximized: false, fullscreen: false };
+  });
+  ipcMain.on('window:minimize', (event) => senderWindow(event)?.minimize());
+  ipcMain.on('window:toggle-maximize', (event) => {
+    const win = senderWindow(event);
+    if (!win) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+  });
+  ipcMain.on('window:close', (event) => senderWindow(event)?.close());
 }
 
 // ── Auto-update ────────────────────────────────────────────────────────────────

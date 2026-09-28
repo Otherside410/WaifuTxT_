@@ -6,6 +6,7 @@ import { useUiStore } from '../../stores/uiStore'
 import { useRoomStore } from '../../stores/roomStore'
 import { getOrCreateDmRoom, getUserBannerUrl, getUserStatusMessage, getUserBio } from '../../lib/matrix'
 import { getSteamStatus, type SteamStatus } from '../../lib/steamPresence'
+import { getTitleBarHeight } from '../../lib/titleBar'
 
 const CARD_WIDTH = 320
 
@@ -96,12 +97,14 @@ export function UserProfileCard({
       const rect = anchor.getBoundingClientRect()
       const margin = 12
       const cardHeight = cardRef.current?.offsetHeight ?? 280
+      // The card is laid out below the desktop title bar, not from the viewport top.
+      const originTop = getTitleBarHeight()
 
       const spaceBelow = window.innerHeight - rect.bottom - margin
       const top =
         spaceBelow >= cardHeight
-          ? rect.bottom + 8
-          : Math.max(margin, rect.top - cardHeight - 8)
+          ? rect.bottom + 8 - originTop
+          : Math.max(margin, rect.top - cardHeight - 8 - originTop)
 
       const left = Math.max(margin, Math.min(rect.left, window.innerWidth - CARD_WIDTH - margin))
       setCoords({ top, left })

@@ -49,7 +49,7 @@ export function LoginScreen() {
   }
 
   return (
-    <div className="h-screen w-screen flex items-center justify-center relative overflow-hidden">
+    <div className="h-app w-screen flex items-center justify-center relative overflow-hidden">
       <div className="absolute inset-0 bg-bg-primary">
         <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-accent-pink/5 rounded-full blur-[120px] -translate-y-1/2 translate-x-1/3" />
         <div className="absolute bottom-0 left-0 w-[500px] h-[500px] bg-purple-600/5 rounded-full blur-[120px] translate-y-1/3 -translate-x-1/4" />

@@ -118,7 +118,7 @@ export function AppShell() {
   const desktopMembersAnim = useOverlayAnimation(!isMobile && showMemberPanel && !!activeRoomId, 200)
 
   return (
-    <div className="h-[100dvh] w-screen flex overflow-hidden relative">
+    <div className="h-app w-screen flex overflow-hidden relative">
       {!isMobile && (
         <>
           <SpaceSidebar />

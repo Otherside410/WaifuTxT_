@@ -32,6 +32,34 @@
   --color-scrollbar-track: transparent;
 }
 
+/* ── Desktop title bar ──────────────────────────────────────────────────────
+ * The frameless Windows/Linux window draws TitleBar.tsx over the top of the
+ * viewport (html.has-titlebar, set in main.tsx). The app lives below it: #root
+ * is offset by --titlebar-height and, through layout containment, becomes the
+ * containing block for `position: fixed` overlays so they stay under it too.
+ * Fullscreen (html.titlebar-hidden) gives the space back. */
+:root {
+  --titlebar-height: 0px;
+}
+:root.has-titlebar:not(.titlebar-hidden) {
+  --titlebar-height: 32px;
+}
+:root.has-titlebar #root {
+  position: fixed;
+  inset: var(--titlebar-height) 0 0 0;
+  contain: layout;
+}
+
+@utility h-app {
+  height: calc(100dvh - var(--titlebar-height));
+}
+@utility app-region-drag {
+  -webkit-app-region: drag;
+}
+@utility app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 @layer base {
   * {
     scrollbar-width: thin;
