@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useMessageStore } from '../stores/messageStore'
 import { useRoomStore } from '../stores/roomStore'
 import { useAuthStore } from '../stores/authStore'
+import { useUiStore } from '../stores/uiStore'
 import { isEncryptedStorePlaceholder } from '../lib/matrix'
 
 export function useNotifications() {
@@ -24,6 +25,7 @@ export function useNotifications() {
     const unsub = useMessageStore.subscribe((state, prevState) => {
       if (!session || !document.hidden) return
       if (permissionRef.current !== 'granted') return
+      if (!useUiStore.getState().desktopNotifications) return
 
       for (const [roomId, messages] of state.messages) {
         const prev = prevState.messages.get(roomId)
@@ -44,7 +46,7 @@ export function useNotifications() {
         const room = useRoomStore.getState().rooms.get(roomId)
         new Notification(room?.name || 'WaifuChat', {
           body: `${lastMsg.senderName}: ${lastMsg.content}`,
-          icon: '/vite.svg',
+          icon: '/favicon.png',
           tag: lastMsg.eventId,
         })
       }

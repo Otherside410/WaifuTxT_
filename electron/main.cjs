@@ -22,6 +22,11 @@ app.on('second-instance', () => {
   }
 });
 
+// Windows labels toast notifications (name + icon) from the AppUserModelID. It must match
+// build.appId, which the NSIS installer stamps on the Start menu shortcut; otherwise the
+// toasts show up as "electron.app.WaifuChat" with Electron's icon.
+if (process.platform === 'win32') app.setAppUserModelId('dev.otherside410.waifutxt');
+
 // ── Custom protocol: waifutxt:// ──────────────────────────────────────────────
 // Serves dist/ with correct MIME types, including application/wasm for E2EE.
 // Must be registered before app.whenReady().
