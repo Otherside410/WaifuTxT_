@@ -978,7 +978,7 @@ export async function getRoomMemberProfileBasics(
 /** Store placeholder for encrypted timeline events until decrypt completes (see RoomEvent.Timeline handler). */
 const E2EE_STORE_PLACEHOLDER_CONTENT = '🔒 Message chiffré — clé de récupération requise'
 
-function isEncryptedStorePlaceholder(msg: MessageEvent): boolean {
+export function isEncryptedStorePlaceholder(msg: MessageEvent): boolean {
   return msg.content === E2EE_STORE_PLACEHOLDER_CONTENT
 }
 
