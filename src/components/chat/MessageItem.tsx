@@ -875,20 +875,31 @@ function ImageWithFallback({
   )
 }
 
+function SpoilerBadge() {
+  return (
+    <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      <span className="rounded-full bg-black/70 px-3 py-1 text-xs font-bold uppercase tracking-wide text-white">Spoiler</span>
+    </span>
+  )
+}
+
 function PlainImage({ message }: { message: MessageEvent }) {
   const [fullscreen, setFullscreen] = useState(false)
+  const [revealed, setRevealed] = useState(false)
   if (!message.imageUrl) return null
+  const hidden = !!message.isSpoiler && !revealed
 
   return (
     <>
-      <div className="mt-1 max-w-lg">
+      <div className={hidden ? 'mt-1 max-w-lg relative w-fit overflow-hidden rounded-lg' : 'mt-1 max-w-lg'}>
         <ImageWithFallback
           src={message.imageUrl}
           alt={message.content}
-          className="rounded-lg max-h-80 object-contain cursor-pointer hover:opacity-90 transition-opacity"
+          className={`rounded-lg max-h-80 object-contain cursor-pointer hover:opacity-90 transition-opacity${hidden ? ' blur-2xl' : ''}`}
           loading="lazy"
-          onClick={() => setFullscreen(true)}
+          onClick={() => (hidden ? setRevealed(true) : setFullscreen(true))}
         />
+        {hidden && <SpoilerBadge />}
       </div>
       {fullscreen && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-pointer" onClick={() => setFullscreen(false)}>
@@ -909,6 +920,8 @@ function EncryptedImage({ message }: { message: MessageEvent }) {
   const { url: thumbUrl } = useDecryptedUrl(message.encryptedThumbnailFile)
   const displayUrl = decryptedUrl || thumbUrl
   const [fullscreen, setFullscreen] = useState(false)
+  const [revealed, setRevealed] = useState(false)
+  const hidden = !!message.isSpoiler && !revealed
 
   if (error && !displayUrl) {
     return (
@@ -930,8 +943,9 @@ function EncryptedImage({ message }: { message: MessageEvent }) {
 
   return (
     <>
-      <div className="mt-1 max-w-lg">
-        <ImageWithFallback src={displayUrl} alt={message.content} className="rounded-lg max-h-80 object-contain cursor-pointer hover:opacity-90 transition-opacity" onClick={() => setFullscreen(true)} />
+      <div className={hidden ? 'mt-1 max-w-lg relative w-fit overflow-hidden rounded-lg' : 'mt-1 max-w-lg'}>
+        <ImageWithFallback src={displayUrl} alt={message.content} className={`rounded-lg max-h-80 object-contain cursor-pointer hover:opacity-90 transition-opacity${hidden ? ' blur-2xl' : ''}`} onClick={() => (hidden ? setRevealed(true) : setFullscreen(true))} />
+        {hidden && <SpoilerBadge />}
       </div>
       {fullscreen && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-pointer" onClick={() => setFullscreen(false)}>

@@ -162,6 +162,7 @@ function expandMentions(text: string, members: RoomMember[]): string {
 export function MessageInput() {
   const [text, setText] = useState('')
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
+  const [sendAsSpoiler, setSendAsSpoiler] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [mentionStart, setMentionStart] = useState(0)
@@ -511,10 +512,11 @@ export function MessageInput() {
       sendTyping(activeRoomId, false)
       if (pendingImages.length > 0) {
         for (const image of pendingImages) {
-          await sendImage(activeRoomId, image.file)
+          await sendImage(activeRoomId, image.file, sendAsSpoiler)
           URL.revokeObjectURL(image.previewUrl)
         }
         setPendingImages([])
+        setSendAsSpoiler(false)
       }
       if (msg) {
         setText('')
@@ -527,7 +529,7 @@ export function MessageInput() {
     } finally {
       setIsSending(false)
     }
-  }, [activeRoomId, isSending, pendingImages, pendingReply, setPendingReply, text])
+  }, [activeRoomId, isSending, pendingImages, pendingReply, sendAsSpoiler, setPendingReply, text])
 
   const handleKeyDown = (e: KeyboardEvent) => {
     // Autocomplete navigation takes priority
@@ -691,6 +693,7 @@ export function MessageInput() {
       for (const image of prev) URL.revokeObjectURL(image.previewUrl)
       return []
     })
+    setSendAsSpoiler(false)
   }
 
   useEffect(() => {
@@ -757,6 +760,14 @@ export function MessageInput() {
               Tout retirer
             </button>
           </div>
+          <label className="mb-2 flex w-fit items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={sendAsSpoiler}
+              onChange={(e) => setSendAsSpoiler(e.target.checked)}
+            />
+            Spoiler
+          </label>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {pendingImages.map((image) => (
               <div key={image.id} className="relative shrink-0">

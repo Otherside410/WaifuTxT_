@@ -28,6 +28,7 @@ const OWN_BIO_STORAGE_KEY = 'waifutxt_bio'
 const BANNER_PROFILE_KEY = 'io.waifu.banner'
 const STATUS_MSG_PROFILE_KEY = 'io.waifu.status_msg'
 const BIO_PROFILE_KEY = 'io.waifu.bio'
+const SPOILER_KEY = 'page.codeberg.everypizza.msc4193.spoiler'
 export const MAX_PRESENCE_STATUS_MSG_LEN = 200
 export const MAX_BIO_LEN = 280
 
@@ -1186,6 +1187,7 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
     imageUrl,
     imageInfo,
     thumbnailUrl,
+    isSpoiler: type === 'm.image' && effectiveContent[SPOILER_KEY] === true,
     fileName,
     fileUrl,
     fileSize,
@@ -1798,7 +1800,7 @@ export async function leaveVoiceRoom(roomId: string): Promise<void> {
   syncRooms()
 }
 
-export async function sendImage(roomId: string, file: File): Promise<void> {
+export async function sendImage(roomId: string, file: File, spoiler = false): Promise<void> {
   if (!client) return
   const upload = await client.uploadContent(file)
   await client.sendMessage(roomId, {
@@ -1806,6 +1808,7 @@ export async function sendImage(roomId: string, file: File): Promise<void> {
     body: file.name || 'image.png',
     url: upload.content_uri,
     info: { mimetype: file.type, size: file.size },
+    ...(spoiler ? { [SPOILER_KEY]: true } : {}),
   } as any)
 }
 

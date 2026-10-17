@@ -52,6 +52,7 @@ export interface MessageEvent {
   imageUrl?: string
   imageInfo?: { w: number; h: number; mimetype: string; size: number }
   thumbnailUrl?: string
+  isSpoiler?: boolean
   fileName?: string
   fileUrl?: string
   fileSize?: number
