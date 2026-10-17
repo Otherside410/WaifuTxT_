@@ -444,8 +444,9 @@ function setupAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = true;
 
   const send = (payload) => {
-    // A finished download stays the relevant state until the app restarts.
-    if (status.state === 'downloaded' && payload.state !== 'downloaded') return;
+    // A finished download stays the relevant state until the app restarts,
+    // unless a newer version shows up meanwhile (otherwise it would never be proposed).
+    if (status.state === 'downloaded' && payload.state !== 'downloaded' && !(payload.version && payload.version !== status.version)) return;
     status = payload;
     if (payload.state === 'available' || payload.state === 'not-available') checkedAt = Date.now();
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updater:status', { ...status, checkedAt });
