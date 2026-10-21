@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/authStore'
 import { useVoiceStore } from '../stores/voiceStore'
 import { cleanupVoiceStreams, prepareVoiceMedia, connectVoiceMedia, getActiveLivekitRoom } from './voice'
 import { setupVerificationListeners } from './verification'
+import { encryptRoomKeyFile, decryptRoomKeyFile } from './megolmKeyFile'
 
 type MatrixClient = import('matrix-js-sdk').MatrixClient
 type MatrixEvent = import('matrix-js-sdk').MatrixEvent
@@ -2228,6 +2229,20 @@ export async function restoreKeyBackup(recoveryKey: string): Promise<{ imported:
   }
   const result = await crypto.restoreKeyBackup()
   return { imported: result?.imported ?? 0, total: result?.total ?? 0 }
+}
+
+export async function exportRoomKeysToFile(passphrase: string): Promise<string> {
+  if (!client) throw new Error('Client non initialisé')
+  const crypto = client.getCrypto()
+  if (!crypto) throw new Error('Module crypto non disponible')
+  return encryptRoomKeyFile(await crypto.exportRoomKeysAsJson(), passphrase)
+}
+
+export async function importRoomKeysFromFile(fileContent: string, passphrase: string): Promise<void> {
+  if (!client) throw new Error('Client non initialisé')
+  const crypto = client.getCrypto()
+  if (!crypto) throw new Error('Module crypto non disponible')
+  await crypto.importRoomKeysAsJson(await decryptRoomKeyFile(fileContent, passphrase))
 }
 
 export interface DeviceInfo {

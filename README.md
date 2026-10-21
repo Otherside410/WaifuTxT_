@@ -17,6 +17,7 @@ Client web pour le protocole [Matrix](https://matrix.org), avec une interface in
 - **Authentification Matrix** — identifiant / mot de passe, choix du **homeserver** sur l'écran de connexion + persistance de session optionnelle
 - **Chiffrement de bout en bout (E2EE)** — via `matrix-sdk-crypto-wasm` (crypto Rust)
 - **Restauration de clés** — déchiffrement de l'historique via la clé de récupération (Secret Storage / 4S)
+- **Export / import des clés de salons** — fichier chiffré par phrase secrète, compatible Element (Paramètres → Sécurité)
 - **Vérification croisée** — flux de vérification d'appareils (modal dédiée)
 
 ### Navigation & salons

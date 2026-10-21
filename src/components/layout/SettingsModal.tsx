@@ -16,6 +16,7 @@ import { SteamLinkSettings } from '../settings/SteamLinkSettings'
 import { AppVersionSettings } from '../settings/AppVersionSettings'
 import { CustomizationSettings } from '../settings/CustomizationSettings'
 import { AudioSettings } from '../settings/AudioSettings'
+import { RoomKeysSettings } from '../settings/RoomKeysSettings'
 import { WAIFU_OPTIONS, getWaifuById } from '../../lib/waifu'
 
 const SETTINGS_SECTIONS = [
@@ -326,6 +327,8 @@ function SecuritySection({ onClose }: { onClose: () => void }) {
             </button>
           )}
         </div>
+
+        <RoomKeysSettings />
 
         {/* Sessions list */}
         <div className="space-y-2">
