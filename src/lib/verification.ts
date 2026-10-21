@@ -105,16 +105,30 @@ export async function acceptAndStartSas(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function startSelfVerification(): Promise<void> {
-  const client = getClient()
-  if (!client) return
-  const crypto = client.getCrypto()
-  if (!crypto) return
-
   const store = useVerificationStore.getState()
   store.reset()
+
+  const client = getClient()
+  const crypto = client?.getCrypto()
+  if (!client || !crypto) {
+    store.setError(
+      "Le chiffrement n'est pas initialisé sur cette session. Rechargez la page ou reconnectez-vous.",
+    )
+    return
+  }
   store.setOutgoing()
 
   try {
+    // Make sure our own cross-signing identity is known locally, otherwise the SDK
+    // refuses to send the request and nothing reaches the other devices.
+    const hasKeys = await crypto.userHasCrossSigningKeys(client.getUserId() ?? undefined, true)
+    if (!hasKeys) {
+      store.setError(
+        "Aucune clé de signature croisée n'a été trouvée pour ce compte. Configurez le chiffrement depuis Element (Sécurité et vie privée), puis réessayez.",
+      )
+      return
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const request = await (crypto as any).requestOwnUserVerification()
     activeRequest = request
@@ -136,8 +150,11 @@ export async function startSelfVerification(): Promise<void> {
       }
     })
   } catch (err) {
+    console.warn('[WaifuTxT] Self-verification request failed:', err)
     store.setError(
-      err instanceof Error ? err.message : 'Impossible de démarrer la vérification',
+      err instanceof Error
+        ? `Impossible de démarrer la vérification : ${err.message}`
+        : 'Impossible de démarrer la vérification',
     )
   }
 }
