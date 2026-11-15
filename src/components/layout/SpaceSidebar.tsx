@@ -60,9 +60,22 @@ export function SpaceSidebar() {
     const all = Array.from(rooms.values())
     const spaced = new Set<string>()
     for (const r of all) if (r.isSpace) for (const id of r.children) spaced.add(id)
-    const pool = spaceId === null
-      ? all.filter((r) => !r.isSpace && (r.isDirect || !spaced.has(r.roomId)))
-      : (rooms.get(spaceId)?.children ?? []).map((id) => rooms.get(id)).filter((r): r is NonNullable<typeof r> => !!r && !r.isSpace)
+    let pool: typeof all = []
+    if (spaceId === null) {
+      pool = all.filter((r) => !r.isSpace && (r.isDirect || !spaced.has(r.roomId)))
+    } else {
+      // Descend into sub-spaces (catégories) : leurs salons comptent aussi pour le serveur.
+      const seen = new Set<string>()
+      const walk = (id: string) => {
+        if (seen.has(id)) return
+        seen.add(id)
+        const r = rooms.get(id)
+        if (!r) return
+        if (r.isSpace) r.children.forEach(walk)
+        else pool.push(r)
+      }
+      walk(spaceId)
+    }
     return pool.filter((r) => r.membership === 'join' && (r.unreadCount > 0 || r.mentionCount > 0)).map((r) => r.roomId)
   }
   const openReadMenu = (e: React.MouseEvent, spaceId: string | null) => {

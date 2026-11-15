@@ -28,7 +28,6 @@ export function MarkReadMenu({ menu, onMarkRead, onClose }: MarkReadMenuProps) {
   }, [menu, onClose])
 
   if (!menu) return null
-  const disabled = menu.roomIds.length === 0
   return (
     <div className="fixed inset-0 z-50" onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }}>
       <div
@@ -37,9 +36,8 @@ export function MarkReadMenu({ menu, onMarkRead, onClose }: MarkReadMenuProps) {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <button
-          disabled={disabled}
           onClick={() => { onMarkRead(menu.roomIds); onClose() }}
-          className="w-full px-3 py-1.5 text-left text-sm text-text-primary hover:bg-bg-hover cursor-pointer disabled:opacity-50 disabled:cursor-default disabled:hover:bg-transparent"
+          className="w-full px-3 py-1.5 text-left text-sm text-text-primary hover:bg-bg-hover cursor-pointer"
         >
           Marquer comme lu
         </button>
