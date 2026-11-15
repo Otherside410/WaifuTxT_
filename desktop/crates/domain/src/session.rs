@@ -51,21 +51,25 @@ impl fmt::Debug for LoginRequest {
     }
 }
 
+/// Homeserver utilisé quand le champ est vide (décision produit) : uniquement un repli à la validation,
+/// jamais pré-rempli dans le formulaire.
+pub const FALLBACK_HOMESERVER: &str = "https://matrix.org";
+
 /// Valide les trois champs. Le homeserver est un nom de serveur (`matrix.org`) ou une URL
-/// `http(s)://…` ; l'identifiant et le homeserver sont nettoyés des espaces autour, pas le mot de passe.
+/// `http(s)://…`, vide ou blanc = [`FALLBACK_HOMESERVER`] ; l'identifiant et le homeserver sont nettoyés des espaces autour, pas le mot de passe.
 pub fn validate_login(
     homeserver: &str,
     username: &str,
     password: &str,
 ) -> Result<LoginRequest, ValidationError> {
-    let homeserver = homeserver.trim();
+    let homeserver = match homeserver.trim() {
+        "" => FALLBACK_HOMESERVER,
+        trimmed => trimmed,
+    };
     let username = username.trim();
 
     let err = |field, message| Err(ValidationError { field, message });
 
-    if homeserver.is_empty() {
-        return err(LoginField::Homeserver, "Indique l'adresse de ton homeserver (ex. https://mon-homeserver.exemple).");
-    }
     if homeserver.chars().any(char::is_whitespace) {
         return err(LoginField::Homeserver, "Le homeserver ne doit pas contenir d'espace.");
     }
@@ -115,10 +119,17 @@ mod tests {
 
     #[test]
     fn rejects_empty_fields() {
-        assert_eq!(field_of(validate_login("", "a", "b")), LoginField::Homeserver);
-        assert_eq!(field_of(validate_login("  ", "a", "b")), LoginField::Homeserver);
+        assert_eq!(field_of(validate_login("", "", "b")), LoginField::Username);
         assert_eq!(field_of(validate_login("m.org", "", "b")), LoginField::Username);
         assert_eq!(field_of(validate_login("m.org", "a", "")), LoginField::Password);
+    }
+
+    #[test]
+    fn empty_or_blank_homeserver_falls_back_to_matrix_org() {
+        for blank in ["", "   ", " \t\n"] {
+            let r = validate_login(blank, "alice", "x").expect("valide");
+            assert_eq!(r.homeserver, "https://matrix.org", "{blank:?}");
+        }
     }
 
     #[test]

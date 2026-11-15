@@ -11,6 +11,7 @@ use gpui_kit::*;
 
 /// Homeserver pré-rempli sur un écran neuf : **aucun**. Un domaine public codé en dur ferait partir identifiant
 /// et mot de passe vers un serveur que l'utilisateur n'a pas choisi dès qu'il valide sans y penser.
+/// Le repli sur `https://matrix.org` d'un champ vide se fait à la validation (`domain::validate_login`).
 pub const DEFAULT_HOMESERVER: &str = "";
 
 /// Valeur initiale du champ homeserver : le dernier homeserver utilisé (lu dans le store local par l'appelant)
@@ -47,7 +48,7 @@ impl LoginView {
     /// `last_homeserver` : dernier homeserver utilisé (store local), proposé à la place d'un champ vide.
     pub fn new(window: &mut Window, cx: &mut Context<Self>, last_homeserver: Option<&str>) -> Self {
         let homeserver =
-            cx.new(|cx| InputState::new(window, cx).placeholder("https://mon-homeserver.exemple"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("Homeserver (vide = https://matrix.org)"));
         let initial = initial_homeserver(last_homeserver);
         if !initial.is_empty() {
             homeserver.update(cx, |state, cx| state.set_value(initial, window, cx));
