@@ -96,6 +96,41 @@ pub async fn build_client(homeserver: &str, data_dir: &Path) -> Result<Client> {
     Ok(client)
 }
 
+/// Rouvre le client d'une session **déjà enregistrée**, sans aucun accès réseau.
+///
+/// `homeserver_url` est l'URL **résolue** mémorisée par la connexion (voir [`remember_homeserver`]). On utilise
+/// `ClientBuilder::homeserver_url`, qui n'interroge pas le serveur, et non `server_name_or_homeserver_url` :
+/// ce dernier fait, dans `build()`, une requête de vérification (`/_matrix/client/versions`, et `.well-known`
+/// pour un nom de serveur), donc échoue serveur arrêté alors que la session est sur disque (D5/S1). Le serveur
+/// n'est contacté qu'ensuite, par la boucle de synchronisation, qui réessaie toute seule.
+pub async fn open_stored_client(homeserver_url: &str, data_dir: &Path) -> Result<Client> {
+    let homeserver_url = homeserver_url.trim();
+    if homeserver_url.is_empty() {
+        return Err(MatrixError::InvalidHomeserver);
+    }
+    let dir = session_dir(data_dir);
+    private_dir(&dir)?;
+    let passphrase = store_passphrase(&dir)?;
+
+    let client = Client::builder()
+        .homeserver_url(homeserver_url)
+        .sqlite_store(&dir, Some(&passphrase))
+        .build()
+        .await?;
+    Ok(client)
+}
+
+/// Enregistre la session dans le store chiffré du client (valeur personnalisée), sans la journaliser.
+pub(crate) async fn save_session(client: &Client, session: &MatrixSession) -> Result<()> {
+    let json = serde_json::to_vec(session).map_err(|e| MatrixError::Storage(e.to_string()))?;
+    client
+        .state_store()
+        .set_custom_value(SESSION_KEY, json)
+        .await
+        .map_err(|e| MatrixError::Storage(e.to_string()))?;
+    Ok(())
+}
+
 fn to_session(client: &Client, session: &MatrixSession) -> Session {
     Session {
         user_id: UserId::from(session.meta.user_id.as_str()),
@@ -118,12 +153,7 @@ pub async fn login(client: &Client, user: &str, password: &str) -> Result<Sessio
         .session()
         .ok_or_else(|| MatrixError::Other("session absente après connexion".to_owned()))?;
 
-    let json = serde_json::to_vec(&session).map_err(|e| MatrixError::Storage(e.to_string()))?;
-    client
-        .state_store()
-        .set_custom_value(SESSION_KEY, json)
-        .await
-        .map_err(|e| MatrixError::Storage(e.to_string()))?;
+    save_session(client, &session).await?;
 
     Ok(to_session(client, &session))
 }
@@ -183,12 +213,13 @@ pub async fn sign_in(
     Ok((client, session))
 }
 
-/// Reprise au démarrage : `Ok(None)` s'il n'y a pas de session enregistrée.
+/// Reprise au démarrage : `Ok(None)` s'il n'y a pas de session enregistrée. **Ne touche pas au réseau** :
+/// une session valide sur disque s'ouvre serveur arrêté ; la synchronisation rattrape ensuite (D5/S1).
 pub async fn resume(data_dir: &Path) -> Result<Option<(Client, Session)>> {
     let Some(homeserver) = stored_homeserver(data_dir) else {
         return Ok(None);
     };
-    let client = build_client(&homeserver, data_dir).await?;
+    let client = open_stored_client(&homeserver, data_dir).await?;
     Ok(restore(&client).await?.map(|session| (client, session)))
 }
 
@@ -200,6 +231,60 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("waifu-matrix-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// D5/S1 : une session valide sur disque s'ouvre **serveur injoignable**, vite, avec les salons du store.
+    ///
+    /// Échoue si `resume` repasse par `build_client` (`server_name_or_homeserver_url`) : cette voie contacte le
+    /// serveur avant de restaurer la session, la reprise renverrait `Err` (connexion refusée) et `expect` casserait ;
+    /// avec un serveur muet au lieu de refusé, la durée dépasserait largement le plafond.
+    ///
+    /// Mesure : ouvrir un store chiffré par phrase secrète coûte du **calcul**, pas du réseau (PBKDF2, 200 000
+    /// tours par base : mesuré ~5 s en profil debug, ~0,5 s sans phrase secrète). On mesure donc d'abord ce coût
+    /// incompressible (`open_stored_client` seul, même store) et on exige que la reprise complète n'y ajoute pas
+    /// plus de 2 s : tout accès réseau fautif (délai de connexion, relances) fait exploser cette différence.
+    #[tokio::test]
+    async fn a_stored_session_opens_offline_in_under_two_seconds_with_the_rooms_of_the_store() {
+        use crate::rooms::room_list;
+        use crate::test_support::{seed_store, temp_dir, DEAD_HOMESERVER};
+
+        let dir = temp_dir("resume");
+        seed_store(&dir, DEAD_HOMESERVER).await;
+
+        let started = std::time::Instant::now();
+        drop(open_stored_client(DEAD_HOMESERVER, &dir).await.expect("ouverture du store"));
+        let store_cost = started.elapsed();
+
+        let started = std::time::Instant::now();
+        let (client, session) = resume(&dir)
+            .await
+            .expect("la reprise ne doit pas exiger le réseau")
+            .expect("une session est enregistrée");
+        let elapsed = started.elapsed();
+        let extra = elapsed.saturating_sub(store_cost);
+        assert!(
+            extra < std::time::Duration::from_secs(2),
+            "reprise en {elapsed:?} dont {store_cost:?} de dérivation de clé : {extra:?} de trop (> 2 s)"
+        );
+        assert_eq!(session.user_id.as_str(), "@alice:localhost");
+        assert_eq!(session.homeserver.trim_end_matches('/'), DEAD_HOMESERVER);
+
+        let mut ids: Vec<String> =
+            room_list(&client).await.iter().map(|room| room.id.to_string()).collect();
+        ids.sort();
+        assert_eq!(ids, ["!deux:localhost", "!un:localhost"], "salons du store local");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn without_a_stored_session_resume_still_returns_none_offline() {
+        use crate::test_support::{temp_dir, DEAD_HOMESERVER};
+        let dir = temp_dir("nosession");
+        // Un homeserver mémorisé mais aucune session dans le store : pas de reprise, pas d'erreur réseau.
+        private_dir(&session_dir(&dir)).expect("dossier");
+        write_private(&session_dir(&dir).join(HOMESERVER_FILE), DEAD_HOMESERVER).expect("fichier");
+        assert!(resume(&dir).await.expect("pas d'erreur").is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

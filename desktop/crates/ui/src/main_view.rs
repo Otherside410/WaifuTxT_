@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use domain::{
-    last_read_marker, media_display, prepare_message, read_by_label, sniff_image_format,
+    last_read_marker, ConnectionState, media_display, prepare_message, read_by_label, sniff_image_format,
     typing_label, validate_recovery_key, EventId, EventState, EventVm, FailedAction, ImageKind,
     KeyStatus, MediaDisplay, MediaKind, MediaPayload, MediaStatus, MediaVm, RecoveryKey, RoomId,
     RoomKind, RoomVm, TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle,
@@ -162,6 +162,8 @@ impl MediaRender {
 pub struct MainView {
     user_label: String,
     rooms: RoomsState,
+    /// Liaison avec le serveur : bandeau « connexion » / « hors ligne » tant que ce n'est pas `Online`.
+    connection: ConnectionState,
     timeline: TimelineState,
     scroll: UniformListScrollHandle,
     keys: KeyStatus,
@@ -224,6 +226,7 @@ impl MainView {
         Self {
             user_label,
             rooms: RoomsState::Syncing,
+            connection: ConnectionState::default(),
             timeline: TimelineState::default(),
             scroll: UniformListScrollHandle::new(),
             keys: KeyStatus::Unknown,
@@ -275,6 +278,35 @@ impl MainView {
             self.rooms = RoomsState::Failed(message);
             cx.notify();
         }
+    }
+
+    /// Instantané initial lu dans le store local, avant toute réponse du serveur : on affiche les salons déjà
+    /// connus tout de suite. Un instantané **vide** n'apprend rien (premier démarrage, rien en store) : on garde
+    /// « Synchronisation… » plutôt que d'annoncer « aucun salon ». L'état de connexion n'est jamais dégradé par
+    /// ce message (une réponse du serveur ou une coupure peut déjà avoir été reçue).
+    pub fn apply_local_snapshot(&mut self, rooms: Vec<RoomVm>, keys: KeyStatus, cx: &mut Context<Self>) {
+        if !rooms.is_empty() {
+            self.set_rooms(RoomsState::Ready(rooms), cx);
+        }
+        self.set_key_status(keys, cx);
+    }
+
+    /// Instantané issu d'une réponse du serveur : liste à jour, connexion rétablie (le bandeau disparaît).
+    pub fn apply_server_snapshot(&mut self, rooms: Vec<RoomVm>, keys: KeyStatus, cx: &mut Context<Self>) {
+        self.set_rooms(RoomsState::Ready(rooms), cx);
+        self.set_key_status(keys, cx);
+        self.set_connection(ConnectionState::Online, cx);
+    }
+
+    pub fn set_connection(&mut self, connection: ConnectionState, cx: &mut Context<Self>) {
+        if self.connection != connection {
+            self.connection = connection;
+            cx.notify();
+        }
+    }
+
+    pub fn connection(&self) -> &ConnectionState {
+        &self.connection
     }
 
     pub fn set_key_status(&mut self, keys: KeyStatus, cx: &mut Context<Self>) {
@@ -1615,6 +1647,18 @@ impl Render for MainView {
             .border_r_1()
             .border_color(rgb(BORDER))
             .child(header)
+            .children(self.connection.banner().map(|text| {
+                let offline = matches!(self.connection, ConnectionState::Offline(_));
+                div()
+                    .id("connection-banner")
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(if offline { ERROR } else { TEXT_SECONDARY }))
+                    .child(text.clone())
+                    .test_support()
+                    .aria_label(SharedString::from(text))
+            }))
             .child(div().id("rooms-scroll").flex_1().overflow_y_scroll().child(self.sidebar_body(cx)))
             .child(footer)
             .test_support()

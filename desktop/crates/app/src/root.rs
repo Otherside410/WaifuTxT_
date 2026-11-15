@@ -1,10 +1,10 @@
 //! Racine de l'application : choisit l'écran (reprise, connexion, session ouverte) et câble
 //! les actions utilisateur vers le [`Bridge`].
 
-use domain::{Session, TimelineUpdate};
+use domain::{ConnectionState, Session, TimelineUpdate};
 use gpui_kit::*;
 use matrix::{Client, SyncUpdate, TimelineCommand};
-use ui::{LoginEvent, LoginView, MainEvent, MainView, RoomsState};
+use ui::{LoginEvent, LoginView, MainEvent, MainView};
 
 use crate::bridge::{Bridge, SessionResult, SyncHandle, TimelineHandle};
 
@@ -155,11 +155,15 @@ impl AppRoot {
         cx.spawn_in(window, async move |_, cx| {
             while let Some(update) = updates.recv().await {
                 let alive = weak_main.update(cx, |main, cx| match update {
-                    SyncUpdate::Snapshot { rooms, keys } => {
-                        main.set_key_status(keys, cx);
-                        main.set_rooms(RoomsState::Ready(rooms), cx);
+                    SyncUpdate::Snapshot { rooms, keys, from_server: false } => {
+                        main.apply_local_snapshot(rooms, keys, cx);
                     }
-                    SyncUpdate::Failed(message) => main.set_sync_failure(message, cx),
+                    SyncUpdate::Snapshot { rooms, keys, from_server: true } => {
+                        main.apply_server_snapshot(rooms, keys, cx);
+                    }
+                    SyncUpdate::Failed(message) => {
+                        main.set_connection(ConnectionState::Offline(message), cx);
+                    }
                 });
                 if alive.is_err() {
                     break;

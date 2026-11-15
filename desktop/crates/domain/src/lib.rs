@@ -2,12 +2,14 @@
 
 use std::fmt;
 
+mod connection;
 mod event;
 mod media;
 mod recovery;
 mod room;
 mod session;
 
+pub use connection::ConnectionState;
 pub use event::{
     apply_edit, last_read_marker, merge_events, prepare_message, read_by_label, redact_event,
     typing_label, Applied, EventState, EventVm, FailedAction, MergeOutcome, SendFailure,
