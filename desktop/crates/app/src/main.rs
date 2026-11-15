@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 use bridge::Bridge;
-use root::{AppRoot, Preview};
+use root::AppRoot;
+use ui::MainView;
 
 /// Nom de l'application, utilisé comme titre de fenêtre.
 const APP_TITLE: &str = "WaifuChat";
@@ -43,25 +44,33 @@ fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|dir| dir.join(DATA_DIR_NAME))
 }
 
+/// Argument qui lance l'écran principal en démonstration hors ligne (voir [`MainView::demo`]).
+const DEMO_FLAG: &str = "--demo-ui";
+
 fn main() -> ExitCode {
+    let demo = std::env::args().skip(1).any(|arg| arg == DEMO_FLAG);
+
     if !has_display() {
         eprintln!("{APP_TITLE} : aucun affichage détecté (ni WAYLAND_DISPLAY ni DISPLAY) ; impossible d'ouvrir la fenêtre.");
         return ExitCode::FAILURE;
     }
 
-    let Some(data_dir) = data_dir() else {
-        eprintln!("{APP_TITLE} : dossier de données utilisateur introuvable.");
-        return ExitCode::FAILURE;
-    };
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => Arc::new(runtime),
-        Err(err) => {
-            eprintln!("{APP_TITLE} : impossible de démarrer le runtime réseau : {err}");
+    // Mode démo : ni runtime réseau, ni dossier de données, ni client Matrix.
+    let bridge = if demo {
+        None
+    } else {
+        let Some(data_dir) = data_dir() else {
+            eprintln!("{APP_TITLE} : dossier de données utilisateur introuvable.");
             return ExitCode::FAILURE;
+        };
+        match tokio::runtime::Runtime::new() {
+            Ok(runtime) => Some(Bridge::new(Arc::new(runtime), data_dir)),
+            Err(err) => {
+                eprintln!("{APP_TITLE} : impossible de démarrer le runtime réseau : {err}");
+                return ExitCode::FAILURE;
+            }
         }
     };
-    let bridge = Bridge::new(Arc::clone(&runtime), data_dir);
-    let preview = Preview::from_env();
 
     let failed = Arc::new(AtomicBool::new(false));
     let failed_in_app = Arc::clone(&failed);
@@ -79,7 +88,18 @@ fn main() -> ExitCode {
             ..Default::default()
         };
 
-        if let Err(err) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| AppRoot::new(bridge, preview, window, cx))) {
+        let opened = match bridge {
+            Some(bridge) => gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| AppRoot::new(bridge, window, cx))
+            })
+            .map(|_| ()),
+            None => gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| MainView::demo(window, cx))
+            })
+            .map(|_| ()),
+        };
+
+        if let Err(err) = opened {
             eprintln!("{APP_TITLE} : impossible d'ouvrir la fenêtre : {err:#}");
             failed_in_app.store(true, Ordering::SeqCst);
             cx.quit();

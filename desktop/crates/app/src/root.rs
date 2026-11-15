@@ -1,7 +1,7 @@
 //! Racine de l'application : choisit l'écran (reprise, connexion, session ouverte) et câble
 //! les actions utilisateur vers le [`Bridge`].
 
-use domain::{KeyStatus, RoomId, RoomKind, RoomVm, Session};
+use domain::Session;
 use gpui_kit::*;
 use matrix::{Client, SyncUpdate};
 use ui::{LoginEvent, LoginView, MainEvent, MainView, RoomsState};
@@ -11,50 +11,11 @@ use crate::bridge::{Bridge, SessionResult, SyncHandle};
 const BACKGROUND: u32 = 0x0b0b12;
 const TEXT_SECONDARY: u32 = 0x8888a8;
 
-/// Aperçu sans compte (build debug seulement, variable `WAIFU_PREVIEW`) : sert à vérifier l'écran
-/// principal quand aucun identifiant n'est disponible. Aucune donnée réelle, aucun réseau.
-#[derive(Clone, Copy)]
-pub enum Preview {
-    /// Écran principal, liste en « Synchronisation… ».
-    Syncing,
-    /// Idem + modal de clé de récupération ouvert.
-    Recovery,
-    /// Liste de salons fictifs, un salon sélectionné.
-    Rooms,
-}
-
-impl Preview {
-    pub fn from_env() -> Option<Self> {
-        if !cfg!(debug_assertions) {
-            return None;
-        }
-        match std::env::var("WAIFU_PREVIEW").ok()?.as_str() {
-            "syncing" => Some(Self::Syncing),
-            "recovery" => Some(Self::Recovery),
-            "rooms" => Some(Self::Rooms),
-            _ => None,
-        }
-    }
-}
-
-fn demo_rooms() -> Vec<RoomVm> {
-    let room = |id: &str, name: &str, kind, unread| RoomVm::new(RoomId::from(id), name, kind, unread);
-    vec![
-        room("!demo-s1:demo", "Démo Serveur", RoomKind::Space, 0),
-        room("!demo-r1:demo", "général", RoomKind::Room, 3),
-        room("!demo-r2:demo", "musique", RoomKind::Room, 0),
-        room("!demo-r3:demo", "annonces importantes", RoomKind::Room, 120),
-        room("!demo-d1:demo", "Alice Demo", RoomKind::Dm, 1),
-    ]
-}
-
 enum Screen {
     /// Reprise de session en cours.
     Restoring,
     SignedOut(Entity<LoginView>),
     SignedIn { client: Client, main: Entity<MainView>, _sync: SyncHandle },
-    /// Aperçu sans client (voir [`Preview`]).
-    Preview(Entity<MainView>),
 }
 
 pub struct AppRoot {
@@ -63,16 +24,8 @@ pub struct AppRoot {
 }
 
 impl AppRoot {
-    pub fn new(
-        bridge: Bridge,
-        preview: Option<Preview>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(bridge: Bridge, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let this = Self { bridge, screen: Screen::Restoring };
-        if let Some(preview) = preview {
-            return Self { screen: Self::preview_screen(preview, window, cx), ..this };
-        }
         let receiver = this.bridge.resume();
         cx.spawn_in(window, async move |this, cx| {
             let outcome = receiver.await.unwrap_or_else(|_| Err("tâche interrompue".to_owned()));
@@ -85,23 +38,6 @@ impl AppRoot {
         })
         .detach();
         this
-    }
-
-    fn preview_screen(preview: Preview, window: &mut Window, cx: &mut Context<Self>) -> Screen {
-        let main = cx.new(|cx| MainView::new("@demo:aperçu (aperçu)".to_owned(), window, cx));
-        main.update(cx, |view, cx| match preview {
-            Preview::Syncing => {}
-            Preview::Recovery => {
-                view.set_key_status(KeyStatus::Needed, cx);
-                view.open_recovery(cx);
-            }
-            Preview::Rooms => {
-                view.set_key_status(KeyStatus::Needed, cx);
-                view.set_rooms(RoomsState::Ready(demo_rooms()), cx);
-                view.select(RoomId::from("!demo-r1:demo"), cx);
-            }
-        });
-        Screen::Preview(main)
     }
 
     /// Ouvre l'écran principal : démarre la synchronisation de fond et en écoute les instantanés.
@@ -217,7 +153,7 @@ impl Render for AppRoot {
                 .child("Chargement…")
                 .into_any_element(),
             Screen::SignedOut(login) => base.child(login.clone()).into_any_element(),
-            Screen::SignedIn { main, .. } | Screen::Preview(main) => {
+            Screen::SignedIn { main, .. } => {
                 base.child(main.clone()).into_any_element()
             }
         }

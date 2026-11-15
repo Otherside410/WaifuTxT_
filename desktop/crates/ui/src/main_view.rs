@@ -67,6 +67,8 @@ pub struct MainView {
     keys: KeyStatus,
     modal: ModalState,
     key_input: Entity<InputState>,
+    /// Mode `--demo-ui` : aucune connexion, la saisie de clé n'est jamais transmise.
+    demo: bool,
 }
 
 impl EventEmitter<MainEvent> for MainView {}
@@ -89,7 +91,19 @@ impl MainView {
             keys: KeyStatus::Unknown,
             modal: ModalState::default(),
             key_input,
+            demo: false,
         }
+    }
+
+    /// Écran de démonstration hors ligne : 3 salons factices (espace, salon, DM) et le modal de clé
+    /// de récupération ouvert. Aucun client, aucun réseau.
+    pub fn demo(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::new("@demo:hors-ligne".to_owned(), window, cx);
+        view.rooms = RoomsState::Ready(demo_rooms());
+        view.keys = KeyStatus::Needed;
+        view.modal.open();
+        view.demo = true;
+        view
     }
 
     pub fn set_rooms(&mut self, rooms: RoomsState, cx: &mut Context<Self>) {
@@ -161,6 +175,9 @@ impl MainView {
         }
         let typed = self.key_input.read(cx).value();
         match validate_recovery_key(&typed) {
+            Ok(_) if self.demo => {
+                self.modal.fail("Mode démonstration : aucune connexion.".to_owned());
+            }
             Ok(key) => {
                 self.modal.start();
                 self.key_input.update(cx, |state, cx| state.set_disabled(true, cx));
@@ -180,10 +197,12 @@ impl MainView {
     fn room_row(&self, index: usize, room: &RoomVm, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected.as_ref() == Some(&room.id);
         let id = room.id.clone();
+        let row_id = SharedString::from(format!("room-{index}"));
+        let accessible_name = SharedString::from(room.name.clone());
         let badge_text = if room.unread > 99 { "99+".to_owned() } else { room.unread.to_string() };
 
         div()
-            .id(("room", index))
+            .id(row_id)
             .flex()
             .items_center()
             .gap_2()
@@ -223,6 +242,8 @@ impl MainView {
                     .text_color(rgb(TEXT))
                     .child(badge_text)
             }))
+            .test_support()
+            .aria_label(accessible_name)
     }
 
     fn section_title(label: &'static str) -> impl IntoElement {
@@ -232,10 +253,13 @@ impl MainView {
     fn sidebar_body(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.rooms {
             RoomsState::Syncing => div()
+                .id("rooms-state")
                 .p_3()
                 .text_sm()
                 .text_color(rgb(TEXT_SECONDARY))
                 .child("Synchronisation…")
+                .test_support()
+                .aria_label("Synchronisation…")
                 .into_any_element(),
             RoomsState::Failed(message) => div()
                 .p_3()
@@ -276,6 +300,7 @@ impl MainView {
         let error = error.clone();
         Some(
             div()
+                .id("recovery-modal")
                 .absolute()
                 .size_full()
                 .bg(rgba(0x000000b0))
@@ -298,7 +323,7 @@ impl MainView {
                             "Saisis ta clé de récupération pour déchiffrer l'historique de tes salons. \
                              Elle n'est jamais enregistrée.",
                         ))
-                        .child(Input::new(&self.key_input))
+                        .child(Input::new(&self.key_input).id("recovery-key"))
                         .children(
                             error.map(|m| div().text_sm().text_color(rgb(ERROR)).child(m)),
                         )
@@ -325,6 +350,8 @@ impl MainView {
                                 ),
                         ),
                 )
+                .test_support()
+                .aria_label("Restaurer les clés")
                 .into_any_element(),
         )
     }
@@ -355,6 +382,7 @@ impl Render for MainView {
         );
 
         let sidebar = div()
+            .id("sidebar")
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .flex()
@@ -364,7 +392,9 @@ impl Render for MainView {
             .border_color(rgb(BORDER))
             .child(header)
             .child(div().id("rooms-scroll").flex_1().overflow_y_scroll().child(self.sidebar_body(cx)))
-            .child(footer);
+            .child(footer)
+            .test_support()
+            .aria_label("Salons");
 
         let selected_name = match (&self.selected, &self.rooms) {
             (Some(id), RoomsState::Ready(rooms)) => {
@@ -393,4 +423,14 @@ impl Render for MainView {
             .child(center)
             .children(self.recovery_modal(cx))
     }
+}
+
+/// Salons factices du mode démonstration : un espace, un salon, un DM.
+fn demo_rooms() -> Vec<RoomVm> {
+    let room = |id: &str, name: &str, kind, unread| RoomVm::new(RoomId::from(id), name, kind, unread);
+    vec![
+        room("!demo-space:demo", "Démo Serveur", RoomKind::Space, 0),
+        room("!demo-room:demo", "général", RoomKind::Room, 3),
+        room("!demo-dm:demo", "Alice Demo", RoomKind::Dm, 1),
+    ]
 }
