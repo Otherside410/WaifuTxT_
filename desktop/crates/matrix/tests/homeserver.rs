@@ -993,8 +993,8 @@ async fn delete_server_backup(client: &Client) {
 /// Restauration des clés par clé de récupération (générée par le test, jamais affichée) sur un nouvel appareil.
 ///
 /// `explicit_download` : après `matrix::recover`, demande aussi explicitement au SDK de télécharger les clés de la
-/// sauvegarde pour le salon. Sans cela, le message antérieur reste indéchiffrable : voir D-W05-3 dans
-/// `.design/RAPPORT-W05-etape2-couverture.md` (`BackupDownloadStrategy` par défaut = `Manual`, jamais réglée par le client).
+/// sauvegarde pour le salon. Garantie de non-régression de T10b : si le réglage `OneShot` du client disparaissait,
+/// T10b redeviendrait rouge alors que T10c (téléchargement explicite) resterait vert (D-W05-3).
 async fn recovery_scenario(explicit_download: bool) {
     use domain::KeyStatus;
     let (alice_account, bob_account) = credentials();
@@ -1077,15 +1077,12 @@ async fn recovery_scenario(explicit_download: bool) {
     bob_sync.stop().await;
 }
 
-/// T10b — **défaut connu D-W05-3** : `matrix::recover` seul ne rend pas un message antérieur (le client ne règle pas
-///        `BackupDownloadStrategy`). N'est exécuté que si `WAIFU_IT_KNOWN_DEFECTS=1` (rouge tant que non corrigé).
+/// T10b — D-W05-3 (corrigé) : `matrix::recover` seul rend un message antérieur sur un nouvel appareil, sans autre appel :
+///        le client règle `BackupDownloadStrategy::OneShot`, le SDK télécharge les clés de la sauvegarde dès que sa clé
+///        est importée du Secret Storage.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "exige un homeserver : WAIFU_IT_HOMESERVER=http://127.0.0.1:8008 puis --ignored"]
 async fn the_recovery_key_alone_unlocks_an_earlier_message_on_a_new_device() {
-    if std::env::var_os("WAIFU_IT_KNOWN_DEFECTS").is_none() {
-        println!("[T10b] défaut connu D-W05-3 : test sauté (WAIFU_IT_KNOWN_DEFECTS=1 pour l'exécuter, rouge tant que non corrigé)");
-        return;
-    }
     recovery_scenario(false).await;
 }
 

@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use domain::{Session, UserId};
 use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::Client;
 
 use crate::error::{MatrixError, Result};
@@ -46,6 +47,17 @@ pub(crate) async fn enable_event_cache(client: &Client) -> Result<()> {
         .event_cache()
         .subscribe()
         .map_err(|err| MatrixError::from(matrix_sdk::Error::from(err)))
+}
+
+/// Réglages de chiffrement communs aux deux constructeurs de client (D-W05-3).
+///
+/// `BackupDownloadStrategy::OneShot` : dès que la clé de la sauvegarde est reçue (importée du Secret Storage par
+/// `recover`), le SDK télécharge **toutes** les clés de la sauvegarde, donc l'historique antérieur redevient lisible.
+/// Le défaut du SDK (matrix-sdk 0.19.1) est `Manual` : `recover` réussissait mais aucune clé n'était téléchargée.
+/// Les autres réglages gardent leur valeur par défaut (pas d'amorçage automatique de la signature croisée ni de
+/// création automatique de sauvegarde).
+fn encryption_settings() -> EncryptionSettings {
+    EncryptionSettings { backup_download_strategy: BackupDownloadStrategy::OneShot, ..EncryptionSettings::default() }
 }
 
 fn session_dir(data_dir: &Path) -> PathBuf {
@@ -113,6 +125,7 @@ pub async fn build_client(homeserver: &str, data_dir: &Path) -> Result<Client> {
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver)
         .sqlite_store(&dir, Some(&passphrase))
+        .with_encryption_settings(encryption_settings())
         .build()
         .await?;
     Ok(client)
@@ -137,6 +150,7 @@ pub async fn open_stored_client(homeserver_url: &str, data_dir: &Path) -> Result
     let client = Client::builder()
         .homeserver_url(homeserver_url)
         .sqlite_store(&dir, Some(&passphrase))
+        .with_encryption_settings(encryption_settings())
         .build()
         .await?;
     Ok(client)
@@ -326,6 +340,29 @@ mod tests {
         client.event_cache().subscribe().expect("l'appel direct du SDK reste un succès");
         assert!(client.event_cache().has_subscribed());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// D-W05-3 : la stratégie de téléchargement des clés de sauvegarde est `OneShot`, sur les DEUX constructeurs.
+    ///
+    /// Limite assumée : `matrix-sdk` 0.19.1 ne permet pas de relire les réglages d'un client construit
+    /// (`Encryption::settings` est `pub(crate)`). Le test vérifie donc (1) la valeur de `encryption_settings()` et
+    /// (2) que `build_client` et `open_stored_client` l'appellent chacun, en lisant le code de ce fichier. Il échoue
+    /// si l'un des deux appels est retiré ou si la valeur change ; le comportement réel est couvert par le test
+    /// d'intégration `the_recovery_key_alone_unlocks_an_earlier_message_on_a_new_device`.
+    #[test]
+    fn both_client_constructors_download_backed_up_room_keys_one_shot() {
+        let settings = encryption_settings();
+        assert_eq!(settings.backup_download_strategy, BackupDownloadStrategy::OneShot);
+        assert!(!settings.auto_enable_backups && !settings.auto_enable_cross_signing, "les autres réglages restent au défaut");
+
+        let source = include_str!("client.rs");
+        // Le motif est assemblé pour ne pas se retrouver lui-même dans le texte de ce test.
+        let call = [".with_encryption_", "settings(encryption_settings())"].concat();
+        let start = |name: &str| source.find(&format!("pub async fn {name}(")).unwrap_or_else(|| panic!("{name} introuvable"));
+        let (build, open, save) = (start("build_client"), start("open_stored_client"), source.find("pub(crate) async fn save_session").expect("save_session"));
+        assert!(build < open && open < save, "ordre des fonctions inattendu dans client.rs");
+        assert_eq!(source[build..open].matches(&call).count(), 1, "`build_client` doit régler `OneShot`");
+        assert_eq!(source[open..save].matches(&call).count(), 1, "`open_stored_client` doit régler `OneShot`");
     }
 
     #[tokio::test]
