@@ -9,8 +9,8 @@
 //!
 //! Les comptes `alice` et `bob` sont lus dans un fichier `clé=valeur` (`alice_user`, `alice_password`,
 //! `bob_user`, `bob_password`) : `WAIFU_IT_CREDENTIALS`, sinon `~/matrix-test/CREDENTIALS.txt`. Aucun mot de passe
-//! n'est écrit dans le dépôt, ni affiché. Fixture de média : `WAIFU_IT_FIXTURE`, sinon
-//! `~/matrix-test/fixtures/recette.png`. Chaque test crée ses propres salons et ses propres stores (répertoires
+//! n'est écrit dans le dépôt, ni affiché. Le média du test 4 est un PNG 8×4 généré par le test (aucun fichier binaire
+//! versé). Chaque test crée ses propres salons et ses propres stores (répertoires
 //! temporaires) ; rien n'est supposé de l'état du serveur.
 
 use std::collections::HashMap;
@@ -64,12 +64,52 @@ fn credentials() -> (Account, Account) {
     )
 }
 
-fn fixture() -> (PathBuf, Vec<u8>) {
-    let path = std::env::var_os("WAIFU_IT_FIXTURE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").expect("HOME")).join("matrix-test/fixtures/recette.png"));
-    let bytes = std::fs::read(&path).unwrap_or_else(|_| panic!("fixture illisible : {}", path.display()));
-    (path, bytes)
+/// PNG RVB valide de `width`×`height` (dégradé, deflate sans compression) : des dimensions connues, sans fichier versé.
+fn test_png(width: u32, height: u32) -> Vec<u8> {
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffff_u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            }
+        }
+        !crc
+    }
+    fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        let body: Vec<u8> = kind.iter().chain(data).copied().collect();
+        out.extend(&body);
+        out.extend(crc32(&body).to_be_bytes());
+        out
+    }
+    let mut raw = Vec::new();
+    for y in 0..height {
+        raw.push(0); // filtre « aucun »
+        for x in 0..width {
+            raw.extend([(x * 31 % 256) as u8, (y * 63 % 256) as u8, ((x + y) * 17 % 256) as u8]);
+        }
+    }
+    let (mut a, mut b) = (1_u32, 0_u32);
+    for byte in &raw {
+        a = (a + u32::from(*byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    let len = raw.len() as u16;
+    let mut zlib = vec![0x78, 0x01, 0x01];
+    zlib.extend(len.to_le_bytes());
+    zlib.extend((!len).to_le_bytes());
+    zlib.extend(&raw);
+    zlib.extend(((b << 16) | a).to_be_bytes());
+
+    let mut ihdr = width.to_be_bytes().to_vec();
+    ihdr.extend(height.to_be_bytes());
+    ihdr.extend([8, 2, 0, 0, 0]);
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    png.extend(chunk(b"IHDR", &ihdr));
+    png.extend(chunk(b"IDAT", &zlib));
+    png.extend(chunk(b"IEND", &[]));
+    png
 }
 
 fn md5_hex(bytes: &[u8]) -> String {
@@ -445,11 +485,15 @@ async fn a_message_received_while_stopped_shows_up_in_the_timeline() {
 #[ignore = "exige un homeserver : WAIFU_IT_HOMESERVER=http://127.0.0.1:8008 puis --ignored"]
 async fn an_encrypted_attachment_downloads_with_the_same_md5() {
     let (alice_account, bob_account) = credentials();
-    let (path, source) = fixture();
+    let source = test_png(8, 4);
     let source_md5 = md5_hex(&source);
     let (alice_dir, bob_dir) = (tempfile::tempdir().expect("tempdir"), tempfile::tempdir().expect("tempdir"));
     let (alice, bob) = (sign_in(&alice_account, alice_dir.path()).await, sign_in(&bob_account, bob_dir.path()).await);
     let room = encrypted_room(&alice, &bob).await;
+    let path = alice_dir.path().join("w05-8x4.png");
+    std::fs::write(&path, &source).expect("écriture du PNG de test");
+    let on_disk = std::fs::metadata(&path).expect("métadonnées").len();
+    assert_eq!(on_disk, source.len() as u64);
 
     let (alice_sync, bob_sync) = (Sync::start(&alice), Sync::start(&bob));
     let alice_tl = Timeline::start(&alice, &room);
@@ -463,9 +507,10 @@ async fn an_encrypted_attachment_downloads_with_the_same_md5() {
         .await;
     let media = seen.iter().filter_map(|e| e.media.as_ref()).find(|m| m.filename == file_name).expect("média").clone();
     assert!(media.encrypted, "la pièce jointe d'un salon chiffré doit l'être");
-    // Constat W05 : le client n'annonce pas `info.size` à l'envoi (AttachmentConfig::default) → `size` reste `None`
-    // chez le destinataire. On vérifie seulement qu'une valeur déclarée, si présente, est juste.
-    assert!(media.size.is_none_or(|declared| declared == source.len() as u64), "taille déclarée fausse : {:?}", media.size);
+    // C-W05-2 : l'en-tête `info` de l'événement porte la taille du fichier envoyé et les dimensions de l'image.
+    assert_eq!(media.size, Some(on_disk), "info.size ≠ taille du fichier envoyé");
+    assert_eq!((media.width, media.height), (Some(8), Some(4)), "info.w/h ≠ dimensions du PNG envoyé");
+    assert_eq!(media.mime.as_deref(), Some("image/png"));
 
     let bytes = bob_tl.until_media(&media.key).await;
     let elapsed = started.elapsed();

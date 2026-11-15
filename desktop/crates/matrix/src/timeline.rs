@@ -18,6 +18,7 @@ use matrix_sdk::ruma::events::room::message::{
 };
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::{EventId as SdkEventId, RoomId as SdkRoomId, UserId as SdkUserId};
+use matrix_sdk::attachment::{AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
     AttachmentConfig, EventSendState, MsgLikeKind, RoomExt, TimelineDetails, TimelineEventItemId, TimelineItem,
@@ -107,14 +108,54 @@ impl ImageFetcher {
     }
 }
 
-/// Vérifie le fichier à envoyer (lisible, régulier, pas trop gros) et devine son type MIME.
-async fn prepare_attachment(path: &std::path::Path) -> Result<mime::Mime, String> {
+/// Ce que l'on sait d'un fichier avant de l'envoyer : de quoi remplir l'en-tête `info` de l'événement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedAttachment {
+    mime: mime::Mime,
+    /// Taille du fichier en octets (celle du disque, déjà contrôlée par `check_upload`).
+    size: u64,
+    /// Largeur × hauteur d'une image, lues dans l'en-tête du fichier ; `None` si inconnues.
+    dimensions: Option<(u32, u32)>,
+}
+
+/// Vérifie le fichier à envoyer (lisible, régulier, pas trop gros), devine son type MIME et relève sa taille et,
+/// pour une image, ses dimensions. Une image dont l'en-tête est illisible part quand même, avec sa taille seule.
+async fn prepare_attachment(path: &std::path::Path) -> Result<PreparedAttachment, String> {
     let meta = tokio::fs::metadata(path).await.map_err(|_| "Fichier illisible.".to_owned())?;
     if !meta.is_file() {
         return Err("Ce n'est pas un fichier.".to_owned());
     }
     check_upload(meta.len())?;
-    Ok(mime_for(path))
+    let mime = mime_for(path);
+    let dimensions = if mime.type_() == mime::IMAGE {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || image_dimensions(&path)).await.ok().flatten()
+    } else {
+        None
+    };
+    Ok(PreparedAttachment { mime, size: meta.len(), dimensions })
+}
+
+/// Dimensions d'une image (png, jpeg, gif, webp) lues dans l'en-tête du fichier, sans décoder l'image.
+fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    let size = imagesize::size(path).ok()?;
+    Some((u32::try_from(size.width).ok()?, u32::try_from(size.height).ok()?))
+}
+
+/// En-tête `info` de l'événement, selon le type MIME. Un champ inconnu reste `None` : rien n'est inventé.
+fn attachment_info(prepared: &PreparedAttachment) -> AttachmentInfo {
+    let size = matrix_sdk::ruma::UInt::new(prepared.size);
+    let dimension = |value: u32| Some(matrix_sdk::ruma::UInt::from(value));
+    let (width, height) = match prepared.dimensions {
+        Some((w, h)) => (dimension(w), dimension(h)),
+        None => (None, None),
+    };
+    match prepared.mime.type_() {
+        mime::IMAGE => AttachmentInfo::Image(BaseImageInfo { height, width, size, blurhash: None, is_animated: None }),
+        mime::VIDEO => AttachmentInfo::Video(BaseVideoInfo { duration: None, height: None, width: None, size, blurhash: None }),
+        mime::AUDIO => AttachmentInfo::Audio(BaseAudioInfo { duration: None, size, waveform: None }),
+        _ => AttachmentInfo::File(BaseFileInfo { size }),
+    }
 }
 
 fn uint_u64(value: Option<matrix_sdk::ruma::UInt>) -> Option<u64> {
@@ -495,10 +536,9 @@ pub async fn run_timeline(
                 Some(TimelineCommand::SendAttachment(path)) => {
                     let shown = path.to_string_lossy().into_owned();
                     match prepare_attachment(&path).await {
-                        Ok(mime) => {
-                            let sent = timeline
-                                .send_attachment(path.clone(), mime, AttachmentConfig::default())
-                                .await;
+                        Ok(prepared) => {
+                            let config = AttachmentConfig { info: Some(attachment_info(&prepared)), ..Default::default() };
+                            let sent = timeline.send_attachment(path.clone(), prepared.mime, config).await;
                             if let Err(err) = sent {
                                 attach_failed(shown, format!("Envoi de la pièce jointe impossible : {err}"));
                             }
@@ -542,6 +582,91 @@ mod tests {
     use chrono::{FixedOffset, Utc};
 
     use super::*;
+
+    /// PNG minimal en mémoire : signature + chunk IHDR (l'en-tête suffit, rien n'est décodé).
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+        bytes.extend(width.to_be_bytes());
+        bytes.extend(height.to_be_bytes());
+        bytes.extend([8, 2, 0, 0, 0, 0, 0, 0, 0]); // profondeur, type, compression, filtre, entrelacement, CRC
+        bytes
+    }
+
+    fn write_temp(name: &str, bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("dossier temporaire");
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("écriture");
+        (dir, path)
+    }
+
+    #[test]
+    fn image_dimensions_are_read_from_the_png_header() {
+        let (_dir, path) = write_temp("a.png", &png_header(8, 4));
+        assert_eq!(image_dimensions(&path), Some((8, 4)));
+    }
+
+    #[test]
+    fn unreadable_image_headers_give_no_dimensions() {
+        let (_dir, path) = write_temp("b.png", b"ceci n'est pas une image");
+        assert_eq!(image_dimensions(&path), None);
+        assert_eq!(image_dimensions(std::path::Path::new("/inexistant/c.png")), None);
+    }
+
+    #[tokio::test]
+    async fn prepare_attachment_reports_mime_size_and_dimensions_of_an_image() {
+        let bytes = png_header(8, 4);
+        let (_dir, path) = write_temp("d.png", &bytes);
+        let prepared = prepare_attachment(&path).await.expect("fichier valide");
+        assert_eq!(prepared, PreparedAttachment { mime: mime::IMAGE_PNG, size: bytes.len() as u64, dimensions: Some((8, 4)) });
+    }
+
+    #[tokio::test]
+    async fn an_image_with_a_broken_header_is_still_sent_with_its_size_only() {
+        let (_dir, path) = write_temp("e.png", b"pas un png");
+        let prepared = prepare_attachment(&path).await.expect("l'envoi n'est pas bloqué");
+        assert_eq!((prepared.size, prepared.dimensions), (10, None));
+        match attachment_info(&prepared) {
+            AttachmentInfo::Image(info) => {
+                assert_eq!(info.size.map(u64::from), Some(10));
+                assert_eq!((info.width, info.height), (None, None), "aucune dimension inventée");
+            }
+            other => panic!("attendu une image, obtenu {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_attachment_still_refuses_what_check_upload_refuses() {
+        assert!(prepare_attachment(std::path::Path::new("/inexistant/f.png")).await.is_err());
+        let dir = tempfile::tempdir().expect("dossier temporaire");
+        assert!(prepare_attachment(dir.path()).await.is_err(), "un dossier n'est pas un fichier");
+    }
+
+    #[test]
+    fn the_info_header_follows_the_mime_type_and_never_invents_a_field() {
+        let prepared = |mime: mime::Mime, dimensions| PreparedAttachment { mime, size: 1234, dimensions };
+        let size = |value: Option<matrix_sdk::ruma::UInt>| value.map(u64::from);
+        let dim = |value: Option<matrix_sdk::ruma::UInt>| value.map(u64::from);
+
+        match attachment_info(&prepared(mime::IMAGE_PNG, Some((8, 4)))) {
+            AttachmentInfo::Image(i) => assert_eq!((size(i.size), dim(i.width), dim(i.height)), (Some(1234), Some(8), Some(4))),
+            other => panic!("image attendue : {other:?}"),
+        }
+        // Vidéo : taille seulement (dimensions et durée inconnues, jamais déduites).
+        match attachment_info(&prepared("video/mp4".parse().expect("mime"), Some((8, 4)))) {
+            AttachmentInfo::Video(i) => {
+                assert_eq!((size(i.size), dim(i.width), dim(i.height), i.duration), (Some(1234), None, None, None));
+            }
+            other => panic!("vidéo attendue : {other:?}"),
+        }
+        match attachment_info(&prepared("audio/ogg".parse().expect("mime"), None)) {
+            AttachmentInfo::Audio(i) => assert_eq!((size(i.size), i.duration), (Some(1234), None)),
+            other => panic!("audio attendu : {other:?}"),
+        }
+        match attachment_info(&prepared(mime::APPLICATION_OCTET_STREAM, None)) {
+            AttachmentInfo::File(i) => assert_eq!(size(i.size), Some(1234)),
+            other => panic!("fichier attendu : {other:?}"),
+        }
+    }
 
     #[test]
     fn time_label_uses_the_given_zone() {

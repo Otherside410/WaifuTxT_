@@ -16,6 +16,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1"
 getrandom = "0.3"
 thiserror = "2"
+# Dimensions des images à l'envoi : lecture de l'en-tête seulement (pas de décodage).
+imagesize = { version = "0.14", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }

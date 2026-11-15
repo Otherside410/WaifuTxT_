@@ -5132,6 +5132,7 @@ dependencies = [
  "domain",
  "futures-util",
  "getrandom 0.3.4",
+ "imagesize 0.14.0",
  "matrix-sdk",
  "matrix-sdk-ui",
  "md-5",
