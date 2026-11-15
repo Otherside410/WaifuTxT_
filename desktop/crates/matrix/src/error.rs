@@ -17,6 +17,8 @@ pub enum MatrixError {
     RateLimited,
     #[error("Réponse inattendue du serveur : ce n'est peut-être pas un homeserver Matrix.")]
     BadServerResponse,
+    #[error("Clé de récupération incorrecte ou illisible.")]
+    InvalidRecoveryKey,
     #[error("Stockage local inutilisable : {0}")]
     Storage(String),
     #[error("Erreur inattendue : {0}")]

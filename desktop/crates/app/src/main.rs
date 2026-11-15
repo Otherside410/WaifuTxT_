@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 use bridge::Bridge;
-use root::AppRoot;
+use root::{AppRoot, Preview};
 
 /// Nom de l'application, utilisé comme titre de fenêtre.
 const APP_TITLE: &str = "WaifuChat";
@@ -61,6 +61,7 @@ fn main() -> ExitCode {
         }
     };
     let bridge = Bridge::new(Arc::clone(&runtime), data_dir);
+    let preview = Preview::from_env();
 
     let failed = Arc::new(AtomicBool::new(false));
     let failed_in_app = Arc::clone(&failed);
@@ -78,7 +79,7 @@ fn main() -> ExitCode {
             ..Default::default()
         };
 
-        if let Err(err) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| AppRoot::new(bridge, window, cx))) {
+        if let Err(err) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| AppRoot::new(bridge, preview, window, cx))) {
             eprintln!("{APP_TITLE} : impossible d'ouvrir la fenêtre : {err:#}");
             failed_in_app.store(true, Ordering::SeqCst);
             cx.quit();

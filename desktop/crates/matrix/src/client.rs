@@ -153,16 +153,21 @@ pub async fn restore(client: &Client) -> Result<Option<Session>> {
     Ok(Some(to_session(client, &session)))
 }
 
-/// Déconnecte côté serveur (échec réseau toléré) puis purge la session locale de `data_dir`.
-pub async fn logout(client: &Client, data_dir: &Path) -> Result<()> {
-    // Hors ligne ou jeton déjà invalide : on purge quand même le local.
-    let _ = client.matrix_auth().logout().await;
-    let dir = session_dir(data_dir);
-    match fs::remove_dir_all(&dir) {
+/// Supprime la session locale : store SQLite (état **et clés E2EE locales**), phrase secrète du store
+/// et homeserver mémorisé. Sans effet si rien n'existe.
+pub fn purge_local_session(data_dir: &Path) -> Result<()> {
+    match fs::remove_dir_all(session_dir(data_dir)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Déconnecte côté serveur (échec réseau toléré) puis purge la session locale, clés comprises.
+pub async fn logout(client: &Client, data_dir: &Path) -> Result<()> {
+    // Hors ligne ou jeton déjà invalide : on purge quand même le local.
+    let _ = client.matrix_auth().logout().await;
+    purge_local_session(data_dir)
 }
 
 /// Connexion complète : construit le client, se connecte, mémorise le homeserver.
@@ -210,6 +215,21 @@ mod tests {
             let mode = fs::metadata(dir.join(KEY_FILE)).expect("meta").permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_removes_store_key_and_homeserver_and_is_idempotent() {
+        let dir = temp_dir("purge");
+        let session = session_dir(&dir);
+        private_dir(&session).expect("dossier");
+        for name in [KEY_FILE, HOMESERVER_FILE, "matrix-sdk-crypto.sqlite3"] {
+            fs::write(session.join(name), "x").expect("fichier");
+        }
+        purge_local_session(&dir).expect("purge");
+        assert!(!session.exists());
+        assert_eq!(stored_homeserver(&dir), None);
+        purge_local_session(&dir).expect("seconde purge sans effet");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -2,8 +2,12 @@
 
 use std::fmt;
 
+mod recovery;
+mod room;
 mod session;
 
+pub use recovery::{validate_recovery_key, KeyStatus, RecoveryKey};
+pub use room::{sort_rooms, RoomKind, RoomVm};
 pub use session::{validate_login, LoginField, LoginRequest, Session, ValidationError};
 
 macro_rules! string_id {
