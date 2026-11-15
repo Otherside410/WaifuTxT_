@@ -271,27 +271,29 @@ mod tests {
         dir
     }
 
-    /// D5/S1 : une session valide sur disque s'ouvre **serveur injoignable**, vite, avec les salons du store.
+    /// D5/S1 : une session valide sur disque s'ouvre **serveur injoignable**, et les salons du store sont publiés.
     ///
-    /// Échoue si `resume` repasse par `build_client` (`server_name_or_homeserver_url`) : cette voie contacte le
-    /// serveur avant de restaurer la session, la reprise renverrait `Err` (connexion refusée) et `expect` casserait ;
-    /// avec un serveur muet au lieu de refusé, la durée dépasserait largement le plafond.
+    /// Assertion de **comportement**, pas de durée (D9) : le serveur est un port local fermé (connexion refusée aussitôt).
+    /// Si `resume` faisait un appel réseau de vérification, il renverrait `Err` et `expect` casserait. Échoue donc si
+    /// `resume` repasse par `build_client` (`server_name_or_homeserver_url`) : cette voie interroge `/versions` avant de
+    /// restaurer la session (mesuré : `Err(Unreachable)`). Les salons sont lus par `local_snapshot`, l'instantané que
+    /// `run_sync` publie avant tout accès réseau : `from_server == false`, les deux salons du store.
     ///
-    /// Mesure : ouvrir un store chiffré par phrase secrète coûte du **calcul**, pas du réseau (PBKDF2, 200 000
-    /// tours par base : mesuré ~5 s en profil debug, ~0,5 s sans phrase secrète). On mesure donc d'abord ce coût
-    /// incompressible (`open_stored_client` seul, même store) et on exige que la reprise complète n'y ajoute pas
-    /// plus de 2 s : tout accès réseau fautif (délai de connexion, relances) fait exploser cette différence.
+    /// La durée est seulement **rapportée** : ouvrir un store chiffré par phrase secrète coûte du calcul (PBKDF2, de
+    /// l'ordre de 5 s en profil debug, bien plus sous charge), donc un seuil de temps mural rend le test rouge sans
+    /// qu'aucun comportement ne soit cassé. L'exigence « reprise rapide » (D5), si elle doit être vérifiée, relève
+    /// d'un banc dédié (médiane sur N passes, marge explicite), pas de ce test fonctionnel.
+    ///
+    /// Pourquoi pas un compteur de connexions sur un faux serveur : mesuré, le SDK lance après la reprise des requêtes
+    /// de fond (`GET /_matrix/client/versions`, 2 en moins de 300 ms) ; leur date dépend de l'ordonnancement, donc
+    /// « 0 connexion » ne serait pas une assertion stable.
     #[tokio::test]
-    async fn a_stored_session_opens_offline_in_under_two_seconds_with_the_rooms_of_the_store() {
-        use crate::rooms::room_list;
+    async fn a_stored_session_opens_offline_and_publishes_the_rooms_of_the_store() {
+        use crate::sync::{local_snapshot, SyncUpdate};
         use crate::test_support::{seed_store, temp_dir, DEAD_HOMESERVER};
 
         let dir = temp_dir("resume");
         seed_store(&dir, DEAD_HOMESERVER).await;
-
-        let started = std::time::Instant::now();
-        drop(open_stored_client(DEAD_HOMESERVER, &dir).await.expect("ouverture du store"));
-        let store_cost = started.elapsed();
 
         let started = std::time::Instant::now();
         let (client, session) = resume(&dir)
@@ -299,18 +301,20 @@ mod tests {
             .expect("la reprise ne doit pas exiger le réseau")
             .expect("une session est enregistrée");
         let elapsed = started.elapsed();
-        let extra = elapsed.saturating_sub(store_cost);
-        assert!(
-            extra < std::time::Duration::from_secs(2),
-            "reprise en {elapsed:?} dont {store_cost:?} de dérivation de clé : {extra:?} de trop (> 2 s)"
-        );
+        println!("[D9] reprise hors ligne : {elapsed:?} (durée rapportée, non bloquante)");
+
         assert_eq!(session.user_id.as_str(), "@alice:localhost");
         assert_eq!(session.homeserver.trim_end_matches('/'), DEAD_HOMESERVER);
 
-        let mut ids: Vec<String> =
-            room_list(&client).await.iter().map(|room| room.id.to_string()).collect();
-        ids.sort();
-        assert_eq!(ids, ["!deux:localhost", "!un:localhost"], "salons du store local");
+        match local_snapshot(&client).await {
+            SyncUpdate::Snapshot { rooms, from_server, .. } => {
+                assert!(!from_server, "l'instantané initial vient du store local, pas du serveur");
+                let mut ids: Vec<String> = rooms.iter().map(|room| room.id.to_string()).collect();
+                ids.sort();
+                assert_eq!(ids, ["!deux:localhost", "!un:localhost"], "salons du store local");
+            }
+            other => panic!("attendu l'instantané local, obtenu {other:?}"),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
