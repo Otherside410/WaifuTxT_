@@ -6,24 +6,28 @@
 
 use chrono::{DateTime, Local, TimeZone};
 use domain::{
-    initials, EventId, EventState, EventVm, RoomId, TimelineUpdate, REDACTED_PLACEHOLDER,
-    UNDECRYPTABLE_PLACEHOLDER,
+    initials, EventId, EventState, EventVm, MediaKind, MediaPayload, MediaStatus, MediaVm, RoomId,
+    TimelineUpdate, REDACTED_PLACEHOLDER, UNDECRYPTABLE_PLACEHOLDER,
 };
 use futures_util::StreamExt;
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::events::room::message::{
-    RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
+    MessageType, RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
 };
+use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::{EventId as SdkEventId, RoomId as SdkRoomId, UserId as SdkUserId};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
-    EventSendState, MsgLikeKind, RoomExt, TimelineDetails, TimelineEventItemId, TimelineItem,
+    AttachmentConfig, EventSendState, MsgLikeKind, RoomExt, TimelineDetails, TimelineEventItemId, TimelineItem,
     TimelineItemContent,
 };
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::error::MatrixError;
+use crate::media::{check_upload, fetch_image, mime_for, ImageRequest, MediaCache};
 
 /// Taille d'une page (chargement initial et pagination).
 pub const PAGE_SIZE: u16 = 50;
@@ -43,6 +47,165 @@ pub enum TimelineCommand {
     MarkRead,
     /// Annoncer que j'écris (`true`) ou que j'ai cessé (`false`) (`Room::typing_notice`).
     Typing(bool),
+    /// Envoyer le fichier `path` en pièce jointe (`Timeline::send_attachment`, chiffré par le SDK si le
+    /// salon l'est). La lecture du fichier se fait ici, sur Tokio, jamais dans l'UI.
+    SendAttachment(std::path::PathBuf),
+}
+
+/// Téléchargements d'images de la timeline : au plus [`MAX_PARALLEL_DOWNLOADS`] à la fois, chaque média
+/// une seule fois par timeline (le cache évite aussi tout retéléchargement entre timelines).
+const MAX_PARALLEL_DOWNLOADS: usize = 4;
+
+struct ImageFetcher {
+    client: Client,
+    cache: std::sync::Arc<MediaCache>,
+    requested: std::collections::HashSet<String>,
+    tasks: JoinSet<()>,
+    results: UnboundedSender<(String, MediaPayload)>,
+    limit: std::sync::Arc<Semaphore>,
+}
+
+impl ImageFetcher {
+    fn new(
+        client: Client,
+        cache: std::sync::Arc<MediaCache>,
+        results: UnboundedSender<(String, MediaPayload)>,
+    ) -> Self {
+        Self {
+            client,
+            cache,
+            requested: std::collections::HashSet::new(),
+            tasks: JoinSet::new(),
+            results,
+            limit: std::sync::Arc::new(Semaphore::new(MAX_PARALLEL_DOWNLOADS)),
+        }
+    }
+
+    /// Lance le téléchargement des images pas encore demandées. Les tâches s'arrêtent avec la timeline.
+    fn request(&mut self, requests: Vec<ImageRequest>) {
+        for request in requests {
+            if !self.requested.insert(request.key.clone()) {
+                continue;
+            }
+            let client = self.client.clone();
+            let cache = std::sync::Arc::clone(&self.cache);
+            let results = self.results.clone();
+            let limit = std::sync::Arc::clone(&self.limit);
+            self.tasks.spawn(async move {
+                // Semaphore fermé = arrêt : on abandonne sans rien envoyer.
+                let Ok(_permit) = limit.acquire_owned().await else {
+                    return;
+                };
+                let payload = match fetch_image(&client, &cache, &request).await {
+                    Ok(bytes) => MediaPayload::Ready(bytes),
+                    Err(err) => MediaPayload::Failed(err.to_string()),
+                };
+                let _ = results.send((request.key, payload));
+            });
+        }
+    }
+}
+
+/// Vérifie le fichier à envoyer (lisible, régulier, pas trop gros) et devine son type MIME.
+async fn prepare_attachment(path: &std::path::Path) -> Result<mime::Mime, String> {
+    let meta = tokio::fs::metadata(path).await.map_err(|_| "Fichier illisible.".to_owned())?;
+    if !meta.is_file() {
+        return Err("Ce n'est pas un fichier.".to_owned());
+    }
+    check_upload(meta.len())?;
+    Ok(mime_for(path))
+}
+
+fn uint_u64(value: Option<matrix_sdk::ruma::UInt>) -> Option<u64> {
+    value.map(u64::from)
+}
+
+fn uint_u32(value: Option<matrix_sdk::ruma::UInt>) -> Option<u32> {
+    value.and_then(|v| u32::try_from(u64::from(v)).ok())
+}
+
+fn media_key(source: &MediaSource) -> (String, bool) {
+    match source {
+        MediaSource::Plain(uri) => (uri.to_string(), false),
+        MediaSource::Encrypted(file) => (file.url.to_string(), true),
+    }
+}
+
+/// Média décrit par un message `image`/`file`/`audio`/`video` (+ requête de téléchargement pour une image).
+fn media_of(message_type: &MessageType) -> Option<(MediaVm, Option<ImageRequest>)> {
+    let (kind, filename, source, size, mime, width, height) = match message_type {
+        MessageType::Image(c) => {
+            let info = c.info.as_deref();
+            (
+                MediaKind::Image,
+                c.filename().to_owned(),
+                &c.source,
+                uint_u64(info.and_then(|i| i.size)),
+                info.and_then(|i| i.mimetype.clone()),
+                uint_u32(info.and_then(|i| i.width)),
+                uint_u32(info.and_then(|i| i.height)),
+            )
+        }
+        MessageType::File(c) => {
+            let info = c.info.as_deref();
+            (
+                MediaKind::File,
+                c.filename().to_owned(),
+                &c.source,
+                uint_u64(info.and_then(|i| i.size)),
+                info.and_then(|i| i.mimetype.clone()),
+                None,
+                None,
+            )
+        }
+        MessageType::Audio(c) => {
+            let info = c.info.as_deref();
+            (
+                MediaKind::Audio,
+                c.filename().to_owned(),
+                &c.source,
+                uint_u64(info.and_then(|i| i.size)),
+                info.and_then(|i| i.mimetype.clone()),
+                None,
+                None,
+            )
+        }
+        MessageType::Video(c) => {
+            let info = c.info.as_deref();
+            (
+                MediaKind::Video,
+                c.filename().to_owned(),
+                &c.source,
+                uint_u64(info.and_then(|i| i.size)),
+                info.and_then(|i| i.mimetype.clone()),
+                uint_u32(info.and_then(|i| i.width)),
+                uint_u32(info.and_then(|i| i.height)),
+            )
+        }
+        _ => return None,
+    };
+    let (key, encrypted) = media_key(source);
+    let request = match message_type {
+        MessageType::Image(c) => Some(ImageRequest {
+            key: key.clone(),
+            source: c.source.clone(),
+            thumbnail: c.info.as_deref().and_then(|i| i.thumbnail_source.clone()),
+            declared_size: size,
+        }),
+        _ => None,
+    };
+    let media = MediaVm {
+        key,
+        kind,
+        filename,
+        size,
+        mime,
+        width,
+        height,
+        encrypted,
+        status: MediaStatus::Available,
+    };
+    Some((media, request))
 }
 
 /// `HH:MM` dans le fuseau donné ; chaîne vide si l'horodatage est hors bornes.
@@ -63,16 +226,29 @@ fn localpart(user_id: &str) -> &str {
 
 /// Convertit un élément du SDK ; `None` pour ce qui n'est pas un message (séparateurs, changements
 /// d'état, appartenance…).
-fn to_event_vm(item: &TimelineItem, own_user: Option<&SdkUserId>) -> Option<EventVm> {
+fn to_event_vm(
+    item: &TimelineItem,
+    own_user: Option<&SdkUserId>,
+    requests: &mut Vec<ImageRequest>,
+) -> Option<EventVm> {
     let event = item.as_event()?;
     let TimelineItemContent::MsgLike(content) = event.content() else {
         return None;
     };
     let mut edited = false;
+    let mut media: Option<MediaVm> = None;
     let (body, mut state) = match &content.kind {
         MsgLikeKind::Message(message) => {
             edited = message.is_edited();
-            (message.body().to_owned(), EventState::Normal)
+            match media_of(message.msgtype()) {
+                Some((vm, request)) => {
+                    requests.extend(request);
+                    let name = vm.filename.clone();
+                    media = Some(vm);
+                    (name, EventState::Normal)
+                }
+                None => (message.body().to_owned(), EventState::Normal),
+            }
         }
         MsgLikeKind::UnableToDecrypt(_) => {
             (UNDECRYPTABLE_PLACEHOLDER.to_owned(), EventState::Indechiffrable)
@@ -87,6 +263,21 @@ fn to_event_vm(item: &TimelineItem, own_user: Option<&SdkUserId>) -> Option<Even
             Some(EventSendState::SendingFailed { .. }) => EventState::EchecEnvoi,
             _ => EventState::Local,
         };
+        // Pièce jointe en cours d'envoi : progression ; échec : état lisible (jamais l'erreur brute).
+        if let Some(vm) = media.as_mut() {
+            vm.status = match event.send_state() {
+                Some(EventSendState::NotSentYet { progress }) => MediaStatus::Uploading(
+                    progress.as_ref().and_then(|p| {
+                        let (current, total) = (p.progress.current, p.progress.total);
+                        (total > 0).then(|| u8::try_from((current * 100 / total).min(100)).unwrap_or(100))
+                    }),
+                ),
+                Some(EventSendState::SendingFailed { .. }) => {
+                    MediaStatus::UploadFailed("envoi échoué".to_owned())
+                }
+                _ => MediaStatus::Available,
+            };
+        }
     }
 
     // Identifiant unique de l'élément de timeline : il ne change pas quand l'écho local devient
@@ -127,14 +318,17 @@ fn to_event_vm(item: &TimelineItem, own_user: Option<&SdkUserId>) -> Option<Even
         is_own: event.is_own(),
         edited,
         read_by,
+        media,
     })
 }
 
 fn snapshot<'a>(
     items: impl IntoIterator<Item = &'a std::sync::Arc<TimelineItem>>,
     own_user: Option<&SdkUserId>,
-) -> Vec<EventVm> {
-    items.into_iter().filter_map(|item| to_event_vm(item, own_user)).collect()
+) -> (Vec<EventVm>, Vec<ImageRequest>) {
+    let mut requests = Vec::new();
+    let events = items.into_iter().filter_map(|item| to_event_vm(item, own_user, &mut requests)).collect();
+    (events, requests)
 }
 
 /// Suit la timeline de `room` jusqu'à ce que `commands` soit fermé (l'UI a changé de salon) ou que la
@@ -143,6 +337,7 @@ pub async fn run_timeline(
     client: Client,
     room: RoomId,
     mut commands: UnboundedReceiver<TimelineCommand>,
+    media_cache: std::sync::Arc<MediaCache>,
     publish: impl Fn(TimelineUpdate),
 ) {
     let fail = |message: String| publish(TimelineUpdate::Failed { room: room.clone(), message });
@@ -164,6 +359,9 @@ pub async fn run_timeline(
             message,
         })
     };
+    let attach_failed = |path: String, message: String| {
+        publish(TimelineUpdate::AttachmentFailed { room: room.clone(), path, message })
+    };
     let events = |events: Vec<EventVm>, at_start: Option<bool>| {
         publish(TimelineUpdate::Events { room: room.clone(), events, at_start })
     };
@@ -179,6 +377,16 @@ pub async fn run_timeline(
         return fail(MatrixError::from(matrix_sdk::Error::from(err)).to_string());
     }
     let own_user = client.user_id().map(ToOwned::to_owned);
+    let (media_tx, mut media_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut fetcher = ImageFetcher::new(client.clone(), media_cache, media_tx);
+    // Instantané → événements affichables + téléchargement des images nouvellement vues.
+    macro_rules! emit {
+        ($items:expr, $at_start:expr) => {{
+            let (vms, requests) = snapshot($items, own_user.as_deref());
+            fetcher.request(requests);
+            events(vms, $at_start);
+        }};
+    }
     let (_typing_guard, mut typing_rx) = sdk_room.subscribe_to_typing_notifications();
     let timeline = match sdk_room.timeline().await {
         Ok(timeline) => timeline,
@@ -187,10 +395,10 @@ pub async fn run_timeline(
 
     let (initial, stream) = timeline.subscribe().await;
     let mut stream = Box::pin(stream);
-    events(snapshot(initial.iter(), own_user.as_deref()), None);
+    emit!(initial.iter(), None);
 
     match timeline.paginate_backwards(PAGE_SIZE).await {
-        Ok(hit_start) => events(snapshot(timeline.items().await.iter(), own_user.as_deref()), Some(hit_start)),
+        Ok(hit_start) => emit!(timeline.items().await.iter(), Some(hit_start)),
         Err(err) => fail(MatrixError::Other(err.to_string()).to_string()),
     }
 
@@ -200,7 +408,10 @@ pub async fn run_timeline(
                 if batch.is_none() {
                     return fail("Timeline interrompue.".to_owned());
                 }
-                events(snapshot(timeline.items().await.iter(), own_user.as_deref()), None);
+                emit!(timeline.items().await.iter(), None);
+            }
+            Some((key, payload)) = media_rx.recv() => {
+                publish(TimelineUpdate::Media { room: room.clone(), key, payload });
             }
             typing = typing_rx.recv() => match typing {
                 Ok(users) => publish(TimelineUpdate::Typing {
@@ -241,6 +452,20 @@ pub async fn run_timeline(
                         delete_failed(event_id, format!("Suppression impossible : {err}"));
                     }
                 }
+                Some(TimelineCommand::SendAttachment(path)) => {
+                    let shown = path.to_string_lossy().into_owned();
+                    match prepare_attachment(&path).await {
+                        Ok(mime) => {
+                            let sent = timeline
+                                .send_attachment(path.clone(), mime, AttachmentConfig::default())
+                                .await;
+                            if let Err(err) = sent {
+                                attach_failed(shown, format!("Envoi de la pièce jointe impossible : {err}"));
+                            }
+                        }
+                        Err(message) => attach_failed(shown, message),
+                    }
+                }
                 Some(TimelineCommand::MarkRead) => {
                     // Un accusé de lecture raté n'a pas de conséquence visible : le prochain essai suivra.
                     let _ = timeline.mark_as_read(ReceiptType::Read).await;
@@ -260,7 +485,7 @@ pub async fn run_timeline(
                 Some(TimelineCommand::LoadOlder) => {
                     match timeline.paginate_backwards(PAGE_SIZE).await {
                         Ok(hit_start) => {
-                            events(snapshot(timeline.items().await.iter(), own_user.as_deref()), Some(hit_start));
+                            emit!(timeline.items().await.iter(), Some(hit_start));
                         }
                         Err(err) => fail(MatrixError::Other(err.to_string()).to_string()),
                     }

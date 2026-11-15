@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use crate::media::{sniff_image_format, MediaLoad, MediaPayload, MediaVm};
 use crate::{EventId, RoomId};
 
 /// État d'affichage d'un message.
@@ -50,6 +51,8 @@ pub struct EventVm {
     pub edited: bool,
     /// Membres (autres que moi) dont l'accusé de lecture pointe sur ce message, par nom court.
     pub read_by: Vec<String>,
+    /// Média joint (image, fichier, audio, vidéo) ; `None` pour un message texte.
+    pub media: Option<MediaVm>,
 }
 
 impl EventVm {
@@ -215,6 +218,10 @@ pub enum TimelineUpdate {
     DeleteFailed { room: RoomId, event_id: EventId, message: String },
     /// Membres qui écrivent actuellement dans le salon (moi exclu), par nom court.
     Typing { room: RoomId, users: Vec<String> },
+    /// Octets d'un média téléchargé (ou échec) pour l'identifiant logique `key`.
+    Media { room: RoomId, key: String, payload: MediaPayload },
+    /// L'envoi de la pièce jointe `path` a échoué (fichier illisible, trop gros, réseau…).
+    AttachmentFailed { room: RoomId, path: String, message: String },
 }
 
 impl TimelineUpdate {
@@ -225,7 +232,9 @@ impl TimelineUpdate {
             | Self::SendFailed { room, .. }
             | Self::EditFailed { room, .. }
             | Self::DeleteFailed { room, .. }
-            | Self::Typing { room, .. } => room,
+            | Self::Typing { room, .. }
+            | Self::Media { room, .. }
+            | Self::AttachmentFailed { room, .. } => room,
         }
     }
 }
@@ -252,6 +261,8 @@ pub struct Applied {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailedAction {
     Send,
+    /// Envoi d'une pièce jointe depuis le chemin donné.
+    Attach(String),
     Edit(EventId),
     Delete(EventId),
 }
@@ -283,6 +294,7 @@ pub struct TimelineState {
     send_failure: Option<SendFailure>,
     typing: Vec<String>,
     read_marked: Option<EventId>,
+    media: HashMap<String, MediaPayload>,
 }
 
 impl Default for TimelineState {
@@ -296,6 +308,7 @@ impl Default for TimelineState {
             send_failure: None,
             typing: Vec::new(),
             read_marked: None,
+            media: HashMap::new(),
         }
     }
 }
@@ -323,6 +336,23 @@ impl TimelineState {
     pub fn clear_send_failure(&mut self) {
         self.send_failure = None;
     }
+    /// Avancement du téléchargement des octets du média `key`.
+    pub fn media_load(&self, key: &str) -> MediaLoad {
+        match self.media.get(key) {
+            None => MediaLoad::Loading,
+            Some(MediaPayload::Ready(_)) => MediaLoad::Ready,
+            Some(MediaPayload::Failed(reason)) => MediaLoad::Failed(reason.clone()),
+        }
+    }
+
+    /// Octets d'un média prêt.
+    pub fn media_bytes(&self, key: &str) -> Option<&std::sync::Arc<Vec<u8>>> {
+        match self.media.get(key) {
+            Some(MediaPayload::Ready(bytes)) => Some(bytes),
+            _ => None,
+        }
+    }
+
     /// Membres qui écrivent dans le salon sélectionné.
     pub fn typing(&self) -> &[String] {
         &self.typing
@@ -416,6 +446,27 @@ impl TimelineState {
                 self.typing = users;
                 Applied::default()
             }
+            TimelineUpdate::Media { key, payload, .. } => {
+                // Des octets qui ne sont pas une image reconnue deviennent un échec lisible, jamais un
+                // décodage tenté sur n'importe quoi.
+                let stored = match payload {
+                    MediaPayload::Ready(bytes) if sniff_image_format(&bytes).is_none() => {
+                        MediaPayload::Failed("format d'image non pris en charge".to_owned())
+                    }
+                    other => other,
+                };
+                self.media.insert(key, stored);
+                Applied::default()
+            }
+            TimelineUpdate::AttachmentFailed { path, message, .. } => {
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                self.send_failure = Some(SendFailure {
+                    text: name,
+                    message,
+                    action: FailedAction::Attach(path),
+                });
+                Applied::default()
+            }
             TimelineUpdate::Failed { message, .. } => {
                 self.loading_older = false;
                 // Une erreur de pagination ne détruit pas ce qui est déjà affiché.
@@ -445,6 +496,7 @@ mod tests {
             is_own: false,
             edited: false,
             read_by: Vec::new(),
+            media: None,
         }
     }
 
@@ -868,6 +920,57 @@ mod tests {
         assert_eq!(state.typing(), ["alice"]);
         state.select(RoomId::from("!b:x"));
         assert!(state.typing().is_empty());
+    }
+
+    #[test]
+    fn media_bytes_are_scoped_to_the_selected_room_and_must_be_a_known_image() {
+        use crate::media::{MediaLoad, MediaPayload};
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        assert_eq!(state.media_load("mxc://s/i"), MediaLoad::Loading, "pas encore reçu");
+
+        let png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+        let late = TimelineUpdate::Media {
+            room: RoomId::from("!autre:x"),
+            key: "mxc://s/i".into(),
+            payload: MediaPayload::Ready(std::sync::Arc::new(png.clone())),
+        };
+        assert!(state.apply(late).ignored, "octets d'un autre salon ignorés");
+        assert_eq!(state.media_load("mxc://s/i"), MediaLoad::Loading);
+
+        state.apply(TimelineUpdate::Media {
+            room: RoomId::from("!a:x"),
+            key: "mxc://s/i".into(),
+            payload: MediaPayload::Ready(std::sync::Arc::new(png)),
+        });
+        assert_eq!(state.media_load("mxc://s/i"), MediaLoad::Ready);
+        assert!(state.media_bytes("mxc://s/i").is_some());
+
+        // Des octets qui ne sont pas une image reconnue deviennent un échec lisible, jamais décodés.
+        state.apply(TimelineUpdate::Media {
+            room: RoomId::from("!a:x"),
+            key: "mxc://s/bad".into(),
+            payload: MediaPayload::Ready(std::sync::Arc::new(b"<svg onload=...>".to_vec())),
+        });
+        assert!(matches!(state.media_load("mxc://s/bad"), MediaLoad::Failed(_)));
+        assert!(state.media_bytes("mxc://s/bad").is_none());
+
+        state.select(RoomId::from("!b:x"));
+        assert_eq!(state.media_load("mxc://s/i"), MediaLoad::Loading, "reset au changement de salon");
+    }
+
+    #[test]
+    fn an_attachment_failure_keeps_the_path_to_retry() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        state.apply(TimelineUpdate::AttachmentFailed {
+            room: RoomId::from("!a:x"),
+            path: "/home/u/Images/photo.png".into(),
+            message: "Fichier trop volumineux (60,0 Mo, limite 50,0 Mo).".into(),
+        });
+        let failure = state.send_failure().expect("échec mémorisé");
+        assert_eq!(failure.action, FailedAction::Attach("/home/u/Images/photo.png".into()));
+        assert_eq!(failure.text, "photo.png");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::fmt;
 
 mod event;
+mod media;
 mod recovery;
 mod room;
 mod session;
@@ -12,6 +13,11 @@ pub use event::{
     typing_label, Applied, EventState, EventVm, FailedAction, MergeOutcome, SendFailure,
     TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle, REDACTED_PLACEHOLDER,
     TYPING_IDLE_MS, TYPING_RESEND_MS, UNDECRYPTABLE_PLACEHOLDER,
+};
+pub use media::{
+    fit_within, format_size, media_display, sniff_image_format, too_large_message, ImageKind,
+    MediaDisplay, MediaKind, MediaLoad, MediaPayload, MediaStatus, MediaVm, MAX_INLINE_IMAGE_BYTES,
+    MAX_UPLOAD_BYTES, MEDIA_UNAVAILABLE, THUMBNAIL_SIDE, TOO_LARGE_PREFIX,
 };
 pub use recovery::{validate_recovery_key, KeyStatus, RecoveryKey};
 pub use room::{initials, sort_rooms, RoomKind, RoomVm};

@@ -4,10 +4,15 @@
 use std::cell::RefCell;
 use std::fmt;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use domain::{
-    last_read_marker, prepare_message, read_by_label, typing_label, validate_recovery_key, EventId,
-    EventState, EventVm, FailedAction, KeyStatus, RecoveryKey, RoomId, RoomKind, RoomVm,
-    TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle, TYPING_IDLE_MS,
+    last_read_marker, media_display, prepare_message, read_by_label, sniff_image_format,
+    typing_label, validate_recovery_key, EventId, EventState, EventVm, FailedAction, ImageKind,
+    KeyStatus, MediaDisplay, MediaKind, MediaPayload, MediaStatus, MediaVm, RecoveryKey, RoomId,
+    RoomKind, RoomVm, TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle,
+    THUMBNAIL_SIDE, TYPING_IDLE_MS,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -89,6 +94,44 @@ pub enum MainEvent {
     MarkRead(RoomId),
     /// Annoncer (`true`) ou cesser d'annoncer (`false`) que j'écris.
     Typing { room: RoomId, typing: bool },
+    /// Envoyer le fichier `path` en pièce jointe (lu et envoyé côté Tokio, jamais par l'UI).
+    SendAttachment { room: RoomId, path: String },
+}
+
+/// Ce qu'il faut pour dessiner un média dans une ligne (calculé hors de l'arbre d'éléments).
+struct MediaRender {
+    display: MediaDisplay,
+    image: Option<Arc<Image>>,
+    /// Taille de l'image dans la boîte de vignette, ratio conservé.
+    thumb: (u32, u32),
+    /// Texte court de la carte d'un fichier (extension en majuscules).
+    card_label: String,
+    /// Libellé d'accessibilité : type, nom, état.
+    aria: String,
+}
+
+impl MediaRender {
+    fn of(media: &MediaVm, timeline: &TimelineState, images: &HashMap<String, Arc<Image>>) -> Self {
+        let display = media_display(media, &timeline.media_load(&media.key));
+        let card_label = std::path::Path::new(&media.filename)
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_uppercase())
+            .filter(|ext| !ext.is_empty() && ext.chars().count() <= 4)
+            .unwrap_or_else(|| media.kind.label().to_uppercase().chars().take(4).collect());
+        let aria = match &display {
+            MediaDisplay::Unavailable(reason) => format!("Média indisponible : {} ({reason})", media.filename),
+            MediaDisplay::UploadFailed(_) => format!("Envoi en échec : {}", media.filename),
+            MediaDisplay::Uploading(_) => format!("Envoi en cours : {}", media.filename),
+            _ => format!("{} : {}", media.kind.label(), media.summary()),
+        };
+        Self {
+            display,
+            image: images.get(&media.key).cloned(),
+            thumb: media.thumbnail_size(THUMBNAIL_SIDE),
+            card_label,
+            aria,
+        }
+    }
 }
 
 pub struct MainView {
@@ -103,6 +146,10 @@ pub struct MainView {
     composer: Entity<TextareaState>,
     /// Brouillon d'un envoi échoué à remettre dans le champ au prochain rendu.
     pending_restore: Option<String>,
+    /// Images décodables des médias prêts, par identifiant logique (construites hors rendu).
+    images: HashMap<String, Arc<Image>>,
+    /// Ligne sélectionnée (clic) : surlignée, y compris pour une pièce jointe en échec.
+    selected_event: Option<EventId>,
     /// Message en cours de modification (son id d'événement) : la saisie est alors en « mode édition ».
     editing: Option<EventId>,
     /// Message dont la suppression attend sa confirmation.
@@ -157,6 +204,8 @@ impl MainView {
             key_input,
             composer,
             pending_restore: None,
+            images: HashMap::new(),
+            selected_event: None,
             editing: None,
             pending_delete: None,
             typing_throttle: TypingThrottle::default(),
@@ -260,6 +309,22 @@ impl MainView {
         view
     }
 
+    /// Démonstration des médias : comme [`MainView::demo_timeline`], avec des images générées à la volée,
+    /// un fichier, une image chiffrée indisponible, un envoi en cours et une pièce jointe en échec.
+    pub fn demo_media(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::demo_timeline(window, cx);
+        let room = RoomId::from(demo::ROOM_ID);
+        let (events, payloads) = demo::media_events();
+        view.apply_timeline(
+            TimelineUpdate::Events { room: room.clone(), events, at_start: None },
+            cx,
+        );
+        for (key, payload) in payloads {
+            view.apply_timeline(TimelineUpdate::Media { room: room.clone(), key, payload }, cx);
+        }
+        view
+    }
+
     pub fn selected(&self) -> Option<&RoomId> {
         self.timeline.room()
     }
@@ -358,9 +423,20 @@ impl MainView {
             }
             _ => None,
         };
+        let media_key = match &update {
+            TimelineUpdate::Media { room, key, payload: MediaPayload::Ready(_) }
+                if self.timeline.room() == Some(room) =>
+            {
+                Some(key.clone())
+            }
+            _ => None,
+        };
         let applied = self.timeline.apply(update);
         if applied.ignored {
             return;
+        }
+        if let Some(key) = media_key {
+            self.ingest_image(&key);
         }
         if draft_to_restore.is_some() {
             self.pending_restore = draft_to_restore;
@@ -398,6 +474,24 @@ impl MainView {
             self.mark_read(cx);
         }
         cx.notify();
+    }
+
+    /// Construit (hors rendu) l'image décodable d'un média dont les octets viennent d'arriver. Le décodage
+    /// lui-même est fait par le toolkit au premier affichage ; un format non reconnu a déjà été refusé
+    /// par le domaine (`TimelineState` le range en échec).
+    fn ingest_image(&mut self, key: &str) {
+        let Some(bytes) = self.timeline.media_bytes(key) else {
+            return;
+        };
+        let format = match sniff_image_format(bytes) {
+            Some(ImageKind::Png) => ImageFormat::Png,
+            Some(ImageKind::Jpeg) => ImageFormat::Jpeg,
+            Some(ImageKind::Gif) => ImageFormat::Gif,
+            Some(ImageKind::Webp) => ImageFormat::Webp,
+            Some(ImageKind::Bmp) => ImageFormat::Bmp,
+            None => return,
+        };
+        self.images.insert(key.to_owned(), Arc::new(Image::from_bytes(format, bytes.as_ref().clone())));
     }
 
     /// Accusé de lecture du salon sélectionné : la pastille de non-lus tombe tout de suite (la prochaine
@@ -629,7 +723,112 @@ impl MainView {
             FailedAction::Send => self.send_body(room, failure.text, window, cx),
             FailedAction::Edit(event_id) => self.edit_message(room, event_id, failure.text, window, cx),
             FailedAction::Delete(event_id) => self.redact(room, event_id, cx),
+            FailedAction::Attach(path) => {
+                self.timeline.clear_send_failure();
+                self.attach_path(std::path::PathBuf::from(path), cx);
+            }
         }
+    }
+
+    /// Ouvre le sélecteur de fichier du système ; le chemin choisi part ensuite par [`Self::attach_path`].
+    fn pick_attachment(&mut self, cx: &mut Context<Self>) {
+        if !self.composer_enabled() {
+            return;
+        }
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Joindre".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            // Annulation ou erreur du sélecteur : rien à faire.
+            if let Ok(Ok(Some(mut chosen))) = paths.await {
+                if let Some(path) = chosen.pop() {
+                    this.update(cx, |this, cx| this.attach_path(path, cx)).ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Joint un fichier au salon sélectionné. Le chemin est transmis tel quel au pont : la lecture, la
+    /// vérification de taille et l'envoi (chiffré par le SDK si le salon l'est) se font sur Tokio.
+    pub fn attach_path(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !self.composer_enabled() {
+            return;
+        }
+        let Some(room) = self.timeline.room().cloned() else {
+            return;
+        };
+        self.timeline.clear_send_failure();
+        self.scroll.scroll_to_bottom();
+        if self.demo {
+            self.demo_attach_echo(room, &path, cx);
+        } else {
+            cx.emit(MainEvent::SendAttachment { room, path: path.to_string_lossy().into_owned() });
+        }
+        cx.notify();
+    }
+
+    /// Démonstration d'un envoi de pièce jointe : écho local avec progression, puis confirmation.
+    fn demo_attach_echo(&mut self, room: RoomId, path: &std::path::Path, cx: &mut Context<Self>) {
+        self.demo_sent += 1;
+        let name = path
+            .file_name()
+            .map_or_else(|| "fichier".to_owned(), |n| n.to_string_lossy().into_owned());
+        let last_ts = self.timeline.events().last().map_or(0, |e| e.timestamp_ms);
+        let media = MediaVm {
+            key: format!("local://demo/attach-{}", self.demo_sent),
+            kind: MediaKind::File,
+            filename: name.clone(),
+            size: None,
+            mime: None,
+            width: None,
+            height: None,
+            encrypted: false,
+            status: MediaStatus::Uploading(Some(40)),
+        };
+        let echo = EventVm {
+            id: EventId::from(format!("$demo-attach-{}", self.demo_sent).as_str()),
+            sender_name: "Moi (démo)".to_owned(),
+            sender_initials: "MD".to_owned(),
+            timestamp_ms: last_ts + 60_000,
+            time_label: String::new(),
+            body: name,
+            state: EventState::Local,
+            event_id: None,
+            is_own: true,
+            edited: false,
+            read_by: Vec::new(),
+            media: Some(media),
+        };
+        self.apply_timeline(
+            TimelineUpdate::Events { room: room.clone(), events: vec![echo.clone()], at_start: None },
+            cx,
+        );
+        if self.demo_hold_pending {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DEMO_CONFIRM_DELAY).await;
+            this.update(cx, |this, cx| {
+                let mut confirmed = EventVm {
+                    state: EventState::Normal,
+                    event_id: Some(EventId::from(format!("$demo-attach-{}-ok", this.demo_sent).as_str())),
+                    ..echo
+                };
+                if let Some(media) = confirmed.media.as_mut() {
+                    media.status = MediaStatus::Available;
+                }
+                this.apply_timeline(
+                    TimelineUpdate::Events { room, events: vec![confirmed], at_start: None },
+                    cx,
+                );
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Démonstration : écho local immédiat, confirmé après un délai (sans réseau).
@@ -648,6 +847,7 @@ impl MainView {
             is_own: true,
             edited: false,
             read_by: Vec::new(),
+            media: None,
         };
         self.apply_timeline(
             TimelineUpdate::Events { room: room.clone(), events: vec![echo.clone()], at_start: None },
@@ -769,11 +969,31 @@ impl MainView {
                     .aria_label(label)
             }))
             .child(
-                Textarea::new(&self.composer)
-                    .accessibility_id("composer-input")
-                    .disabled(!enabled)
-                    .aria_label("Message"),
+                div()
+                    .flex()
+                    .items_end()
+                    .gap_2()
+                    .child(
+                        div().flex_1().child(
+                            Textarea::new(&self.composer)
+                                .accessibility_id("composer-input")
+                                .disabled(!enabled)
+                                .aria_label("Message"),
+                        ),
+                    )
+                    .child(
+                        Button::new("attach-button")
+                            .label("Joindre")
+                            .disabled(!enabled)
+                            .on_click(cx.listener(|this, _, _, cx| this.pick_attachment(cx))),
+                    ),
             )
+            // Glisser-déposer d'un fichier sur la zone de saisie.
+            .on_drop(cx.listener(|this, dropped: &ExternalPaths, _, cx| {
+                if let Some(path) = dropped.paths().first() {
+                    this.attach_path(path.clone(), cx);
+                }
+            }))
             .test_support()
             .aria_label("Zone de saisie")
     }
@@ -879,14 +1099,59 @@ impl MainView {
         }
     }
 
+    /// Contenu de la boîte de vignette d'un média : de taille **fixe** (`THUMBNAIL_SIDE`) quel que soit
+    /// l'état, donc aucun saut de mise en page entre « chargement », image décodée et échec.
+    fn media_box(index: usize, media: &MediaRender) -> impl IntoElement {
+        let side = px(THUMBNAIL_SIDE as f32);
+        let (inner_w, inner_h) = media.thumb;
+        let glyph = |text: String| div().text_xs().text_color(rgb(TEXT_SECONDARY)).child(text);
+        let content: AnyElement = match (&media.display, &media.image) {
+            (MediaDisplay::Thumbnail, Some(image)) => div()
+                .w(px(inner_w as f32))
+                .h(px(inner_h as f32))
+                .overflow_hidden()
+                .child(img(image.clone()).size_full().object_fit(ObjectFit::Contain))
+                .into_any_element(),
+            // Octets pas encore là (ou image refusée) : espace réservé de même taille.
+            (MediaDisplay::Thumbnail | MediaDisplay::Loading, _) => glyph("…".to_owned()).into_any_element(),
+            (MediaDisplay::Unavailable(_), _) => glyph("?".to_owned()).into_any_element(),
+            (MediaDisplay::Card, _) => glyph(media.card_label.clone()).into_any_element(),
+            (MediaDisplay::Uploading(percent), _) => {
+                glyph(percent.map_or_else(|| "↑".to_owned(), |p| format!("{p} %"))).into_any_element()
+            }
+            (MediaDisplay::UploadFailed(_), _) => {
+                div().text_xs().text_color(rgb(ERROR)).child("!").into_any_element()
+            }
+        };
+        div()
+            .id(SharedString::from(format!("media-{index}")))
+            .size(side)
+            .flex_none()
+            .rounded_md()
+            .overflow_hidden()
+            .bg(rgb(BORDER))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(content)
+            .test_support()
+            .aria_label(SharedString::from(media.aria.clone()))
+    }
+
     fn event_row(
         index: usize,
         event: &EventVm,
         read_label: Option<String>,
+        media: Option<MediaRender>,
+        selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let undecryptable = event.state == EventState::Indechiffrable;
-        let failed = event.state == EventState::EchecEnvoi;
+        let media_failed = matches!(
+            media.as_ref().map(|m| &m.display),
+            Some(MediaDisplay::Unavailable(_) | MediaDisplay::UploadFailed(_))
+        );
+        let failed = event.state == EventState::EchecEnvoi || media_failed;
         let deleted = event.state == EventState::Supprime;
         let dim = event.state == EventState::Local || deleted;
         let mut time_label = match event.state {
@@ -901,6 +1166,17 @@ impl MainView {
             time_label.push_str(" · ");
             time_label.push_str(read);
         }
+        // Deuxième ligne : le texte, ou le résumé du média (nom · taille · dimensions · type).
+        let body_text = match (&event.media, media.as_ref().map(|m| &m.display)) {
+            (Some(m), Some(MediaDisplay::Unavailable(reason))) => format!("{reason} — {}", m.filename),
+            (Some(m), Some(MediaDisplay::UploadFailed(_))) => format!("Envoi échoué : {}", m.filename),
+            (Some(m), Some(MediaDisplay::Uploading(percent))) => match percent {
+                Some(p) => format!("Envoi de {} : {p} %", m.filename),
+                None => format!("Envoi de {}…", m.filename),
+            },
+            (Some(m), _) => m.summary(),
+            (None, _) => event.body.clone(),
+        };
         let actions = event.can_edit_or_delete().then(|| {
             let event_id = event.event_id.clone();
             let body = event.body.clone();
@@ -909,7 +1185,8 @@ impl MainView {
                 .flex_none()
                 .flex()
                 .gap_1()
-                .child(
+                // Un média n'a pas de texte à modifier : seule la suppression est proposée.
+                .children(event.media.is_none().then(|| {
                     Button::new(SharedString::from(format!("edit-{index}")))
                         .label("Modifier")
                         .xsmall()
@@ -917,8 +1194,8 @@ impl MainView {
                             if let Some(id) = edit_id.clone() {
                                 this.begin_edit(id, body.clone(), window, cx);
                             }
-                        })),
-                )
+                        }))
+                }))
                 .child(
                     Button::new(SharedString::from(format!("delete-{index}")))
                         .label("Supprimer")
@@ -930,6 +1207,8 @@ impl MainView {
                         })),
                 )
         });
+        let row_id = event.id.clone();
+        let media_aria = media.as_ref().map(|m| m.aria.clone());
         div()
             .id(SharedString::from(format!("event-{index}")))
             .h(px(EVENT_ROW_HEIGHT))
@@ -937,9 +1216,14 @@ impl MainView {
             .flex()
             .items_center()
             .gap_3()
-            .opacity(if dim { 0.6 } else { 1.0 })
+            .bg(rgb(if selected { SELECTED } else { BACKGROUND }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.selected_event = Some(row_id.clone());
+                cx.notify();
+            }))
             .child(
                 div()
+                    .opacity(if dim { 0.6 } else { 1.0 })
                     .size(px(32.0))
                     .flex_none()
                     .rounded(px(16.0))
@@ -953,6 +1237,7 @@ impl MainView {
             )
             .child(
                 div()
+                    .opacity(if dim { 0.6 } else { 1.0 })
                     .flex_1()
                     .min_w_0()
                     .flex()
@@ -979,15 +1264,16 @@ impl MainView {
                             .text_sm()
                             .when(deleted, |row| row.italic())
                             .text_color(rgb(if undecryptable || failed { ERROR } else { TEXT_SECONDARY }))
-                            .child(event.body.clone()),
+                            .child(body_text.clone()),
                     ),
             )
+            .children(media.as_ref().map(|m| Self::media_box(index, m)))
             .children(actions)
             .test_support()
             .aria_label(SharedString::from(format!(
-                "{} : {}{}{}{}",
+                "{} : {}{}{}{}{}{}",
                 event.sender_name,
-                event.body,
+                media_aria.as_deref().map_or(body_text.clone(), |_| body_text.clone()),
                 match event.state {
                     EventState::Local => " [envoi en cours]",
                     EventState::EchecEnvoi => " [non envoyé]",
@@ -995,6 +1281,11 @@ impl MainView {
                 },
                 if event.edited { " [modifié]" } else { "" },
                 read_label.map(|r| format!(" [{r}]")).unwrap_or_default(),
+                if selected { " [sélectionné]" } else { "" },
+                match &event.media {
+                    Some(_) if media_failed => " [média en échec]",
+                    _ => "",
+                },
             )))
     }
 
@@ -1086,7 +1377,13 @@ impl MainView {
                                 let read = (marker == Some(index))
                                     .then(|| read_by_label(&event.read_by))
                                     .flatten();
-                                Self::event_row(index, event, read, cx)
+                                let media = event.media.as_ref().map(|m| MediaRender::of(
+                                    m,
+                                    &this.timeline,
+                                    &this.images,
+                                ));
+                                let selected = this.selected_event.as_ref() == Some(&event.id);
+                                Self::event_row(index, event, read, media, selected, cx)
                             })
                             .collect::<Vec<_>>()
                     }),

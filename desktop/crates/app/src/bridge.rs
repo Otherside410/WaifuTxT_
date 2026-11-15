@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use domain::{LoginRequest, RecoveryKey, RoomId, Session, TimelineUpdate};
-use matrix::{Client, SyncUpdate, TimelineCommand};
+use matrix::{Client, MediaCache, SyncUpdate, TimelineCommand};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -58,11 +58,13 @@ impl Drop for TimelineHandle {
 pub struct Bridge {
     runtime: Arc<Runtime>,
     data_dir: PathBuf,
+    /// Cache des médias téléchargés, partagé par toutes les timelines (vit côté `matrix`, pas dans l'UI).
+    media_cache: Arc<MediaCache>,
 }
 
 impl Bridge {
     pub fn new(runtime: Arc<Runtime>, data_dir: PathBuf) -> Self {
-        Self { runtime, data_dir }
+        Self { runtime, data_dir, media_cache: Arc::new(MediaCache::new()) }
     }
 
     /// Lance `future` sur Tokio ; le receveur peut être attendu depuis l'executor GPUI.
@@ -121,9 +123,16 @@ impl Bridge {
     ) -> (mpsc::UnboundedReceiver<TimelineUpdate>, TimelineHandle) {
         let (tx, rx) = mpsc::unbounded_channel();
         let (commands, command_rx) = mpsc::unbounded_channel();
-        let task = self.runtime.spawn(matrix::run_timeline(client, room, command_rx, move |update| {
-            let _ = tx.send(update);
-        }));
+        let cache = Arc::clone(&self.media_cache);
+        let task = self.runtime.spawn(matrix::run_timeline(
+            client,
+            room,
+            command_rx,
+            cache,
+            move |update| {
+                let _ = tx.send(update);
+            },
+        ));
         (rx, TimelineHandle { task, commands })
     }
 }

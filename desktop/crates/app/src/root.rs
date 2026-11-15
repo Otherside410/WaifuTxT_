@@ -106,6 +106,19 @@ impl AppRoot {
                     main.update(cx, |main, cx| main.apply_timeline(update, cx));
                 }
             }
+            MainEvent::SendAttachment { room, path } => {
+                let queued = this.with_timeline(|t| {
+                    t.command(TimelineCommand::SendAttachment(std::path::PathBuf::from(path)))
+                });
+                if queued != Some(true) {
+                    let update = TimelineUpdate::AttachmentFailed {
+                        room: room.clone(),
+                        path: path.clone(),
+                        message: "Envoi impossible : la conversation n'est pas prête.".to_owned(),
+                    };
+                    main.update(cx, |main, cx| main.apply_timeline(update, cx));
+                }
+            }
             MainEvent::MarkRead(_) => {
                 this.with_timeline(|t| t.command(TimelineCommand::MarkRead));
             }

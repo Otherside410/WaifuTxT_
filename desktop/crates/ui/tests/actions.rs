@@ -208,6 +208,7 @@ fn confirmed_message(tag: &str, ts: u64) -> EventVm {
         is_own: false,
         edited: false,
         read_by: Vec::new(),
+        media: None,
     }
 }
 

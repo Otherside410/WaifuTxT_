@@ -149,6 +149,7 @@ fn event(room_tag: &str, ts: u64) -> EventVm {
         is_own: false,
         edited: false,
         read_by: Vec::new(),
+        media: None,
     }
 }
 

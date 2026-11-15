@@ -5134,6 +5134,8 @@ dependencies = [
  "getrandom 0.3.4",
  "matrix-sdk",
  "matrix-sdk-ui",
+ "mime",
+ "mime_guess",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",

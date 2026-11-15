@@ -66,3 +66,20 @@ pub fn close_modal_and_open(cx: &mut TestAppContext, handle: gpui_kit::WindowHan
     cx.run_until_parked();
 }
 
+
+/// Ouvre `MainView::demo_media` (images générées, fichier, image chiffrée indisponible, échecs d'envoi).
+pub fn open_demo_media(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<MainView>) {
+    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        let bounds = Bounds { origin: Point::default(), size: size(px(1200.), px(800.)) };
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        };
+        let (window, view) = gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| MainView::demo_media(window, cx))
+        })
+        .expect("fenêtre de test");
+        (window.downcast::<Root>().expect("Root"), view)
+    })
+}

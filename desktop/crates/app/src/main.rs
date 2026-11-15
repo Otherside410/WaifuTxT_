@@ -50,11 +50,14 @@ const DEMO_FLAG: &str = "--demo-ui";
 const DEMO_TIMELINE_FLAG: &str = "--demo-timeline";
 /// Variante : comme `--demo-timeline`, avec un message déjà envoyé dont l'écho reste « envoi… ».
 const DEMO_SEND_FLAG: &str = "--demo-send";
+/// Variante : médias de démonstration (images générées, fichier, image chiffrée indisponible, échec d'envoi).
+const DEMO_MEDIA_FLAG: &str = "--demo-media";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let demo_media = args.iter().any(|arg| arg == DEMO_MEDIA_FLAG);
     let demo_send = args.iter().any(|arg| arg == DEMO_SEND_FLAG);
-    let demo_timeline = demo_send || args.iter().any(|arg| arg == DEMO_TIMELINE_FLAG);
+    let demo_timeline = demo_media || demo_send || args.iter().any(|arg| arg == DEMO_TIMELINE_FLAG);
     let demo = demo_timeline || args.iter().any(|arg| arg == DEMO_FLAG);
 
     if !has_display() {
@@ -102,7 +105,9 @@ fn main() -> ExitCode {
             .map(|_| ()),
             None => gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| {
-                    if demo_send {
+                    if demo_media {
+                        MainView::demo_media(window, cx)
+                    } else if demo_send {
                         MainView::demo_send(window, cx)
                     } else if demo_timeline {
                         MainView::demo_timeline(window, cx)

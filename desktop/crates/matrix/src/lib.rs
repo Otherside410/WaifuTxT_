@@ -4,6 +4,7 @@
 
 pub mod client;
 pub mod error;
+pub mod media;
 pub mod recovery;
 pub mod rooms;
 pub mod sync;
@@ -14,6 +15,7 @@ pub use client::{
 };
 pub use matrix_sdk::Client;
 pub use error::{MatrixError, Result};
+pub use media::{MediaCache, MediaError};
 pub use recovery::{key_status, recover};
 pub use rooms::room_list;
 pub use sync::{run_sync, SyncUpdate};
