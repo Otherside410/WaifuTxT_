@@ -1,0 +1,93 @@
+//! Point d'entrée de `waifu-desktop` : ouvre la fenêtre principale.
+
+mod bridge;
+mod root;
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use gpui_kit::*;
+use bridge::Bridge;
+use root::AppRoot;
+
+/// Nom de l'application, utilisé comme titre de fenêtre.
+const APP_TITLE: &str = "WaifuChat";
+
+/// Nom du dossier de données du client natif, sous le dossier de données de l'utilisateur
+/// (Linux : `~/.local/share/waifu-desktop-rust/`).
+///
+/// Volontairement **distinct** de celui de l'app Electron, pour ne jamais écraser sa session.
+const DATA_DIR_NAME: &str = "waifu-desktop-rust";
+
+const WINDOW_WIDTH: f32 = 1200.0;
+const WINDOW_HEIGHT: f32 = 800.0;
+
+/// Sous Linux, GPUI bascule en mode headless s'il ne trouve aucun serveur d'affichage, puis attend
+/// indéfiniment sans ouvrir de fenêtre : on refuse de démarrer plutôt que de rester muet.
+#[cfg(target_os = "linux")]
+fn has_display() -> bool {
+    ["WAYLAND_DISPLAY", "DISPLAY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn has_display() -> bool {
+    true
+}
+
+/// Dossier de données : `<données utilisateur>/waifu-desktop-rust` (jamais celui d'Electron).
+fn data_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join(DATA_DIR_NAME))
+}
+
+fn main() -> ExitCode {
+    if !has_display() {
+        eprintln!("{APP_TITLE} : aucun affichage détecté (ni WAYLAND_DISPLAY ni DISPLAY) ; impossible d'ouvrir la fenêtre.");
+        return ExitCode::FAILURE;
+    }
+
+    let Some(data_dir) = data_dir() else {
+        eprintln!("{APP_TITLE} : dossier de données utilisateur introuvable.");
+        return ExitCode::FAILURE;
+    };
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => Arc::new(runtime),
+        Err(err) => {
+            eprintln!("{APP_TITLE} : impossible de démarrer le runtime réseau : {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let bridge = Bridge::new(Arc::clone(&runtime), data_dir);
+
+    let failed = Arc::new(AtomicBool::new(false));
+    let failed_in_app = Arc::clone(&failed);
+
+    gpui_kit::application().run(move |cx| {
+        gpui_kit::init(cx);
+
+        let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some(APP_TITLE.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        if let Err(err) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| AppRoot::new(bridge, window, cx))) {
+            eprintln!("{APP_TITLE} : impossible d'ouvrir la fenêtre : {err:#}");
+            failed_in_app.store(true, Ordering::SeqCst);
+            cx.quit();
+        }
+    });
+
+    if failed.load(Ordering::SeqCst) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
