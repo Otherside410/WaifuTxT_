@@ -26,6 +26,28 @@ const HOMESERVER_FILE: &str = "homeserver";
 const SESSION_KEY: &[u8] = b"waifu.matrix_session";
 const DEVICE_NAME: &str = "WaifuChat (natif)";
 
+/// Abonne le cache d'événements du client aux réponses de synchronisation (D-W05-1).
+///
+/// À faire **avant** la première synchronisation : tout événement reçu avant l'abonnement n'est pas gardé, et la
+/// pagination de la timeline repart après lui. Mais **pas avant** que la machine crypto existe (c'est-à-dire avant
+/// la connexion ou la restauration de la session) : la tâche de rechiffrement du cache s'arrête pour de bon si elle
+/// ne trouve pas la machine à son démarrage (matrix-sdk 0.19.1, `Redecryptor::redecryption_loop`), et plus aucun
+/// message indéchiffrable ne serait relu après une réception de clés ou un import. Sans machine, la fonction ne fait
+/// donc rien et renvoie `Ok(())` ; l'appelant la rappelle une fois connecté.
+///
+/// `EventCache::subscribe` (matrix-sdk 0.19.1) renvoie `Result<()>` et ne fait rien si l'abonnement existe déjà
+/// (`OnceCell`) : appeler cette fonction plusieurs fois est sans effet et sans erreur. Elle ne peut échouer que si le
+/// client a déjà été libéré.
+pub(crate) async fn enable_event_cache(client: &Client) -> Result<()> {
+    if client.encryption().room_keys_received_stream().await.is_none() {
+        return Ok(());
+    }
+    client
+        .event_cache()
+        .subscribe()
+        .map_err(|err| MatrixError::from(matrix_sdk::Error::from(err)))
+}
+
 fn session_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(SESSION_DIR)
 }
@@ -154,6 +176,7 @@ pub async fn login(client: &Client, user: &str, password: &str) -> Result<Sessio
         .ok_or_else(|| MatrixError::Other("session absente après connexion".to_owned()))?;
 
     save_session(client, &session).await?;
+    enable_event_cache(client).await?;
 
     Ok(to_session(client, &session))
 }
@@ -180,6 +203,7 @@ pub async fn restore(client: &Client) -> Result<Option<Session>> {
         .map_err(|_| MatrixError::Storage("session enregistrée illisible".to_owned()))?;
 
     client.restore_session(session.clone()).await?;
+    enable_event_cache(client).await?;
     Ok(Some(to_session(client, &session)))
 }
 
@@ -273,6 +297,34 @@ mod tests {
             room_list(&client).await.iter().map(|room| room.id.to_string()).collect();
         ids.sort();
         assert_eq!(ids, ["!deux:localhost", "!un:localhost"], "salons du store local");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// D-W05-1 : le cache d'événements est abonné dès que la session est restaurée (avant toute synchronisation),
+    /// pas avant (sans machine crypto, la tâche de rechiffrement du SDK s'arrêterait pour de bon), et s'abonner de
+    /// nouveau est sans effet ni erreur (retour en ligne, ouverture d'un salon).
+    ///
+    /// Échoue si l'appel est retiré de `restore` : `has_subscribed()` serait faux après `resume`.
+    #[tokio::test]
+    async fn the_event_cache_is_subscribed_once_the_session_is_restored_and_resubscribing_is_harmless() {
+        use crate::test_support::{seed_store, temp_dir, DEAD_HOMESERVER};
+
+        let dir = temp_dir("event-cache");
+        seed_store(&dir, DEAD_HOMESERVER).await;
+
+        // Client ouvert mais session pas encore restaurée : pas de machine crypto, donc on n'abonne pas.
+        let opened = open_stored_client(DEAD_HOMESERVER, &dir).await.expect("ouverture du store");
+        enable_event_cache(&opened).await.expect("sans machine crypto : sans effet, sans erreur");
+        assert!(!opened.event_cache().has_subscribed(), "pas d'abonnement avant la restauration de la session");
+        drop(opened);
+
+        let (client, _) = resume(&dir).await.expect("reprise hors ligne").expect("session enregistrée");
+        assert!(client.event_cache().has_subscribed(), "abonné dès la reprise, avant toute synchronisation");
+        for _ in 0..3 {
+            enable_event_cache(&client).await.expect("un nouvel abonnement n'est pas une erreur");
+        }
+        client.event_cache().subscribe().expect("l'appel direct du SDK reste un succès");
+        assert!(client.event_cache().has_subscribed());
         let _ = fs::remove_dir_all(&dir);
     }
 

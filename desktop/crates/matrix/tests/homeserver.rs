@@ -360,9 +360,8 @@ async fn an_encrypted_message_is_received_decrypted() {
 /// Historique après redémarrage de `bob` (store rouvert, sans mot de passe).
 ///
 /// `require_missed` : exige aussi le message qu'`alice` a écrit **pendant** l'arrêt de `bob`. Comme dans
-/// l'application, `bob` relance d'abord la synchronisation, puis ouvre la timeline du salon (c'est `run_timeline`
-/// qui abonne le cache d'événements). `WAIFU_IT_EXPERIMENT_SUBSCRIBE=1` abonne le cache **avant** la synchronisation,
-/// pour mesurer la cause du défaut décrit dans `.design/W05-ETAPE1.md`.
+/// l'application, `bob` relance d'abord la synchronisation, puis ouvre la timeline du salon ; le cache d'événements
+/// est abonné dès l'ouverture du client (`resume`), avant la première synchronisation (D-W05-1).
 async fn history_after_restart(require_missed: bool) {
     let (alice_account, bob_account) = credentials();
     let (alice_dir, bob_dir) = (tempfile::tempdir().expect("tempdir"), tempfile::tempdir().expect("tempdir"));
@@ -395,9 +394,6 @@ async fn history_after_restart(require_missed: bool) {
     let known: Vec<String> = matrix::room_list(&bob).await.iter().map(|r| r.id.to_string()).collect();
     assert!(known.contains(&room.to_string()), "le salon est connu du store avant toute synchronisation");
 
-    if std::env::var_os("WAIFU_IT_EXPERIMENT_SUBSCRIBE").is_some() {
-        bob.event_cache().subscribe().expect("cache d'événements");
-    }
     let mut bob_sync = Sync::start(&bob);
     let _ = bob_sync.first_server_snapshot().await;
     let first_sync = restart.elapsed();
@@ -436,16 +432,11 @@ async fn history_is_readable_after_a_restart() {
     history_after_restart(false).await;
 }
 
-/// 3b. **Défaut connu** (voir `.design/W05-ETAPE1.md`, D-W05-1) : un message reçu pendant que le client était arrêté
-///     n'apparaît pas, car `run_timeline` n'abonne le cache d'événements qu'après la première synchronisation.
-///     N'est exécuté que si `WAIFU_IT_KNOWN_DEFECTS=1` (sinon il rend la main aussitôt), pour ne pas rougir la série.
+/// 3b. D-W05-1 (corrigé) : un message reçu pendant que le client était arrêté apparaît dans la timeline au
+///     redémarrage. Le cache d'événements est abonné à l'ouverture du client, avant la première synchronisation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "exige un homeserver : WAIFU_IT_HOMESERVER=http://127.0.0.1:8008 puis --ignored"]
 async fn a_message_received_while_stopped_shows_up_in_the_timeline() {
-    if std::env::var_os("WAIFU_IT_KNOWN_DEFECTS").is_none() {
-        println!("[3b] défaut connu D-W05-1 : test sauté (WAIFU_IT_KNOWN_DEFECTS=1 pour l'exécuter)");
-        return;
-    }
     history_after_restart(true).await;
 }
 

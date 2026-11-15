@@ -410,9 +410,11 @@ pub async fn run_timeline(
     let Some(sdk_room) = client.get_room(room_id) else {
         return fail("Salon introuvable sur ce compte.".to_owned());
     };
-    // Sans abonnement du cache d'événements, la pagination ne reçoit rien.
-    if let Err(err) = client.event_cache().subscribe() {
-        return fail(MatrixError::from(matrix_sdk::Error::from(err)).to_string());
+    // Le cache d'événements est déjà abonné depuis la connexion ou la restauration de la session (`enable_event_cache`) : sans lui, la
+    // pagination ne reçoit rien et les messages arrivés avant l'ouverture du salon manquent (D-W05-1). Cet appel
+    // est un filet idempotent : « déjà abonné » est un succès pour le SDK, jamais une erreur.
+    if let Err(err) = crate::client::enable_event_cache(&client).await {
+        return fail(err.to_string());
     }
     let own_user = client.user_id().map(ToOwned::to_owned);
     let (media_tx, mut media_rx) = tokio::sync::mpsc::unbounded_channel();

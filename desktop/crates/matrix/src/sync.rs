@@ -38,6 +38,12 @@ async fn server_snapshot(client: &Client) -> SyncUpdate {
 /// Synchronise en continu jusqu'à interruption (la tâche est abandonnée au logout).
 /// `publish` est appelé pour l'instantané initial puis après chaque réponse ; il doit être non bloquant.
 pub async fn run_sync(client: Client, publish: impl Fn(SyncUpdate)) {
+    // Le cache d'événements doit être abonné avant la première synchronisation (D-W05-1). C'est déjà fait par
+    // `login` / `restore` ; ce second appel est idempotent et couvre un client connecté par un autre chemin.
+    if let Err(err) = crate::client::enable_event_cache(&client).await {
+        publish(SyncUpdate::Failed(err.to_string()));
+        return;
+    }
     // Point d'émission initial : AVANT le premier appel réseau.
     publish(local_snapshot(&client).await);
 
