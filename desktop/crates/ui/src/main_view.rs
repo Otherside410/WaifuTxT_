@@ -168,6 +168,17 @@ pub struct MainView {
     connection: ConnectionState,
     timeline: TimelineState,
     scroll: UniformListScrollHandle,
+    /// Suit la zone de la liste (cadre de l'image précédente) : sa hauteur sert à caler la liste sur un
+    /// nombre entier de lignes.
+    list_frame: ScrollHandle,
+    /// Hauteur de la zone de liste au dernier rendu : un changement impose un rendu de plus.
+    list_seen: Pixels,
+    /// Hauteur vue par le rendu précédent, pour détecter qu'elle a bougé entre deux rendus.
+    list_seen_prev: Pixels,
+    /// Le prochain rendu est un rendu de vérification de la hauteur.
+    list_verifying: bool,
+    /// La liste était collée en bas lors du dernier rendu stable (la hauteur n'avait pas bougé).
+    list_pinned: bool,
     keys: KeyStatus,
     modal: ModalState,
     key_input: Entity<InputState>,
@@ -231,6 +242,11 @@ impl MainView {
             connection: ConnectionState::default(),
             timeline: TimelineState::default(),
             scroll: UniformListScrollHandle::new(),
+            list_frame: ScrollHandle::new(),
+            list_seen: px(0.0),
+            list_seen_prev: px(0.0),
+            list_verifying: false,
+            list_pinned: true,
             keys: KeyStatus::Unknown,
             modal: ModalState::default(),
             key_input,
@@ -1525,8 +1541,32 @@ impl MainView {
                             .collect::<Vec<_>>()
                     }),
                 )
-                .track_scroll(&self.scroll)
-                .size_full();
+                .track_scroll(&self.scroll);
+                // Calage : la zone visible de la liste vaut un nombre entier de lignes, l'écart restant en
+                // haut (marge), sans quoi la ligne du haut est rognée et le bas de ses boutons dépasse.
+                // La liste garde `flex_1` (comme avant) : seule la marge du conteneur varie.
+                let row = px(EVENT_ROW_HEIGHT);
+                let frame = self.list_frame.bounds().size.height;
+                let slack = if frame > row * count as f32 { px(0.0) } else { frame - row * (frame / row).floor() };
+                // La hauteur mesurée date de la trame précédente : un changement de mise en page (barre de
+                // suppression qui se ferme, fenêtre redimensionnée) n'est vu qu'au rendu suivant. Chaque rendu
+                // est donc suivi d'un rendu de vérification ; il en redemande un autre seulement si la hauteur
+                // a bougé, ce qui garantit l'arrêt.
+                let verifying = std::mem::take(&mut self.list_verifying);
+                if frame != self.list_seen {
+                    // Une fois la zone rétrécie, la liste n'est plus « en bas » : on se fie à `list_pinned`.
+                    if self.list_pinned {
+                        self.scroll.scroll_to_bottom();
+                    }
+                    self.list_seen = frame;
+                }
+                if frame != self.list_seen_prev || !verifying {
+                    self.list_seen_prev = frame;
+                    self.list_verifying = true;
+                    let id = cx.entity_id();
+                    cx.defer(move |cx| cx.notify(id));
+                }
+                let list = div().flex_1().min_h_0().w_full().child(list.size_full());
 
                 let banner = if self.timeline.is_loading_older() {
                     Some(("timeline-older", "Chargement de messages plus anciens…"))
@@ -1556,7 +1596,15 @@ impl MainView {
                             .id("timeline-list")
                             .flex_1()
                             .min_h_0()
-                            .on_scroll(cx.listener(|this, _, _, cx| this.maybe_request_older(cx)))
+                            .flex()
+                            .flex_col()
+                            .pt(slack)
+                            .track_scroll(&self.list_frame)
+                            .on_scroll(cx.listener(|this, _, _, cx| {
+                                // Seul l'utilisateur détache la liste du bas (molette) ou l'y ramène.
+                                this.list_pinned = this.scroll.is_scrolled_to_end() != Some(false);
+                                this.maybe_request_older(cx)
+                            }))
                             .child(list)
                             .test_support()
                             .aria_label("Messages"),
