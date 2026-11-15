@@ -6,7 +6,7 @@ use gpui_kit::*;
 use matrix::{Client, SyncUpdate};
 use ui::{LoginEvent, LoginView, MainEvent, MainView, RoomsState};
 
-use crate::bridge::{Bridge, SessionResult, SyncHandle};
+use crate::bridge::{Bridge, SessionResult, SyncHandle, TimelineHandle};
 
 const BACKGROUND: u32 = 0x0b0b12;
 const TEXT_SECONDARY: u32 = 0x8888a8;
@@ -15,7 +15,13 @@ enum Screen {
     /// Reprise de session en cours.
     Restoring,
     SignedOut(Entity<LoginView>),
-    SignedIn { client: Client, main: Entity<MainView>, _sync: SyncHandle },
+    SignedIn {
+        client: Client,
+        main: Entity<MainView>,
+        _sync: SyncHandle,
+        /// Timeline du salon sélectionné (une seule à la fois).
+        timeline: Option<TimelineHandle>,
+    },
 }
 
 pub struct AppRoot {
@@ -52,6 +58,12 @@ impl AppRoot {
 
         cx.subscribe_in(&main, window, |this, main, event: &MainEvent, window, cx| match event {
             MainEvent::SignOut => this.sign_out(window, cx),
+            MainEvent::SelectRoom(room) => this.open_timeline(main, room.clone(), window, cx),
+            MainEvent::LoadOlder(_) => {
+                if let Screen::SignedIn { timeline: Some(timeline), .. } = &this.screen {
+                    timeline.load_older();
+                }
+            }
             MainEvent::SubmitRecoveryKey(handoff) => {
                 let Screen::SignedIn { client, .. } = &this.screen else {
                     return;
@@ -90,8 +102,34 @@ impl AppRoot {
         })
         .detach();
 
-        self.screen = Screen::SignedIn { client, main, _sync: sync };
+        self.screen = Screen::SignedIn { client, main, _sync: sync, timeline: None };
         cx.notify();
+    }
+
+    /// Ouvre la timeline de `room` ; l'ancienne tâche est abandonnée (sa dernière réponse, si elle
+    /// arrive quand même, est de toute façon ignorée par le domaine : mauvais salon).
+    fn open_timeline(
+        &mut self,
+        main: &Entity<MainView>,
+        room: domain::RoomId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Screen::SignedIn { client, timeline, .. } = &mut self.screen else {
+            return;
+        };
+        let (mut updates, handle) = self.bridge.open_timeline(client.clone(), room);
+        *timeline = Some(handle);
+        let weak_main = main.downgrade();
+        cx.spawn_in(window, async move |_, cx| {
+            while let Some(update) = updates.recv().await {
+                let alive = weak_main.update(cx, |main, cx| main.apply_timeline(update, cx));
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn show_login(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {

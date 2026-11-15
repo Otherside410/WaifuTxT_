@@ -2,12 +2,17 @@
 
 use std::fmt;
 
+mod event;
 mod recovery;
 mod room;
 mod session;
 
+pub use event::{
+    merge_events, Applied, EventState, EventVm, MergeOutcome, TimelineState, TimelineStatus,
+    TimelineUpdate, UNDECRYPTABLE_PLACEHOLDER,
+};
 pub use recovery::{validate_recovery_key, KeyStatus, RecoveryKey};
-pub use room::{sort_rooms, RoomKind, RoomVm};
+pub use room::{initials, sort_rooms, RoomKind, RoomVm};
 pub use session::{validate_login, LoginField, LoginRequest, Session, ValidationError};
 
 macro_rules! string_id {

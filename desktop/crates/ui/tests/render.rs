@@ -2,37 +2,15 @@
 //! Les éléments sont retrouvés par identifiant ; le texte dessiné n'est pas énumérable par l'API de
 //! test, donc chaque élément clé porte un identifiant et un libellé d'accessibilité.
 
-use gpui_kit::test::TestWindowExt;
-use gpui_kit::{
-    AppContext, Bounds, Point, TestAppContext, WindowBounds, WindowOptions, base::Root, px, size,
-};
-use ui::MainView;
+mod common;
 
-fn open_main(cx: &mut TestAppContext, demo: bool) -> gpui_kit::WindowHandle<Root> {
-    cx.update(gpui_kit::init);
-    cx.update(|cx| {
-        let bounds = Bounds { origin: Point::default(), size: size(px(1200.), px(800.)) };
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            ..Default::default()
-        };
-        let (window, _view) = gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| {
-                if demo {
-                    MainView::demo(window, cx)
-                } else {
-                    MainView::new("@test:local".to_owned(), window, cx)
-                }
-            })
-        })
-        .expect("fenêtre de test");
-        window.downcast::<Root>().expect("Root")
-    })
-}
+use common::open_main;
+use gpui_kit::test::TestWindowExt;
+use gpui_kit::{AppContext, TestAppContext};
 
 #[gpui_kit::test]
 fn demo_shows_sidebar_three_rooms_and_the_key_modal(cx: &mut TestAppContext) {
-    let handle = open_main(cx, true);
+    let (handle, _view) = open_main(cx, true);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
 
@@ -67,7 +45,7 @@ fn demo_shows_sidebar_three_rooms_and_the_key_modal(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn cancel_closes_the_modal_and_it_can_be_reopened(cx: &mut TestAppContext) {
-    let handle = open_main(cx, true);
+    let (handle, _view) = open_main(cx, true);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("recovery-cancel", cx);
@@ -88,7 +66,7 @@ fn cancel_closes_the_modal_and_it_can_be_reopened(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn before_first_sync_the_list_says_syncing_instead_of_being_empty(cx: &mut TestAppContext) {
-    let handle = open_main(cx, false);
+    let (handle, _view) = open_main(cx, false);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("rooms-state").label(), Some("Synchronisation…"));

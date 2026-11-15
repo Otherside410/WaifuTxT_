@@ -46,9 +46,13 @@ fn data_dir() -> Option<PathBuf> {
 
 /// Argument qui lance l'écran principal en démonstration hors ligne (voir [`MainView::demo`]).
 const DEMO_FLAG: &str = "--demo-ui";
+/// Variante de la démonstration : timeline du salon « général » affichée, modal fermé.
+const DEMO_TIMELINE_FLAG: &str = "--demo-timeline";
 
 fn main() -> ExitCode {
-    let demo = std::env::args().skip(1).any(|arg| arg == DEMO_FLAG);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let demo_timeline = args.iter().any(|arg| arg == DEMO_TIMELINE_FLAG);
+    let demo = demo_timeline || args.iter().any(|arg| arg == DEMO_FLAG);
 
     if !has_display() {
         eprintln!("{APP_TITLE} : aucun affichage détecté (ni WAYLAND_DISPLAY ni DISPLAY) ; impossible d'ouvrir la fenêtre.");
@@ -94,7 +98,13 @@ fn main() -> ExitCode {
             })
             .map(|_| ()),
             None => gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| MainView::demo(window, cx))
+                cx.new(|cx| {
+                    if demo_timeline {
+                        MainView::demo_timeline(window, cx)
+                    } else {
+                        MainView::demo(window, cx)
+                    }
+                })
             })
             .map(|_| ()),
         };

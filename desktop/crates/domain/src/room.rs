@@ -39,7 +39,7 @@ impl RoomVm {
 
 /// Jusqu'à deux initiales (première lettre des deux premiers mots), en majuscules ; `?` si le nom
 /// ne contient aucun caractère alphanumérique. Les `#`, `@` et autres préfixes sont ignorés.
-fn initials(name: &str) -> String {
+pub fn initials(name: &str) -> String {
     let letters: String = name
         .split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())

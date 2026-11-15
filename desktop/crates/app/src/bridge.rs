@@ -6,8 +6,8 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use domain::{LoginRequest, RecoveryKey, Session};
-use matrix::{Client, SyncUpdate};
+use domain::{LoginRequest, RecoveryKey, RoomId, Session, TimelineUpdate};
+use matrix::{Client, SyncUpdate, TimelineCommand};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -21,6 +21,26 @@ pub struct SyncHandle(JoinHandle<()>);
 impl Drop for SyncHandle {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// Timeline du salon sélectionné : la lâcher (autre salon, déconnexion) interrompt la tâche, donc
+/// plus aucune mise à jour de l'ancien salon n'est émise.
+pub struct TimelineHandle {
+    task: JoinHandle<()>,
+    commands: mpsc::UnboundedSender<TimelineCommand>,
+}
+
+impl TimelineHandle {
+    /// Demande une page plus ancienne ; sans effet si la tâche est terminée.
+    pub fn load_older(&self) {
+        let _ = self.commands.send(TimelineCommand::LoadOlder);
+    }
+}
+
+impl Drop for TimelineHandle {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
@@ -81,5 +101,19 @@ impl Bridge {
     /// Déverrouille le Secret Storage ; la clé est consommée et jamais journalisée.
     pub fn recover(&self, client: Client, key: RecoveryKey) -> oneshot::Receiver<Result<(), String>> {
         self.run(async move { matrix::recover(&client, key).await.map_err(|e| e.to_string()) })
+    }
+
+    /// Ouvre la timeline d'un salon sur Tokio ; les mises à jour arrivent sur le receveur.
+    pub fn open_timeline(
+        &self,
+        client: Client,
+        room: RoomId,
+    ) -> (mpsc::UnboundedReceiver<TimelineUpdate>, TimelineHandle) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let task = self.runtime.spawn(matrix::run_timeline(client, room, command_rx, move |update| {
+            let _ = tx.send(update);
+        }));
+        (rx, TimelineHandle { task, commands })
     }
 }

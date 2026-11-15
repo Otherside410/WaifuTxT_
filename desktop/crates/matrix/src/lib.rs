@@ -7,6 +7,7 @@ pub mod error;
 pub mod recovery;
 pub mod rooms;
 pub mod sync;
+pub mod timeline;
 
 pub use client::{
     build_client, login, logout, purge_local_session, remember_homeserver, restore, resume, sign_in, stored_homeserver,
@@ -16,3 +17,4 @@ pub use error::{MatrixError, Result};
 pub use recovery::{key_status, recover};
 pub use rooms::room_list;
 pub use sync::{run_sync, SyncUpdate};
+pub use timeline::{run_timeline, TimelineCommand, PAGE_SIZE};
