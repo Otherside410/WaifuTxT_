@@ -3,7 +3,7 @@
 
 use domain::{Session, TimelineUpdate};
 use gpui_kit::*;
-use matrix::{Client, SyncUpdate};
+use matrix::{Client, SyncUpdate, TimelineCommand};
 use ui::{LoginEvent, LoginView, MainEvent, MainView, RoomsState};
 
 use crate::bridge::{Bridge, SessionResult, SyncHandle, TimelineHandle};
@@ -76,6 +76,42 @@ impl AppRoot {
                     main.update(cx, |main, cx| main.apply_timeline(update, cx));
                 }
             }
+            MainEvent::EditText { room, event_id, body } => {
+                let queued = this.with_timeline(|t| {
+                    t.command(TimelineCommand::Edit {
+                        event_id: event_id.to_string(),
+                        body: body.clone(),
+                    })
+                });
+                if queued != Some(true) {
+                    let update = TimelineUpdate::EditFailed {
+                        room: room.clone(),
+                        event_id: event_id.clone(),
+                        text: body.clone(),
+                        message: "Modification impossible : la conversation n'est pas prête.".to_owned(),
+                    };
+                    main.update(cx, |main, cx| main.apply_timeline(update, cx));
+                }
+            }
+            MainEvent::Redact { room, event_id } => {
+                let queued = this.with_timeline(|t| {
+                    t.command(TimelineCommand::Redact { event_id: event_id.to_string() })
+                });
+                if queued != Some(true) {
+                    let update = TimelineUpdate::DeleteFailed {
+                        room: room.clone(),
+                        event_id: event_id.clone(),
+                        message: "Suppression impossible : la conversation n'est pas prête.".to_owned(),
+                    };
+                    main.update(cx, |main, cx| main.apply_timeline(update, cx));
+                }
+            }
+            MainEvent::MarkRead(_) => {
+                this.with_timeline(|t| t.command(TimelineCommand::MarkRead));
+            }
+            MainEvent::Typing { typing, .. } => {
+                this.with_timeline(|t| t.command(TimelineCommand::Typing(*typing)));
+            }
             MainEvent::LoadOlder(_) => {
                 if let Screen::SignedIn { timeline: Some(timeline), .. } = &this.screen {
                     timeline.load_older();
@@ -147,6 +183,14 @@ impl AppRoot {
             }
         })
         .detach();
+    }
+
+    /// Applique `f` à la timeline active, s'il y en a une.
+    fn with_timeline<R>(&self, f: impl FnOnce(&TimelineHandle) -> R) -> Option<R> {
+        match &self.screen {
+            Screen::SignedIn { timeline: Some(timeline), .. } => Some(f(timeline)),
+            _ => None,
+        }
     }
 
     fn show_login(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {

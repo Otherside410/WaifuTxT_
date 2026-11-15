@@ -5,12 +5,14 @@ use std::cell::RefCell;
 use std::fmt;
 
 use domain::{
-    prepare_message, validate_recovery_key, EventId, EventState, EventVm, KeyStatus, RecoveryKey, RoomId, RoomKind, RoomVm,
-    TimelineState, TimelineStatus, TimelineUpdate,
+    last_read_marker, prepare_message, read_by_label, typing_label, validate_recovery_key, EventId,
+    EventState, EventVm, FailedAction, KeyStatus, RecoveryKey, RoomId, RoomKind, RoomVm,
+    TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle, TYPING_IDLE_MS,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::Disableable;
+use gpui_kit::component::{Disableable, Sizable};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::demo;
@@ -79,6 +81,14 @@ pub enum MainEvent {
     LoadOlder(RoomId),
     /// Envoyer `body` (texte déjà validé, non vide) dans `room`.
     SendText { room: RoomId, body: String },
+    /// Remplacer le texte du message `event_id` par `body`.
+    EditText { room: RoomId, event_id: EventId, body: String },
+    /// Supprimer (redacter) le message `event_id`.
+    Redact { room: RoomId, event_id: EventId },
+    /// Marquer le salon comme lu (accusé de lecture jusqu'au dernier message).
+    MarkRead(RoomId),
+    /// Annoncer (`true`) ou cesser d'annoncer (`false`) que j'écris.
+    Typing { room: RoomId, typing: bool },
 }
 
 pub struct MainView {
@@ -93,6 +103,15 @@ pub struct MainView {
     composer: Entity<TextareaState>,
     /// Brouillon d'un envoi échoué à remettre dans le champ au prochain rendu.
     pending_restore: Option<String>,
+    /// Message en cours de modification (son id d'événement) : la saisie est alors en « mode édition ».
+    editing: Option<EventId>,
+    /// Message dont la suppression attend sa confirmation.
+    pending_delete: Option<EventId>,
+    /// Limite les notices « j'écris » ; l'horloge est `clock`.
+    typing_throttle: TypingThrottle,
+    /// Incrémenté à chaque frappe : un minuteur d'inactivité périmé ne fait rien.
+    typing_gen: u64,
+    clock: std::time::Instant,
     /// Compteur des échos locaux de démonstration.
     demo_sent: u32,
     /// Démonstration : l'écho local n'est jamais confirmé (pour le montrer à l'écran).
@@ -122,10 +141,10 @@ impl MainView {
         });
         // Désactivée tant qu'aucun salon n'est sélectionné.
         composer.update(cx, |state, cx| state.set_disabled(true, cx));
-        cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
-                this.submit_composer(window, cx);
-            }
+        cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { shift: false, .. } => this.submit_composer(window, cx),
+            InputEvent::Change => this.on_composer_changed(cx),
+            _ => {}
         })
         .detach();
         Self {
@@ -138,6 +157,11 @@ impl MainView {
             key_input,
             composer,
             pending_restore: None,
+            editing: None,
+            pending_delete: None,
+            typing_throttle: TypingThrottle::default(),
+            typing_gen: 0,
+            clock: std::time::Instant::now(),
             demo_sent: 0,
             demo_hold_pending: false,
             demo: false,
@@ -217,6 +241,11 @@ impl MainView {
         let mut view = Self::demo(window, cx);
         view.modal.close();
         view.start_timeline(RoomId::from(demo::ROOM_ID), cx);
+        // Démonstration : un autre membre est en train d'écrire.
+        view.timeline.apply(TimelineUpdate::Typing {
+            room: RoomId::from(demo::ROOM_ID),
+            users: vec!["Alice Demo".to_owned()],
+        });
         view
     }
 
@@ -267,6 +296,10 @@ impl MainView {
     }
 
     fn start_timeline(&mut self, id: RoomId, cx: &mut Context<Self>) {
+        // On quitte le salon : plus de modification ni de suppression en attente, plus de « j'écris ».
+        self.editing = None;
+        self.pending_delete = None;
+        self.stop_typing(cx);
         self.timeline.select(id.clone());
         self.scroll = UniformListScrollHandle::new();
         if self.demo {
@@ -311,8 +344,16 @@ impl MainView {
         let was_empty = self.timeline.events().is_empty();
         let at_bottom = self.scroll.is_scrolled_to_end() != Some(false);
         // Échec d'envoi : le brouillon retourne dans le champ (au prochain rendu, qui a la fenêtre).
+        let mut edit_target: Option<EventId> = None;
         let draft_to_restore = match &update {
             TimelineUpdate::SendFailed { room, text, .. } if self.timeline.room() == Some(room) => {
+                Some(text.clone())
+            }
+            TimelineUpdate::EditFailed { room, event_id, text, .. }
+                if self.timeline.room() == Some(room) =>
+            {
+                // On retourne en mode édition sur le même message, avec la version saisie.
+                edit_target = Some(event_id.clone());
                 Some(text.clone())
             }
             _ => None,
@@ -323,6 +364,9 @@ impl MainView {
         }
         if draft_to_restore.is_some() {
             self.pending_restore = draft_to_restore;
+        }
+        if edit_target.is_some() {
+            self.editing = edit_target;
         }
         self.sync_composer(cx);
         if was_empty && !self.timeline.events().is_empty() {
@@ -350,7 +394,26 @@ impl MainView {
         {
             self.request_older(cx);
         }
+        if self.timeline.needs_read_receipt(at_bottom) {
+            self.mark_read(cx);
+        }
         cx.notify();
+    }
+
+    /// Accusé de lecture du salon sélectionné : la pastille de non-lus tombe tout de suite (la prochaine
+    /// synchronisation confirme la valeur du serveur) ; hors démonstration, la commande part vers le pont.
+    fn mark_read(&mut self, cx: &mut Context<Self>) {
+        let Some(room) = self.timeline.room().cloned() else {
+            return;
+        };
+        if let RoomsState::Ready(rooms) = &mut self.rooms {
+            for entry in rooms.iter_mut().filter(|r| r.id == room) {
+                entry.unread = 0;
+            }
+        }
+        if !self.demo {
+            cx.emit(MainEvent::MarkRead(room));
+        }
     }
 
     /// Après un défilement : proche du haut de la liste ? Alors une page plus ancienne est demandée.
@@ -358,6 +421,11 @@ impl MainView {
         let offset = self.scroll.0.borrow().base_handle.offset();
         if offset.y > px(-PAGINATE_THRESHOLD_ROWS * EVENT_ROW_HEIGHT) {
             self.request_older(cx);
+        }
+        // Arrivé en bas : les derniers messages sont lus.
+        let at_bottom = self.scroll.is_scrolled_to_end() != Some(false);
+        if self.timeline.needs_read_receipt(at_bottom) {
+            self.mark_read(cx);
         }
     }
 
@@ -411,13 +479,132 @@ impl MainView {
         let Some(body) = prepare_message(&typed) else {
             return;
         };
-        self.send_body(room, body, window, cx);
+        match self.editing.clone() {
+            Some(event_id) => self.edit_message(room, event_id, body, window, cx),
+            None => self.send_body(room, body, window, cx),
+        }
+    }
+
+    /// Un changement de texte : au plus une notice « j'écris » par fenêtre de temps (voir
+    /// [`TypingThrottle`]), et un arrêt automatique après inactivité.
+    fn on_composer_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(room) = self.timeline.room().cloned() else {
+            return;
+        };
+        let blank = self.composer.read(cx).value().trim().is_empty();
+        if blank {
+            self.stop_typing(cx);
+            return;
+        }
+        let now = u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if let Some(typing) = self.typing_throttle.keystroke(now) {
+            self.emit_typing(room, typing, cx);
+        }
+        self.typing_gen += 1;
+        let generation = self.typing_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(TYPING_IDLE_MS))
+                .await;
+            this.update(cx, |this, cx| {
+                // Aucune frappe depuis : on annonce qu'on a cessé d'écrire.
+                if this.typing_gen == generation {
+                    this.stop_typing(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn stop_typing(&mut self, cx: &mut Context<Self>) {
+        if let (Some(typing), Some(room)) =
+            (self.typing_throttle.stop(), self.timeline.room().cloned())
+        {
+            self.emit_typing(room, typing, cx);
+        }
+    }
+
+    fn emit_typing(&mut self, room: RoomId, typing: bool, cx: &mut Context<Self>) {
+        // En démonstration rien ne part ; sinon la commande passe par le pont.
+        if !self.demo {
+            cx.emit(MainEvent::Typing { room, typing });
+        }
+    }
+
+    /// Modification validée : champ vidé, puis commande vers le pont (ou édition locale en démonstration).
+    fn edit_message(
+        &mut self,
+        room: RoomId,
+        event_id: EventId,
+        body: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.timeline.clear_send_failure();
+        self.editing = None;
+        self.stop_typing(cx);
+        self.composer.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+            state.focus(window, cx);
+        });
+        if self.demo {
+            self.timeline.edit_local(&event_id, &body);
+        } else {
+            cx.emit(MainEvent::EditText { room, event_id, body });
+        }
+        cx.notify();
+    }
+
+    /// Action « modifier » d'une ligne : la saisie est pré-remplie avec le texte du message.
+    fn begin_edit(&mut self, event_id: EventId, body: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_delete = None;
+        self.timeline.clear_send_failure();
+        self.editing = Some(event_id);
+        self.composer.update(cx, |state, cx| {
+            state.set_value(body, window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.take().is_some() {
+            self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Action « supprimer » d'une ligne : demande une confirmation, ne supprime rien encore.
+    fn ask_delete(&mut self, event_id: EventId, cx: &mut Context<Self>) {
+        self.pending_delete = Some(event_id);
+        cx.notify();
+    }
+
+    fn confirm_delete(&mut self, cx: &mut Context<Self>) {
+        let (Some(event_id), Some(room)) =
+            (self.pending_delete.take(), self.timeline.room().cloned())
+        else {
+            return;
+        };
+        self.redact(room, event_id, cx);
+    }
+
+    fn redact(&mut self, room: RoomId, event_id: EventId, cx: &mut Context<Self>) {
+        self.timeline.clear_send_failure();
+        if self.demo {
+            self.timeline.redact_local(&event_id);
+        } else {
+            cx.emit(MainEvent::Redact { room, event_id });
+        }
+        cx.notify();
     }
 
     /// Envoi : champ vidé, focus conservé, vue collée en bas, puis commande vers le pont (ou écho
     /// simulé en démonstration). Aucun appel réseau ici.
     fn send_body(&mut self, room: RoomId, body: String, window: &mut Window, cx: &mut Context<Self>) {
         self.timeline.clear_send_failure();
+        self.stop_typing(cx);
         self.composer.update(cx, |state, cx| {
             state.set_value("", window, cx);
             state.focus(window, cx);
@@ -431,14 +618,18 @@ impl MainView {
         cx.notify();
     }
 
-    /// Nouvelle tentative après un échec d'envoi : renvoie le brouillon mémorisé.
+    /// Nouvelle tentative après un échec : renvoie l'envoi, l'édition ou la suppression mémorisés.
     fn retry_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(room), Some(failure)) =
             (self.timeline.room().cloned(), self.timeline.send_failure().cloned())
         else {
             return;
         };
-        self.send_body(room, failure.text, window, cx);
+        match failure.action {
+            FailedAction::Send => self.send_body(room, failure.text, window, cx),
+            FailedAction::Edit(event_id) => self.edit_message(room, event_id, failure.text, window, cx),
+            FailedAction::Delete(event_id) => self.redact(room, event_id, cx),
+        }
     }
 
     /// Démonstration : écho local immédiat, confirmé après un délai (sans réseau).
@@ -453,6 +644,10 @@ impl MainView {
             time_label: String::new(),
             body,
             state: EventState::Local,
+            event_id: None,
+            is_own: true,
+            edited: false,
+            read_by: Vec::new(),
         };
         self.apply_timeline(
             TimelineUpdate::Events { room: room.clone(), events: vec![echo.clone()], at_start: None },
@@ -465,7 +660,11 @@ impl MainView {
             cx.background_executor().timer(DEMO_CONFIRM_DELAY).await;
             this.update(cx, |this, cx| {
                 // Confirmation : même id, état `Normal` (la fusion remplace la ligne).
-                let confirmed = EventVm { state: EventState::Normal, ..echo };
+                let confirmed = EventVm {
+                    state: EventState::Normal,
+                    event_id: Some(EventId::from(format!("$demo-local-{}-ok", this.demo_sent).as_str())),
+                    ..echo
+                };
                 this.apply_timeline(
                     TimelineUpdate::Events { room, events: vec![confirmed], at_start: None },
                     cx,
@@ -479,6 +678,9 @@ impl MainView {
     fn composer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self.composer_enabled();
         let failure = self.timeline.send_failure().cloned();
+        let typing = typing_label(self.timeline.typing());
+        let editing = self.editing.is_some();
+        let deleting = self.pending_delete.is_some();
         div()
             .id("composer")
             .flex_none()
@@ -488,6 +690,68 @@ impl MainView {
             .p_3()
             .border_t_1()
             .border_color(rgb(BORDER))
+            // Indicateur de frappe : hauteur réservée pour ne pas faire sauter la liste.
+            .child(
+                div()
+                    .id("typing-indicator")
+                    .h(px(16.0))
+                    .text_xs()
+                    .text_color(rgb(TEXT_SECONDARY))
+                    .children(typing.clone())
+                    .test_support()
+                    .aria_label(SharedString::from(typing.unwrap_or_default())),
+            )
+            .children(deleting.then(|| {
+                div()
+                    .id("delete-confirm-bar")
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(rgb(TEXT))
+                            .child("Supprimer ce message ? Cette action est définitive."),
+                    )
+                    .child(
+                        Button::new("delete-cancel")
+                            .label("Annuler")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.pending_delete = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("delete-confirm")
+                            .primary()
+                            .label("Supprimer")
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_delete(cx))),
+                    )
+                    .test_support()
+                    .aria_label("Confirmer la suppression")
+            }))
+            .children(editing.then(|| {
+                div()
+                    .id("edit-banner")
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(rgb(TEXT_SECONDARY))
+                            .child("Modification du message (Entrée : valider)"),
+                    )
+                    .child(
+                        Button::new("edit-cancel")
+                            .label("Annuler")
+                            .on_click(cx.listener(|this, _, window, cx| this.cancel_edit(window, cx))),
+                    )
+                    .test_support()
+                    .aria_label("Modification en cours")
+            }))
             .children(failure.map(|failure| {
                 let label = SharedString::from(failure.message.clone());
                 div()
@@ -555,12 +819,15 @@ impl MainView {
             )
             .children((room.unread > 0).then(|| {
                 div()
+                    .id(SharedString::from(format!("unread-{index}")))
                     .px_2()
                     .rounded_full()
                     .bg(rgb(ACCENT))
                     .text_xs()
                     .text_color(rgb(TEXT))
-                    .child(badge_text)
+                    .child(badge_text.clone())
+                    .test_support()
+                    .aria_label(SharedString::from(format!("{badge_text} non lus")))
             }))
             .test_support()
             .aria_label(accessible_name)
@@ -612,15 +879,57 @@ impl MainView {
         }
     }
 
-    fn event_row(index: usize, event: &EventVm) -> impl IntoElement {
+    fn event_row(
+        index: usize,
+        event: &EventVm,
+        read_label: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let undecryptable = event.state == EventState::Indechiffrable;
         let failed = event.state == EventState::EchecEnvoi;
-        let dim = event.state == EventState::Local;
-        let time_label = match event.state {
+        let deleted = event.state == EventState::Supprime;
+        let dim = event.state == EventState::Local || deleted;
+        let mut time_label = match event.state {
             EventState::Local => "envoi…".to_owned(),
             EventState::EchecEnvoi => "non envoyé".to_owned(),
             _ => event.time_label.clone(),
         };
+        if event.edited {
+            time_label.push_str(" · modifié");
+        }
+        if let Some(read) = &read_label {
+            time_label.push_str(" · ");
+            time_label.push_str(read);
+        }
+        let actions = event.can_edit_or_delete().then(|| {
+            let event_id = event.event_id.clone();
+            let body = event.body.clone();
+            let (edit_id, delete_id) = (event_id.clone(), event_id);
+            div()
+                .flex_none()
+                .flex()
+                .gap_1()
+                .child(
+                    Button::new(SharedString::from(format!("edit-{index}")))
+                        .label("Modifier")
+                        .xsmall()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if let Some(id) = edit_id.clone() {
+                                this.begin_edit(id, body.clone(), window, cx);
+                            }
+                        })),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("delete-{index}")))
+                        .label("Supprimer")
+                        .xsmall()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(id) = delete_id.clone() {
+                                this.ask_delete(id, cx);
+                            }
+                        })),
+                )
+        });
         div()
             .id(SharedString::from(format!("event-{index}")))
             .h(px(EVENT_ROW_HEIGHT))
@@ -668,20 +977,24 @@ impl MainView {
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_sm()
+                            .when(deleted, |row| row.italic())
                             .text_color(rgb(if undecryptable || failed { ERROR } else { TEXT_SECONDARY }))
                             .child(event.body.clone()),
                     ),
             )
+            .children(actions)
             .test_support()
             .aria_label(SharedString::from(format!(
-                "{} : {}{}",
+                "{} : {}{}{}{}",
                 event.sender_name,
                 event.body,
                 match event.state {
                     EventState::Local => " [envoi en cours]",
                     EventState::EchecEnvoi => " [non envoyé]",
                     _ => "",
-                }
+                },
+                if event.edited { " [modifié]" } else { "" },
+                read_label.map(|r| format!(" [{r}]")).unwrap_or_default(),
             )))
     }
 
@@ -760,13 +1073,21 @@ impl MainView {
                 let list = uniform_list(
                     "timeline",
                     count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _window, _cx| {
+                    cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
                         let end = range.end.min(this.timeline.events().len());
                         let start = range.start.min(end);
+                        let marker = last_read_marker(this.timeline.events());
                         this.timeline.events()[start..end]
                             .iter()
                             .enumerate()
-                            .map(|(offset, event)| Self::event_row(start + offset, event))
+                            .map(|(offset, event)| {
+                                let index = start + offset;
+                                // L'état de lecture n'est affiché que sur le dernier message concerné.
+                                let read = (marker == Some(index))
+                                    .then(|| read_by_label(&event.read_by))
+                                    .flatten();
+                                Self::event_row(index, event, read, cx)
+                            })
                             .collect::<Vec<_>>()
                     }),
                 )

@@ -39,7 +39,12 @@ impl TimelineHandle {
 
     /// Met un message texte en file d'envoi ; `false` si la tâche de timeline n'écoute plus.
     pub fn send_text(&self, body: String) -> bool {
-        self.commands.send(TimelineCommand::SendText(body)).is_ok()
+        self.command(TimelineCommand::SendText(body))
+    }
+
+    /// Transmet une commande à la tâche de timeline ; `false` si elle n'écoute plus.
+    pub fn command(&self, command: TimelineCommand) -> bool {
+        self.commands.send(command).is_ok()
     }
 }
 

@@ -25,7 +25,15 @@ pub fn demo_rooms() -> Vec<RoomVm> {
 }
 
 fn demo_event(rank: usize) -> EventVm {
-    let (name, initials) = if rank.is_multiple_of(2) { ("Alice Demo", "AD") } else { ("Bob Demo", "BD") };
+    // Un message sur quatre est de moi : ceux-là peuvent être modifiés ou supprimés.
+    let own = rank % 4 == 3;
+    let (name, initials) = if own {
+        ("Moi (démo)", "MD")
+    } else if rank.is_multiple_of(2) {
+        ("Alice Demo", "AD")
+    } else {
+        ("Bob Demo", "BD")
+    };
     let minutes = rank % (24 * 60);
     let undecryptable = rank == DEMO_UNDECRYPTABLE_AT;
     EventVm {
@@ -40,6 +48,15 @@ fn demo_event(rank: usize) -> EventVm {
             format!("Message de démonstration n°{rank}")
         },
         state: if undecryptable { EventState::Indechiffrable } else { EventState::Normal },
+        event_id: Some(EventId::from(format!("$demo-ev-{rank:04}").as_str())),
+        is_own: own,
+        edited: false,
+        // Le dernier message a été lu par deux autres membres.
+        read_by: if rank + 1 == DEMO_MESSAGES {
+            vec!["alice".to_owned(), "bob".to_owned()]
+        } else {
+            Vec::new()
+        },
     }
 }
 

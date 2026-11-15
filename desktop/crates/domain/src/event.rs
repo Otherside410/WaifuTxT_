@@ -16,7 +16,12 @@ pub enum EventState {
     Local,
     /// Envoi refusé ou échoué côté serveur : le message n'est pas parti.
     EchecEnvoi,
+    /// Message supprimé (redaction) : espace réservé, la ligne garde sa hauteur.
+    Supprime,
 }
+
+/// Texte de l'espace réservé d'un message supprimé.
+pub const REDACTED_PLACEHOLDER: &str = "Message supprimé";
 
 /// Placeholder affiché à la place d'un corps de message indéchiffrable.
 pub const UNDECRYPTABLE_PLACEHOLDER: &str =
@@ -36,6 +41,22 @@ pub struct EventVm {
     pub time_label: String,
     pub body: String,
     pub state: EventState,
+    /// Identifiant d'événement **réel** (pour éditer/supprimer) : `None` sur un écho local, rempli une fois
+    /// le message confirmé par le serveur. Ne sert pas de clé de fusion (voir `id`).
+    pub event_id: Option<EventId>,
+    /// Message envoyé par moi.
+    pub is_own: bool,
+    /// Message modifié après coup (mention « modifié »).
+    pub edited: bool,
+    /// Membres (autres que moi) dont l'accusé de lecture pointe sur ce message, par nom court.
+    pub read_by: Vec<String>,
+}
+
+impl EventVm {
+    /// Peut-on modifier ou supprimer ce message ? Le mien, confirmé par le serveur, ni supprimé ni en échec.
+    pub fn can_edit_or_delete(&self) -> bool {
+        self.is_own && self.event_id.is_some() && self.state == EventState::Normal
+    }
 }
 
 /// Résultat d'une fusion : de quoi ancrer le défilement.
@@ -80,6 +101,106 @@ pub fn merge_events(existing: &mut Vec<EventVm>, incoming: Vec<EventVm>) -> Merg
     MergeOutcome { prepended: prepended.min(added), appended: added - prepended.min(added) }
 }
 
+/// Applique une édition au message `target` (par id d'événement) : nouveau texte, mention « modifié », aucune
+/// nouvelle ligne. `false` si le message n'existe pas (ou est supprimé).
+pub fn apply_edit(events: &mut [EventVm], target: &EventId, new_body: &str) -> bool {
+    match events.iter_mut().find(|e| e.event_id.as_ref() == Some(target)) {
+        Some(event) if event.state != EventState::Supprime => {
+            event.body = new_body.to_owned();
+            event.edited = true;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Supprime (redaction) le message `target` : la ligne devient un espace réservé de même hauteur.
+pub fn redact_event(events: &mut [EventVm], target: &EventId) -> bool {
+    match events.iter_mut().find(|e| e.event_id.as_ref() == Some(target)) {
+        Some(event) => {
+            event.body = REDACTED_PLACEHOLDER.to_owned();
+            event.state = EventState::Supprime;
+            event.edited = false;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Indice du **dernier** message sur lequel au moins un autre membre a posé son accusé de lecture.
+pub fn last_read_marker(events: &[EventVm]) -> Option<usize> {
+    events.iter().rposition(|e| !e.read_by.is_empty())
+}
+
+/// Libellé « vu par … » sobre : deux noms au plus, puis un compteur.
+pub fn read_by_label(names: &[String]) -> Option<String> {
+    match names {
+        [] => None,
+        [a] => Some(format!("vu par {a}")),
+        [a, b] => Some(format!("vu par {a}, {b}")),
+        [a, b, rest @ ..] => Some(format!("vu par {a}, {b} +{}", rest.len())),
+    }
+}
+
+/// Libellé de l'indicateur de frappe ; `None` si personne n'écrit.
+pub fn typing_label(users: &[String]) -> Option<String> {
+    match users {
+        [] => None,
+        [a] => Some(format!("{a} écrit…")),
+        [a, b] => Some(format!("{a} et {b} écrivent…")),
+        many => Some(format!("{} personnes écrivent…", many.len())),
+    }
+}
+
+/// Limite l'envoi des `typing_notice` : une notice au début de la frappe, une relance toutes les
+/// [`TYPING_RESEND_MS`] tant qu'on tape, et un arrêt après [`TYPING_IDLE_MS`] d'inactivité ou à l'envoi.
+/// Logique pure : l'horloge (millisecondes) est fournie par l'appelant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TypingThrottle {
+    active: bool,
+    last_notice_ms: u64,
+    last_key_ms: u64,
+}
+
+/// Intervalle de relance d'une notice « je tape » (le serveur l'expire seul au bout de ~30 s).
+pub const TYPING_RESEND_MS: u64 = 20_000;
+/// Inactivité au bout de laquelle on annonce qu'on ne tape plus.
+pub const TYPING_IDLE_MS: u64 = 4_000;
+
+impl TypingThrottle {
+    /// Une frappe à l'instant `now_ms` : `Some(true)` si une notice doit partir.
+    pub fn keystroke(&mut self, now_ms: u64) -> Option<bool> {
+        self.last_key_ms = now_ms;
+        if !self.active || now_ms.saturating_sub(self.last_notice_ms) >= TYPING_RESEND_MS {
+            self.active = true;
+            self.last_notice_ms = now_ms;
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    /// Passage du temps : `Some(false)` quand l'inactivité justifie d'annoncer qu'on a cessé d'écrire.
+    pub fn tick(&mut self, now_ms: u64) -> Option<bool> {
+        if self.active && now_ms.saturating_sub(self.last_key_ms) >= TYPING_IDLE_MS {
+            self.active = false;
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Arrêt immédiat (message envoyé, champ vidé, changement de salon).
+    pub fn stop(&mut self) -> Option<bool> {
+        if self.active {
+            self.active = false;
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 /// Message d'une tâche de timeline vers l'UI.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TimelineUpdate {
@@ -88,12 +209,23 @@ pub enum TimelineUpdate {
     Failed { room: RoomId, message: String },
     /// L'envoi d'un message n'a pas pu être mis en file : `text` est le brouillon à restituer.
     SendFailed { room: RoomId, text: String, message: String },
+    /// L'édition de `event_id` a échoué : `text` est la version saisie, à restituer.
+    EditFailed { room: RoomId, event_id: EventId, text: String, message: String },
+    /// La suppression de `event_id` a échoué.
+    DeleteFailed { room: RoomId, event_id: EventId, message: String },
+    /// Membres qui écrivent actuellement dans le salon (moi exclu), par nom court.
+    Typing { room: RoomId, users: Vec<String> },
 }
 
 impl TimelineUpdate {
     pub fn room(&self) -> &RoomId {
         match self {
-            Self::Events { room, .. } | Self::Failed { room, .. } | Self::SendFailed { room, .. } => room,
+            Self::Events { room, .. }
+            | Self::Failed { room, .. }
+            | Self::SendFailed { room, .. }
+            | Self::EditFailed { room, .. }
+            | Self::DeleteFailed { room, .. }
+            | Self::Typing { room, .. } => room,
         }
     }
 }
@@ -116,11 +248,21 @@ pub struct Applied {
     pub merge: MergeOutcome,
 }
 
-/// Brouillon d'un message dont l'envoi a échoué, avec la raison affichable.
+/// Action qui a échoué, pour la relancer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FailedAction {
+    Send,
+    Edit(EventId),
+    Delete(EventId),
+}
+
+/// Action échouée (envoi, édition ou suppression) avec la raison affichable ; `text` est le brouillon à
+/// restituer (vide pour une suppression).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendFailure {
     pub text: String,
     pub message: String,
+    pub action: FailedAction,
 }
 
 /// Texte à envoyer pour la saisie `raw` : `None` si elle est vide ou ne contient que des espaces (rien
@@ -139,6 +281,8 @@ pub struct TimelineState {
     at_start: bool,
     loading_older: bool,
     send_failure: Option<SendFailure>,
+    typing: Vec<String>,
+    read_marked: Option<EventId>,
 }
 
 impl Default for TimelineState {
@@ -150,6 +294,8 @@ impl Default for TimelineState {
             at_start: false,
             loading_older: false,
             send_failure: None,
+            typing: Vec::new(),
+            read_marked: None,
         }
     }
 }
@@ -176,6 +322,36 @@ impl TimelineState {
     }
     pub fn clear_send_failure(&mut self) {
         self.send_failure = None;
+    }
+    /// Membres qui écrivent dans le salon sélectionné.
+    pub fn typing(&self) -> &[String] {
+        &self.typing
+    }
+
+    /// Faut-il envoyer un accusé de lecture ? Oui une seule fois par dernier message distant, quand la
+    /// timeline est prête et que la lecture est collée en bas ; jamais pour un écho local (sans `event_id`).
+    pub fn needs_read_receipt(&mut self, at_bottom: bool) -> bool {
+        if self.status != TimelineStatus::Ready || !at_bottom {
+            return false;
+        }
+        let Some(last) = self.events.last() else {
+            return false;
+        };
+        if last.event_id.is_none() || self.read_marked.as_ref() == Some(&last.id) {
+            return false;
+        }
+        self.read_marked = Some(last.id.clone());
+        true
+    }
+
+    /// Édition appliquée localement (mode démonstration) : voir [`apply_edit`].
+    pub fn edit_local(&mut self, target: &EventId, new_body: &str) -> bool {
+        apply_edit(&mut self.events, target, new_body)
+    }
+
+    /// Suppression appliquée localement (mode démonstration) : voir [`redact_event`].
+    pub fn redact_local(&mut self, target: &EventId) -> bool {
+        redact_event(&mut self.events, target)
     }
 
     /// Sélectionne un salon : l'état précédent est abandonné.
@@ -220,7 +396,24 @@ impl TimelineState {
                 Applied { ignored: false, merge }
             }
             TimelineUpdate::SendFailed { text, message, .. } => {
-                self.send_failure = Some(SendFailure { text, message });
+                self.send_failure = Some(SendFailure { text, message, action: FailedAction::Send });
+                Applied::default()
+            }
+            TimelineUpdate::EditFailed { event_id, text, message, .. } => {
+                self.send_failure =
+                    Some(SendFailure { text, message, action: FailedAction::Edit(event_id) });
+                Applied::default()
+            }
+            TimelineUpdate::DeleteFailed { event_id, message, .. } => {
+                self.send_failure = Some(SendFailure {
+                    text: String::new(),
+                    message,
+                    action: FailedAction::Delete(event_id),
+                });
+                Applied::default()
+            }
+            TimelineUpdate::Typing { users, .. } => {
+                self.typing = users;
                 Applied::default()
             }
             TimelineUpdate::Failed { message, .. } => {
@@ -248,7 +441,15 @@ mod tests {
             time_label: String::new(),
             body: format!("msg {id}"),
             state: EventState::Normal,
+            event_id: Some(EventId::from(id)),
+            is_own: false,
+            edited: false,
+            read_by: Vec::new(),
         }
+    }
+
+    fn own(id: &str, ts: u64) -> EventVm {
+        EventVm { is_own: true, ..ev(id, ts) }
     }
 
     fn ids(events: &[EventVm]) -> Vec<&str> {
@@ -485,6 +686,188 @@ mod tests {
         });
         state.select(RoomId::from("!b:x"));
         assert_eq!(state.send_failure(), None);
+    }
+
+
+    #[test]
+    fn event_id_is_none_on_a_local_echo_and_filled_on_confirmation() {
+        let mut list = Vec::new();
+        let mut echo = own("local-1", 100);
+        echo.state = EventState::Local;
+        echo.event_id = None;
+        merge_events(&mut list, vec![echo.clone()]);
+        assert_eq!(list[0].event_id, None);
+        assert!(!list[0].can_edit_or_delete(), "un écho local ne se modifie pas");
+
+        // Confirmation : même clé de fusion (`id`), l'id d'événement réel apparaît.
+        let confirmed = EventVm {
+            state: EventState::Normal,
+            event_id: Some(EventId::from("$vrai")),
+            ..echo
+        };
+        merge_events(&mut list, vec![confirmed]);
+        assert_eq!(list.len(), 1, "aucun doublon");
+        assert_eq!(list[0].event_id, Some(EventId::from("$vrai")));
+        assert!(list[0].can_edit_or_delete());
+    }
+
+    #[test]
+    fn only_my_confirmed_normal_messages_can_be_edited_or_deleted() {
+        assert!(own("$a", 1).can_edit_or_delete());
+        assert!(!ev("$a", 1).can_edit_or_delete(), "pas le mien");
+        let deleted = EventVm { state: EventState::Supprime, ..own("$a", 1) };
+        assert!(!deleted.can_edit_or_delete());
+        let failed = EventVm { state: EventState::EchecEnvoi, ..own("$a", 1) };
+        assert!(!failed.can_edit_or_delete());
+    }
+
+    #[test]
+    fn an_edit_updates_the_text_in_place_without_a_new_row() {
+        let mut list = vec![ev("$1", 1), own("$2", 2), ev("$3", 3)];
+        assert!(apply_edit(&mut list, &EventId::from("$2"), "version corrigée"));
+        assert_eq!(list.len(), 3);
+        assert_eq!(ids(&list), ["$1", "$2", "$3"]);
+        assert_eq!(list[1].body, "version corrigée");
+        assert!(list[1].edited, "mention « modifié »");
+        assert!(!apply_edit(&mut list, &EventId::from("$absent"), "x"));
+    }
+
+    #[test]
+    fn an_edit_arriving_through_the_merge_replaces_the_row() {
+        let mut list = vec![own("$2", 2)];
+        let edited = EventVm { body: "édité".into(), edited: true, ..own("$2", 2) };
+        merge_events(&mut list, vec![edited]);
+        assert_eq!(list.len(), 1);
+        assert!(list[0].edited);
+    }
+
+    #[test]
+    fn redaction_turns_the_row_into_a_placeholder_of_the_same_row() {
+        let mut list = vec![ev("$1", 1), own("$2", 2)];
+        list[1].edited = true;
+        assert!(redact_event(&mut list, &EventId::from("$2")));
+        assert_eq!(list.len(), 2, "la ligne reste (hauteur de défilement conservée)");
+        assert_eq!(list[1].body, REDACTED_PLACEHOLDER);
+        assert_eq!(list[1].state, EventState::Supprime);
+        assert!(!list[1].edited);
+        assert!(!list[1].can_edit_or_delete());
+        assert!(!apply_edit(&mut list, &EventId::from("$2"), "ressuscité"), "un message supprimé ne s'édite pas");
+        assert!(!redact_event(&mut list, &EventId::from("$absent")));
+    }
+
+    #[test]
+    fn the_read_marker_is_on_the_last_message_with_readers() {
+        let mut list = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
+        assert_eq!(last_read_marker(&list), None);
+        list[0].read_by = vec!["alice".into()];
+        list[1].read_by = vec!["alice".into(), "bob".into()];
+        assert_eq!(last_read_marker(&list), Some(1), "le dernier concerné, pas le dernier message");
+        list[2].read_by = vec!["bob".into()];
+        assert_eq!(last_read_marker(&list), Some(2));
+    }
+
+    #[test]
+    fn read_by_label_is_sober() {
+        assert_eq!(read_by_label(&[]), None);
+        assert_eq!(read_by_label(&["alice".into()]).as_deref(), Some("vu par alice"));
+        assert_eq!(read_by_label(&["alice".into(), "bob".into()]).as_deref(), Some("vu par alice, bob"));
+        let many: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(read_by_label(&many).as_deref(), Some("vu par a, b +2"));
+    }
+
+    #[test]
+    fn typing_label_handles_one_two_and_many() {
+        assert_eq!(typing_label(&[]), None);
+        assert_eq!(typing_label(&["Alice".into()]).as_deref(), Some("Alice écrit…"));
+        assert_eq!(typing_label(&["Alice".into(), "Bob".into()]).as_deref(), Some("Alice et Bob écrivent…"));
+        let three: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(typing_label(&three).as_deref(), Some("3 personnes écrivent…"));
+    }
+
+    #[test]
+    fn typing_sends_one_notice_per_window_not_one_per_keystroke() {
+        let mut throttle = TypingThrottle::default();
+        assert_eq!(throttle.keystroke(1_000), Some(true), "première frappe : notice");
+        for t in (1_100..5_000).step_by(100) {
+            assert_eq!(throttle.keystroke(t), None, "frappe à {t} ms : pas de nouvelle notice");
+        }
+        // Toujours en train de taper après la fenêtre de relance : une seule relance.
+        assert_eq!(throttle.keystroke(1_000 + TYPING_RESEND_MS), Some(true));
+        assert_eq!(throttle.keystroke(1_000 + TYPING_RESEND_MS + 50), None);
+    }
+
+    #[test]
+    fn typing_stops_after_idle_and_on_demand() {
+        let mut throttle = TypingThrottle::default();
+        assert_eq!(throttle.tick(10_000), None, "rien à arrêter si on n'a pas commencé");
+        throttle.keystroke(1_000);
+        assert_eq!(throttle.tick(1_000 + TYPING_IDLE_MS - 1), None, "pas encore inactif");
+        assert_eq!(throttle.tick(1_000 + TYPING_IDLE_MS), Some(false));
+        assert_eq!(throttle.tick(1_000 + TYPING_IDLE_MS + 1), None, "un seul arrêt");
+        // Reprise : nouvelle notice.
+        assert_eq!(throttle.keystroke(20_000), Some(true));
+        assert_eq!(throttle.stop(), Some(false));
+        assert_eq!(throttle.stop(), None);
+    }
+
+    #[test]
+    fn a_read_receipt_is_requested_once_per_last_remote_message_when_at_the_bottom() {
+        let mut state = TimelineState::default();
+        assert!(!state.needs_read_receipt(true), "rien sans salon");
+        state.select(RoomId::from("!a:x"));
+        assert!(!state.needs_read_receipt(true), "pas avant le chargement");
+        state.apply(events_update("!a:x", vec![ev("$1", 1), ev("$2", 2)], Some(false)));
+        assert!(!state.needs_read_receipt(false), "pas en bas : pas d'accusé");
+        assert!(state.needs_read_receipt(true));
+        assert!(!state.needs_read_receipt(true), "déjà envoyé pour ce dernier message");
+        state.apply(events_update("!a:x", vec![ev("$3", 3)], None));
+        assert!(state.needs_read_receipt(true), "nouveau dernier message");
+    }
+
+    #[test]
+    fn no_read_receipt_for_a_local_echo() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        let mut echo = own("local", 5);
+        echo.event_id = None;
+        echo.state = EventState::Local;
+        state.apply(events_update("!a:x", vec![echo], Some(true)));
+        assert!(!state.needs_read_receipt(true));
+    }
+
+    #[test]
+    fn edit_and_delete_failures_keep_what_is_needed_to_retry() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        state.apply(TimelineUpdate::EditFailed {
+            room: RoomId::from("!a:x"),
+            event_id: EventId::from("$2"),
+            text: "ma version".into(),
+            message: "réseau".into(),
+        });
+        let failure = state.send_failure().expect("échec d'édition");
+        assert_eq!(failure.action, FailedAction::Edit(EventId::from("$2")));
+        assert_eq!(failure.text, "ma version");
+
+        state.apply(TimelineUpdate::DeleteFailed {
+            room: RoomId::from("!a:x"),
+            event_id: EventId::from("$2"),
+            message: "refusé".into(),
+        });
+        assert_eq!(state.send_failure().map(|f| f.action.clone()), Some(FailedAction::Delete(EventId::from("$2"))));
+    }
+
+    #[test]
+    fn typing_users_are_scoped_to_the_selected_room_and_reset_on_selection() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        let late = TimelineUpdate::Typing { room: RoomId::from("!autre:x"), users: vec!["z".into()] };
+        assert!(state.apply(late).ignored);
+        assert!(state.typing().is_empty());
+        state.apply(TimelineUpdate::Typing { room: RoomId::from("!a:x"), users: vec!["alice".into()] });
+        assert_eq!(state.typing(), ["alice"]);
+        state.select(RoomId::from("!b:x"));
+        assert!(state.typing().is_empty());
     }
 
     #[test]

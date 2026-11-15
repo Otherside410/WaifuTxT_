@@ -145,6 +145,10 @@ fn event(room_tag: &str, ts: u64) -> EventVm {
         time_label: "12:00".into(),
         body: format!("message {room_tag}"),
         state: EventState::Normal,
+        event_id: Some(EventId::from(format!("$ev-{room_tag}-{ts}").as_str())),
+        is_own: false,
+        edited: false,
+        read_by: Vec::new(),
     }
 }
 

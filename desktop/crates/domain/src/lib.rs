@@ -8,8 +8,10 @@ mod room;
 mod session;
 
 pub use event::{
-    merge_events, prepare_message, Applied, EventState, EventVm, MergeOutcome, SendFailure,
-    TimelineState, TimelineStatus, TimelineUpdate, UNDECRYPTABLE_PLACEHOLDER,
+    apply_edit, last_read_marker, merge_events, prepare_message, read_by_label, redact_event,
+    typing_label, Applied, EventState, EventVm, FailedAction, MergeOutcome, SendFailure,
+    TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle, REDACTED_PLACEHOLDER,
+    TYPING_IDLE_MS, TYPING_RESEND_MS, UNDECRYPTABLE_PLACEHOLDER,
 };
 pub use recovery::{validate_recovery_key, KeyStatus, RecoveryKey};
 pub use room::{initials, sort_rooms, RoomKind, RoomVm};
