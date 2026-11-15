@@ -207,7 +207,8 @@ impl AppRoot {
     }
 
     fn show_login(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let login = cx.new(|cx| LoginView::new(window, cx));
+        let last_homeserver = self.bridge.last_homeserver();
+        let login = cx.new(|cx| LoginView::new(window, cx, last_homeserver.as_deref()));
         if error.is_some() {
             login.update(cx, |view, cx| view.set_error(error, cx));
         }

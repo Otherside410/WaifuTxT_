@@ -64,7 +64,7 @@ pub fn validate_login(
     let err = |field, message| Err(ValidationError { field, message });
 
     if homeserver.is_empty() {
-        return err(LoginField::Homeserver, "Indique le homeserver (ex. matrix.org).");
+        return err(LoginField::Homeserver, "Indique l'adresse de ton homeserver (ex. https://mon-homeserver.exemple).");
     }
     if homeserver.chars().any(char::is_whitespace) {
         return err(LoginField::Homeserver, "Le homeserver ne doit pas contenir d'espace.");

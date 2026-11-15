@@ -6,7 +6,7 @@ use gpui_kit::{
     AppContext, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowHandle, WindowOptions,
     base::Root, px, size, SharedString, Window,
 };
-use ui::MainView;
+use ui::{LoginView, MainView};
 
 /// Ouvre `MainView` dans une fenêtre headless 1200×800 : en démonstration (`demo`) ou en mode réel
 /// (sans client : rien n'est émis vers un réseau, les événements `MainEvent` n'ont pas d'abonné).
@@ -78,6 +78,26 @@ pub fn open_demo_media(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<M
         };
         let (window, view) = gpui_kit::open_window(options, cx, |window, cx| {
             cx.new(|cx| MainView::demo_media(window, cx))
+        })
+        .expect("fenêtre de test");
+        (window.downcast::<Root>().expect("Root"), view)
+    })
+}
+
+/// Ouvre l'écran de connexion avec le « dernier homeserver utilisé » donné (`None` : store local vide).
+pub fn open_login(
+    cx: &mut TestAppContext,
+    last_homeserver: Option<&'static str>,
+) -> (WindowHandle<Root>, Entity<LoginView>) {
+    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        let bounds = Bounds { origin: Point::default(), size: size(px(1200.), px(800.)) };
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        };
+        let (window, view) = gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| LoginView::new(window, cx, last_homeserver))
         })
         .expect("fenêtre de test");
         (window.downcast::<Root>().expect("Root"), view)

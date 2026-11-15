@@ -9,8 +9,18 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::Disableable;
 use gpui_kit::*;
 
-/// Homeserver pré-rempli (même défaut que l'app web).
-const DEFAULT_HOMESERVER: &str = "matrix.org";
+/// Homeserver pré-rempli sur un écran neuf : **aucun**. Un domaine public codé en dur ferait partir identifiant
+/// et mot de passe vers un serveur que l'utilisateur n'a pas choisi dès qu'il valide sans y penser.
+pub const DEFAULT_HOMESERVER: &str = "";
+
+/// Valeur initiale du champ homeserver : le dernier homeserver utilisé (lu dans le store local par l'appelant)
+/// s'il existe et n'est pas vide, sinon [`DEFAULT_HOMESERVER`] (vide).
+pub fn initial_homeserver(last_used: Option<&str>) -> String {
+    last_used
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| DEFAULT_HOMESERVER.to_owned(), str::to_owned)
+}
 
 const BACKGROUND: u32 = 0x0b0b12;
 const TEXT: u32 = 0xe8e8f0;
@@ -34,9 +44,14 @@ pub struct LoginView {
 impl EventEmitter<LoginEvent> for LoginView {}
 
 impl LoginView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let homeserver = cx.new(|cx| InputState::new(window, cx).placeholder("matrix.org"));
-        homeserver.update(cx, |state, cx| state.set_value(DEFAULT_HOMESERVER, window, cx));
+    /// `last_homeserver` : dernier homeserver utilisé (store local), proposé à la place d'un champ vide.
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, last_homeserver: Option<&str>) -> Self {
+        let homeserver =
+            cx.new(|cx| InputState::new(window, cx).placeholder("https://mon-homeserver.exemple"));
+        let initial = initial_homeserver(last_homeserver);
+        if !initial.is_empty() {
+            homeserver.update(cx, |state, cx| state.set_value(initial, window, cx));
+        }
         let username = cx.new(|cx| InputState::new(window, cx).placeholder("Identifiant"));
         let password =
             cx.new(|cx| InputState::new(window, cx).placeholder("Mot de passe").masked(true));
@@ -111,15 +126,49 @@ impl Render for LoginView {
                     .gap_3()
                     .child(div().text_xl().text_color(rgb(TEXT)).child("WaifuChat"))
                     .child(label("Homeserver"))
-                    .child(Input::new(&self.homeserver))
+                    .child(Input::new(&self.homeserver).id("login-homeserver"))
                     .child(label("Identifiant"))
-                    .child(Input::new(&self.username))
+                    .child(Input::new(&self.username).id("login-username"))
                     .child(label("Mot de passe"))
-                    .child(Input::new(&self.password))
+                    .child(Input::new(&self.password).id("login-password"))
                     .children(self.error.clone().map(|message| {
                         div().text_sm().text_color(rgb(ERROR)).child(message)
                     }))
                     .child(button),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Imports nominatifs : `use super::*` ramènerait le `test` de gpui_kit, qui masque `#[test]`.
+    use super::{initial_homeserver, DEFAULT_HOMESERVER};
+
+    /// Domaines publics qui ne doivent jamais redevenir un défaut du formulaire.
+    const PUBLIC_HOMESERVERS: [&str; 4] = ["matrix.org", "matrix-client.matrix.org", "element.io", "tchncs.de"];
+
+    #[test]
+    fn there_is_no_default_homeserver() {
+        assert!(DEFAULT_HOMESERVER.is_empty(), "un défaut public est réapparu : {DEFAULT_HOMESERVER:?}");
+        for public in PUBLIC_HOMESERVERS {
+            assert!(!DEFAULT_HOMESERVER.contains(public), "défaut public : {public}");
+        }
+    }
+
+    #[test]
+    fn an_empty_store_proposes_an_empty_field() {
+        let initial = initial_homeserver(None);
+        assert!(initial.is_empty(), "{initial:?}");
+        for public in PUBLIC_HOMESERVERS {
+            assert!(!initial.contains(public));
+        }
+        assert!(initial_homeserver(Some("")).is_empty());
+        assert!(initial_homeserver(Some("   \n")).is_empty());
+    }
+
+    #[test]
+    fn the_last_used_homeserver_is_proposed_as_is() {
+        assert_eq!(initial_homeserver(Some("http://localhost:8008")), "http://localhost:8008");
+        assert_eq!(initial_homeserver(Some("  http://localhost:8008\n")), "http://localhost:8008");
     }
 }

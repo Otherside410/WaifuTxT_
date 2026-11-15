@@ -11,6 +11,7 @@ use domain::{
 };
 use futures_util::StreamExt;
 use matrix_sdk::room::edit::EditedContent;
+use matrix_sdk::ruma::api::client::typing::create_typing_event::{self, v3::{Typing, TypingInfo}};
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::events::room::message::{
     MessageType, RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
@@ -131,6 +132,33 @@ fn media_key(source: &MediaSource) -> (String, bool) {
     }
 }
 
+/// Durée de validité côté serveur d'une notice « j'écris » (même valeur que le SDK, qui attend une relance
+/// toutes les ~3 s : voir `TYPING_RESEND_MS` dans `domain`).
+const TYPING_SERVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Requête `m.typing` explicite : `true` = « j'écris » (valable [`TYPING_SERVER_TIMEOUT`]), `false` = « j'ai cessé ».
+fn typing_request(
+    user: matrix_sdk::ruma::OwnedUserId,
+    room: matrix_sdk::ruma::OwnedRoomId,
+    typing: bool,
+) -> create_typing_event::v3::Request {
+    let state = if typing {
+        Typing::Yes(TypingInfo::new(TYPING_SERVER_TIMEOUT))
+    } else {
+        Typing::No
+    };
+    create_typing_event::v3::Request::new(user, room, state)
+}
+
+/// Envoie l'état de frappe **sans passer par `Room::typing_notice`** : ce dernier ignore un arrêt quand sa
+/// propre fenêtre locale de 4 s est écoulée, alors que le serveur peut encore afficher « écrit… » (il
+/// n'expire les notices que paresseusement). Le seul dédoublonnage est celui de `domain::TypingThrottle`.
+async fn send_typing(client: &Client, room: &matrix_sdk::Room, typing: bool) -> Result<(), String> {
+    let user = client.user_id().ok_or("session sans identifiant utilisateur")?.to_owned();
+    let request = typing_request(user, room.room_id().to_owned(), typing);
+    client.send(request).await.map(|_| ()).map_err(|err| err.to_string())
+}
+
 /// Média décrit par un message `image`/`file`/`audio`/`video` (+ requête de téléchargement pour une image).
 fn media_of(message_type: &MessageType) -> Option<(MediaVm, Option<ImageRequest>)> {
     let (kind, filename, source, size, mime, width, height) = match message_type {
@@ -224,6 +252,22 @@ fn localpart(user_id: &str) -> &str {
     user_id.trim_start_matches('@').split(':').next().unwrap_or(user_id)
 }
 
+/// Noms courts (triés) de ceux qui ont lu un message : tous les accusés posés dessus, sauf le mien et celui
+/// de l'expéditeur (son accusé sur son propre message ne dit rien : ce n'est pas une lecture par un tiers).
+fn readers<'a>(
+    receipt_users: impl IntoIterator<Item = &'a SdkUserId>,
+    sender: &SdkUserId,
+    own: Option<&SdkUserId>,
+) -> Vec<String> {
+    let mut names: Vec<String> = receipt_users
+        .into_iter()
+        .filter(|user| Some(*user) != own && *user != sender)
+        .map(|user| localpart(user.as_str()).to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 /// Convertit un élément du SDK ; `None` pour ce qui n'est pas un message (séparateurs, changements
 /// d'état, appartenance…).
 fn to_event_vm(
@@ -297,14 +341,8 @@ fn to_event_vm(
     } else {
         event.event_id().map(|id| EventId::from(id.as_str()))
     };
-    // Accusés de lecture des autres membres posés sur ce message.
-    let mut read_by: Vec<String> = event
-        .read_receipts()
-        .keys()
-        .filter(|user| Some(user.as_ref()) != own_user)
-        .map(|user| localpart(user.as_str()).to_owned())
-        .collect();
-    read_by.sort();
+    // Accusés de lecture posés sur ce message par quelqu'un d'autre que moi **et** que son expéditeur.
+    let read_by = readers(event.read_receipts().keys().map(|user| &**user), event.sender(), own_user);
 
     Some(EventVm {
         id: EventId::from(id.as_str()),
@@ -471,8 +509,10 @@ pub async fn run_timeline(
                     let _ = timeline.mark_as_read(ReceiptType::Read).await;
                 }
                 Some(TimelineCommand::Typing(typing)) => {
-                    // La notice de frappe est opportuniste : une erreur réseau est ignorée.
-                    let _ = sdk_room.typing_notice(typing).await;
+                    // Une notice de frappe ratée n'est pas fatale, mais elle n'est plus avalée en silence.
+                    if let Err(err) = send_typing(&client, &sdk_room, typing).await {
+                        eprintln!("waifu-desktop : notice de frappe ({typing}) non envoyée : {err}");
+                    }
                 }
                 None => return,
                 Some(TimelineCommand::SendText(body)) => {
@@ -513,6 +553,50 @@ mod tests {
     #[test]
     fn time_label_is_empty_when_out_of_range() {
         assert_eq!(format_time_label(u64::MAX, &Utc), "");
+    }
+
+    fn user(id: &str) -> matrix_sdk::ruma::OwnedUserId {
+        SdkUserId::parse(id).expect("identifiant de test valide")
+    }
+
+    #[test]
+    fn a_message_seen_only_by_me_and_its_sender_has_no_readers() {
+        let (alice, bob) = (user("@alice:localhost"), user("@bob:localhost"));
+        // Chez bob : message d'alice, reçus {alice (expéditrice), bob (moi)}.
+        assert_eq!(readers([&*alice, &*bob], &alice, Some(&bob)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_third_party_is_the_only_reader_listed() {
+        let (alice, bob, carol) = (user("@alice:localhost"), user("@bob:localhost"), user("@carol:localhost"));
+        assert_eq!(readers([&*alice, &*bob, &*carol], &alice, Some(&bob)), ["carol"]);
+    }
+
+    #[test]
+    fn my_own_message_lists_the_others_who_read_it() {
+        let (alice, bob) = (user("@alice:localhost"), user("@bob:localhost"));
+        // Message de bob (moi), accusés {bob, alice} : alice l'a lu.
+        assert_eq!(readers([&*bob, &*alice], &bob, Some(&bob)), ["alice"]);
+        // Sans identifiant « moi » connu, l'expéditeur reste exclu.
+        assert_eq!(readers([&*bob, &*alice], &bob, None), ["alice"]);
+    }
+
+    #[test]
+    fn readers_are_sorted_for_a_stable_display() {
+        let (alice, bob, carol, dave) = (user("@alice:localhost"), user("@bob:localhost"), user("@carol:localhost"), user("@dave:localhost"));
+        assert_eq!(readers([&*dave, &*carol, &*bob], &alice, Some(&alice)), ["bob", "carol", "dave"]);
+    }
+
+    #[test]
+    fn typing_requests_carry_an_explicit_state_and_a_short_server_timeout() {
+        let room = matrix_sdk::ruma::OwnedRoomId::try_from("!r:localhost").expect("salon valide");
+        let start = typing_request(user("@bob:localhost"), room.clone(), true);
+        match start.state {
+            Typing::Yes(info) => assert_eq!(info.timeout, TYPING_SERVER_TIMEOUT),
+            Typing::No => panic!("une frappe active doit être `Yes`"),
+        }
+        let stop = typing_request(user("@bob:localhost"), room, false);
+        assert!(matches!(stop.state, Typing::No), "l'arrêt est un `m.typing: false` explicite");
     }
 
     #[test]

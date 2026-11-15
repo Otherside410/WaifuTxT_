@@ -90,6 +90,12 @@ impl Bridge {
         })
     }
 
+    /// Dernier homeserver utilisé, mémorisé par la dernière connexion (petit fichier du store local ; appelé à
+    /// l'ouverture de l'écran de connexion, jamais pendant un rendu).
+    pub fn last_homeserver(&self) -> Option<String> {
+        matrix::stored_homeserver(&self.data_dir)
+    }
+
     pub fn resume(&self) -> oneshot::Receiver<Result<Option<(Client, Session)>, String>> {
         let data_dir = self.data_dir.clone();
         self.run(async move { matrix::resume(&data_dir).await.map_err(|e| e.to_string()) })

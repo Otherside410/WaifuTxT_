@@ -165,8 +165,9 @@ pub struct TypingThrottle {
     last_key_ms: u64,
 }
 
-/// Intervalle de relance d'une notice « je tape » (le serveur l'expire seul au bout de ~30 s).
-pub const TYPING_RESEND_MS: u64 = 20_000;
+/// Intervalle de relance d'une notice « je tape » : la notice envoyée au serveur n'est valable que 4 s, il faut
+/// donc la renouveler avant (le SDK fait de même, toutes les ~3 s).
+pub const TYPING_RESEND_MS: u64 = 3_000;
 /// Inactivité au bout de laquelle on annonce qu'on ne tape plus.
 pub const TYPING_IDLE_MS: u64 = 4_000;
 
@@ -372,6 +373,19 @@ impl TimelineState {
         }
         self.read_marked = Some(last.id.clone());
         true
+    }
+
+    /// Le salon sélectionné est-il lu jusqu'à son dernier message ? Vrai quand l'accusé de lecture a déjà été
+    /// demandé pour le dernier message distant : tout compteur de non-lus publié ensuite pour ce salon est
+    /// forcément périmé (il compte un message que l'on a sous les yeux) tant qu'aucun message plus récent
+    /// n'est arrivé.
+    pub fn is_read_up_to_date(&self) -> bool {
+        match (self.events.last(), &self.read_marked) {
+            (Some(last), Some(marked)) => {
+                self.status == TimelineStatus::Ready && last.event_id.is_some() && &last.id == marked
+            }
+            _ => false,
+        }
     }
 
     /// Édition appliquée localement (mode démonstration) : voir [`apply_edit`].
@@ -840,7 +854,7 @@ mod tests {
     fn typing_sends_one_notice_per_window_not_one_per_keystroke() {
         let mut throttle = TypingThrottle::default();
         assert_eq!(throttle.keystroke(1_000), Some(true), "première frappe : notice");
-        for t in (1_100..5_000).step_by(100) {
+        for t in (1_100..1_000 + TYPING_RESEND_MS).step_by(100) {
             assert_eq!(throttle.keystroke(t), None, "frappe à {t} ms : pas de nouvelle notice");
         }
         // Toujours en train de taper après la fenêtre de relance : une seule relance.
@@ -971,6 +985,42 @@ mod tests {
         let failure = state.send_failure().expect("échec mémorisé");
         assert_eq!(failure.action, FailedAction::Attach("/home/u/Images/photo.png".into()));
         assert_eq!(failure.text, "photo.png");
+    }
+
+    #[test]
+    fn the_resend_interval_stays_below_the_server_validity_of_a_typing_notice() {
+        // La notice n'est valable que 4 s côté serveur : relancer plus tard ferait disparaître « écrit… » en cours de frappe.
+        const { assert!(TYPING_RESEND_MS < 4_000) };
+        const { assert!(TYPING_IDLE_MS >= TYPING_RESEND_MS) };
+    }
+
+    #[test]
+    fn a_room_is_read_up_to_date_only_once_the_last_remote_message_is_receipted() {
+        let mut state = TimelineState::default();
+        assert!(!state.is_read_up_to_date(), "rien sans salon");
+        state.select(RoomId::from("!a:x"));
+        state.apply(events_update("!a:x", vec![ev("$1", 1)], Some(true)));
+        assert!(!state.is_read_up_to_date(), "accusé pas encore demandé");
+        assert!(state.needs_read_receipt(true));
+        assert!(state.is_read_up_to_date(), "dernier message accusé");
+        // Un message plus récent arrive : le salon n'est plus à jour tant que l'accusé n'est pas redemandé.
+        state.apply(events_update("!a:x", vec![ev("$2", 2)], None));
+        assert!(!state.is_read_up_to_date());
+        assert!(state.needs_read_receipt(true));
+        assert!(state.is_read_up_to_date());
+    }
+
+    #[test]
+    fn a_local_echo_as_last_message_is_not_read_up_to_date() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        state.apply(events_update("!a:x", vec![ev("$1", 1)], Some(true)));
+        assert!(state.needs_read_receipt(true));
+        let mut echo = own("local", 9);
+        echo.event_id = None;
+        echo.state = EventState::Local;
+        state.apply(events_update("!a:x", vec![echo], None));
+        assert!(!state.is_read_up_to_date());
     }
 
     #[test]

@@ -98,6 +98,31 @@ pub enum MainEvent {
     SendAttachment { room: RoomId, path: String },
 }
 
+/// Message affiché quand le sélecteur de fichiers du système ne répond pas.
+pub const PICKER_UNAVAILABLE: &str = "Le sélecteur de fichiers du système n'est pas disponible \
+    (portail xdg-desktop-portal introuvable ?) : la pièce jointe n'a pas été envoyée.";
+
+/// Issue du sélecteur de fichiers du système.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickResult {
+    Chosen(std::path::PathBuf),
+    /// L'utilisateur a fermé le sélecteur sans choisir : pas une erreur.
+    Cancelled,
+    /// Pas de sélecteur (portail absent) ou erreur de la plateforme.
+    Unavailable,
+}
+
+/// Classe le résultat brut de `prompt_for_paths` (canal, puis résultat de la plateforme, puis choix).
+pub fn classify_pick<E1, E2>(
+    outcome: Result<Result<Option<Vec<std::path::PathBuf>>, E1>, E2>,
+) -> PickResult {
+    match outcome {
+        Ok(Ok(Some(mut paths))) => paths.pop().map_or(PickResult::Cancelled, PickResult::Chosen),
+        Ok(Ok(None)) => PickResult::Cancelled,
+        Ok(Err(_)) | Err(_) => PickResult::Unavailable,
+    }
+}
+
 /// Ce qu'il faut pour dessiner un média dans une ligne (calculé hors de l'arbre d'éléments).
 struct MediaRender {
     display: MediaDisplay,
@@ -150,6 +175,8 @@ pub struct MainView {
     images: HashMap<String, Arc<Image>>,
     /// Ligne sélectionnée (clic) : surlignée, y compris pour une pièce jointe en échec.
     selected_event: Option<EventId>,
+    /// Message d'état visible au-dessus de la saisie (ex. sélecteur de fichiers indisponible).
+    notice: Option<String>,
     /// Message en cours de modification (son id d'événement) : la saisie est alors en « mode édition ».
     editing: Option<EventId>,
     /// Message dont la suppression attend sa confirmation.
@@ -206,6 +233,7 @@ impl MainView {
             pending_restore: None,
             images: HashMap::new(),
             selected_event: None,
+            notice: None,
             editing: None,
             pending_delete: None,
             typing_throttle: TypingThrottle::default(),
@@ -236,6 +264,7 @@ impl MainView {
             }
         }
         self.rooms = rooms;
+        self.keep_open_room_read();
         self.sync_composer(cx);
         cx.notify();
     }
@@ -494,6 +523,25 @@ impl MainView {
         self.images.insert(key.to_owned(), Arc::new(Image::from_bytes(format, bytes.as_ref().clone())));
     }
 
+    /// Le salon ouvert et lu jusqu'en bas n'a pas de non-lus. Un compteur publié par une synchronisation est calculé
+    /// par le SDK sur des données antérieures à notre accusé de lecture (mesuré : l'événement arrive par la
+    /// timeline, `mark_read` remet 0, puis la synchronisation suivante republie « 1 », et le compteur ne retombe
+    /// qu'à la synchronisation d'après, ~30 s plus tard) : on ne laisse pas cette valeur écraser le 0 local.
+    /// Dès qu'un message plus récent arrive, `is_read_up_to_date` redevient faux jusqu'au nouvel accusé.
+    fn keep_open_room_read(&mut self) {
+        if !self.timeline.is_read_up_to_date() {
+            return;
+        }
+        let Some(room) = self.timeline.room().cloned() else {
+            return;
+        };
+        if let RoomsState::Ready(rooms) = &mut self.rooms {
+            for entry in rooms.iter_mut().filter(|r| r.id == room) {
+                entry.unread = 0;
+            }
+        }
+    }
+
     /// Accusé de lecture du salon sélectionné : la pastille de non-lus tombe tout de suite (la prochaine
     /// synchronisation confirme la valeur du serveur) ; hors démonstration, la commande part vers le pont.
     fn mark_read(&mut self, cx: &mut Context<Self>) {
@@ -735,6 +783,7 @@ impl MainView {
         if !self.composer_enabled() {
             return;
         }
+        self.notice = None;
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -742,14 +791,23 @@ impl MainView {
             prompt: Some("Joindre".into()),
         });
         cx.spawn(async move |this, cx| {
-            // Annulation ou erreur du sélecteur : rien à faire.
-            if let Ok(Ok(Some(mut chosen))) = paths.await {
-                if let Some(path) = chosen.pop() {
-                    this.update(cx, |this, cx| this.attach_path(path, cx)).ok();
-                }
-            }
+            let outcome = classify_pick(paths.await);
+            this.update(cx, |this, cx| this.picker_result(outcome, cx)).ok();
         })
         .detach();
+    }
+
+    /// Suite du sélecteur de fichiers : fichier choisi → envoi ; annulation → rien ; sélecteur absent → message
+    /// visible dans l'interface (jamais un échec silencieux).
+    pub fn picker_result(&mut self, result: PickResult, cx: &mut Context<Self>) {
+        match result {
+            PickResult::Chosen(path) => self.attach_path(path, cx),
+            PickResult::Cancelled => {}
+            PickResult::Unavailable => {
+                self.notice = Some(PICKER_UNAVAILABLE.to_owned());
+                cx.notify();
+            }
+        }
     }
 
     /// Joint un fichier au salon sélectionné. Le chemin est transmis tel quel au pont : la lecture, la
@@ -761,6 +819,7 @@ impl MainView {
         let Some(room) = self.timeline.room().cloned() else {
             return;
         };
+        self.notice = None;
         self.timeline.clear_send_failure();
         self.scroll.scroll_to_bottom();
         if self.demo {
@@ -952,6 +1011,25 @@ impl MainView {
                     .test_support()
                     .aria_label("Modification en cours")
             }))
+            .children(self.notice.clone().map(|message| {
+                let label = SharedString::from(message.clone());
+                div()
+                    .id("composer-notice")
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().flex_1().min_w_0().text_sm().text_color(rgb(ERROR)).child(message))
+                    .child(
+                        Button::new("composer-notice-dismiss")
+                            .label("Fermer")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.notice = None;
+                                cx.notify();
+                            })),
+                    )
+                    .test_support()
+                    .aria_label(label)
+            }))
             .children(failure.map(|failure| {
                 let label = SharedString::from(failure.message.clone());
                 div()
@@ -959,7 +1037,7 @@ impl MainView {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(div().flex_1().text_sm().text_color(rgb(ERROR)).child(failure.message))
+                    .child(div().flex_1().min_w_0().text_sm().text_color(rgb(ERROR)).child(failure.message))
                     .child(
                         Button::new("composer-retry")
                             .label("Réessayer")

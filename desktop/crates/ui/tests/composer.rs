@@ -276,3 +276,50 @@ fn a_failure_from_another_room_does_not_touch_the_composer(cx: &mut TestAppConte
     })
     .expect("fenêtre");
 }
+
+#[gpui_kit::test]
+fn a_missing_file_picker_shows_a_visible_message_instead_of_failing_silently(cx: &mut TestAppContext) {
+    use ui::{PickResult, PICKER_UNAVAILABLE};
+    let (handle, view) = open_main(cx, true);
+    close_modal_and_open(cx, handle, "room-1");
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("composer-notice").is_none(), "rien d'affiché au départ");
+
+        // L'utilisateur annule le sélecteur : ce n'est pas une erreur.
+        view.update(cx, |view, cx| view.picker_result(PickResult::Cancelled, cx));
+        window.render_frame(cx);
+        assert!(window.try_find("composer-notice").is_none());
+
+        // Échec du sélecteur (portail absent) : message visible, non vide, explicite.
+        view.update(cx, |view, cx| view.picker_result(PickResult::Unavailable, cx));
+        window.render_frame(cx);
+        let notice = window.find("composer-notice").label().unwrap_or_default().to_owned();
+        assert!(!notice.is_empty());
+        assert_eq!(notice, PICKER_UNAVAILABLE);
+        assert!(notice.contains("sélecteur de fichiers"), "{notice}");
+        assert!(window.try_find("composer-notice-dismiss").is_some());
+
+        // Le message se ferme.
+        window.click("composer-notice-dismiss", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("composer-notice").is_none());
+    })
+    .expect("fenêtre");
+}
+
+#[test]
+fn the_raw_picker_outcomes_are_classified_without_hiding_failures() {
+    use std::path::PathBuf;
+    use ui::{classify_pick, PickResult};
+    let chosen: Result<Result<Option<Vec<PathBuf>>, ()>, ()> = Ok(Ok(Some(vec![PathBuf::from("/x/a.png")])));
+    assert_eq!(classify_pick(chosen), PickResult::Chosen(PathBuf::from("/x/a.png")));
+    let cancelled: Result<Result<Option<Vec<PathBuf>>, ()>, ()> = Ok(Ok(None));
+    assert_eq!(classify_pick(cancelled), PickResult::Cancelled);
+    let empty: Result<Result<Option<Vec<PathBuf>>, ()>, ()> = Ok(Ok(Some(vec![])));
+    assert_eq!(classify_pick(empty), PickResult::Cancelled);
+    let platform_error: Result<Result<Option<Vec<PathBuf>>, ()>, ()> = Ok(Err(()));
+    assert_eq!(classify_pick(platform_error), PickResult::Unavailable, "erreur de la plateforme");
+    let channel_dropped: Result<Result<Option<Vec<PathBuf>>, ()>, ()> = Err(());
+    assert_eq!(classify_pick(channel_dropped), PickResult::Unavailable, "canal fermé sans réponse");
+}

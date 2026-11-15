@@ -358,3 +358,126 @@ fn a_read_receipt_command_is_emitted_once_per_new_last_message(cx: &mut TestAppC
     let marks = log.borrow().iter().filter(|e| e.contains("MarkRead")).count();
     assert_eq!(marks, 2, "un accusé par dernier message distinct : {:?}", log.borrow());
 }
+
+#[gpui_kit::test]
+fn a_stale_unread_count_from_a_sync_never_overwrites_the_local_zero_of_the_open_room(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view) = open_main(cx, false);
+    let rooms = ui::demo::demo_rooms();
+    let room = rooms[1].id.clone();
+    // Salon « général » : 3 non-lus ; le DM garde son propre compteur.
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| view.set_rooms(RoomsState::Ready(ui::demo::demo_rooms()), cx));
+        window.render_frame(cx);
+        assert!(window.try_find("unread-1").is_some());
+        window.click("room-1", cx);
+        window.render_frame(cx);
+        // Un message arrive dans le salon ouvert, lu en bas : accusé + remise à zéro.
+        view.update(cx, |view, cx| {
+            view.apply_timeline(
+                TimelineUpdate::Events {
+                    room: room.clone(),
+                    events: vec![confirmed_message("recu", 1)],
+                    at_start: Some(true),
+                },
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("unread-1").is_none(), "pastille à 0 dès l'arrivée du message");
+
+        // La synchronisation suivante republie l'ANCIEN compteur (3) : il ne doit pas écraser le 0 local.
+        for _ in 0..3 {
+            view.update(cx, |view, cx| view.set_rooms(RoomsState::Ready(ui::demo::demo_rooms()), cx));
+            window.render_frame(cx);
+            assert!(window.try_find("unread-1").is_none(), "compteur périmé réaffiché");
+        }
+        // Les autres salons gardent leur compteur.
+        assert!(window.try_find("unread-2").is_some());
+
+        // Un message plus récent arrive : l'accusé est redemandé, la pastille reste à 0.
+        view.update(cx, |view, cx| {
+            view.apply_timeline(
+                TimelineUpdate::Events {
+                    room: room.clone(),
+                    events: vec![confirmed_message("recent", 2)],
+                    at_start: None,
+                },
+                cx,
+            );
+            view.set_rooms(RoomsState::Ready(ui::demo::demo_rooms()), cx);
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("unread-1").is_none());
+    })
+    .expect("fenêtre");
+}
+
+#[gpui_kit::test]
+fn emptying_the_composer_sends_exactly_one_typing_stop_per_transition(cx: &mut TestAppContext) {
+    let (handle, view) = open_main(cx, false);
+    let log = record_events(cx, &view);
+    let rooms = ui::demo::demo_rooms();
+    let room = rooms[1].id.clone();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| view.set_rooms(RoomsState::Ready(rooms), cx));
+        window.render_frame(cx);
+        window.click("room-1", cx);
+        window.render_frame(cx);
+        view.update(cx, |view, cx| {
+            view.apply_timeline(
+                TimelineUpdate::Events {
+                    room: room.clone(),
+                    events: vec![confirmed_message("a", 1)],
+                    at_start: Some(true),
+                },
+                cx,
+            );
+        });
+        window.render_frame(cx);
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+
+    let count = |needle: &str| log.borrow().iter().filter(|e| e.contains(needle)).count();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("composer", cx);
+        window.input("bonjour", cx);
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+    assert_eq!((count("typing: true"), count("typing: false")), (1, 0));
+
+    // Non vide → vide : un seul arrêt.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+    assert_eq!((count("typing: true"), count("typing: false")), (1, 1), "{:?}", log.borrow());
+
+    // Déjà vide : d'autres touches sur un champ vide n'ajoutent aucun arrêt.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("backspace", cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+    assert_eq!(count("typing: false"), 1, "arrêt répété sur un champ vide : {:?}", log.borrow());
+
+    // Nouvelle transition vide → non vide → vide : une notice et un arrêt de plus.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.input("x", cx);
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("backspace", cx);
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+    assert_eq!((count("typing: true"), count("typing: false")), (2, 2), "{:?}", log.borrow());
+}
