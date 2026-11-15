@@ -2,7 +2,8 @@ import { useMemo, useState, type FormEvent } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
 import { Avatar } from '../common/Avatar'
 import { Tooltip } from '../common/Tooltip'
-import { createSpace } from '../../lib/matrix'
+import { MarkReadMenu, type MarkReadMenuState } from '../common/MarkReadMenu'
+import { createSpace, markRoomsRead } from '../../lib/matrix'
 
 function SpaceBadge({ mentions, unread, invites }: { mentions: number; unread: number; invites: number }) {
   if (mentions > 0) {
@@ -51,6 +52,23 @@ export function SpaceSidebar() {
     }
     return allSpaces.filter((s) => !childSpaceIds.has(s.roomId))
   }, [rooms])
+
+  const [readMenu, setReadMenu] = useState<MarkReadMenuState | null>(null)
+
+  // Salons à marquer lus pour un serveur (ou l'accueil si spaceId est null) : ceux qui ont une pastille.
+  const unreadIdsFor = (spaceId: string | null): string[] => {
+    const all = Array.from(rooms.values())
+    const spaced = new Set<string>()
+    for (const r of all) if (r.isSpace) for (const id of r.children) spaced.add(id)
+    const pool = spaceId === null
+      ? all.filter((r) => !r.isSpace && (r.isDirect || !spaced.has(r.roomId)))
+      : (rooms.get(spaceId)?.children ?? []).map((id) => rooms.get(id)).filter((r): r is NonNullable<typeof r> => !!r && !r.isSpace)
+    return pool.filter((r) => r.membership === 'join' && (r.unreadCount > 0 || r.mentionCount > 0)).map((r) => r.roomId)
+  }
+  const openReadMenu = (e: React.MouseEvent, spaceId: string | null) => {
+    e.preventDefault()
+    setReadMenu({ x: e.clientX, y: e.clientY, roomIds: unreadIdsFor(spaceId) })
+  }
 
   // Badge counts: mentions, unread, invitations — per space and for the home button
   const badges = useMemo(() => {
@@ -109,12 +127,14 @@ export function SpaceSidebar() {
 
   return (
     <div className="w-[72px] bg-bg-primary flex flex-col items-center py-3 gap-2 overflow-y-auto border-r border-border">
+      <MarkReadMenu menu={readMenu} onMarkRead={(ids) => { void markRoomsRead(ids) }} onClose={() => setReadMenu(null)} />
       <Tooltip content="Messages directs">
         <button
           onMouseDown={(e) => {
             if (e.button === 0) setActiveSpace(null)
           }}
           onClick={() => setActiveSpace(null)}
+          onContextMenu={(e) => openReadMenu(e, null)}
           className={`relative w-12 h-12 flex items-center justify-center transition-[border-radius,background-color,color,box-shadow,transform] duration-100 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer ${
             activeSpaceId === null
               ? 'bg-accent-pink rounded-xl text-white'
@@ -139,6 +159,7 @@ export function SpaceSidebar() {
                 if (e.button === 0) setActiveSpace(space.roomId)
               }}
               onClick={() => setActiveSpace(space.roomId)}
+              onContextMenu={(e) => openReadMenu(e, space.roomId)}
               className={`relative w-12 h-12 flex items-center justify-center transition-[border-radius,box-shadow,transform] duration-100 ease-[cubic-bezier(0.22,1,0.36,1)] cursor-pointer overflow-visible ${
                 activeSpaceId === space.roomId
                   ? 'rounded-xl ring-2 ring-accent-pink'

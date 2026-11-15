@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useRoomStore } from '../../stores/roomStore'
 import { Avatar } from '../common/Avatar'
+import { MarkReadMenu, type MarkReadMenuState } from '../common/MarkReadMenu'
 import { useAuthStore } from '../../stores/authStore'
 import { useUiStore } from '../../stores/uiStore'
 import {
@@ -16,6 +17,7 @@ import {
   setOwnPresence,
   createRoom,
   canUserCreateRoom,
+  markRoomsRead,
 } from '../../lib/matrix'
 import { getWaifuById } from '../../lib/waifu'
 import { setVoiceMuted, setVoiceDeafened } from '../../lib/voice'
@@ -213,6 +215,7 @@ export function RoomSidebar() {
 
   const presenceMenuRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const [readMenu, setReadMenu] = useState<MarkReadMenuState | null>(null)
   const rooms = useRoomStore((s) => s.rooms)
   const activeSpaceId = useRoomStore((s) => s.activeSpaceId)
   const activeRoomId = useRoomStore((s) => s.activeRoomId)
@@ -522,6 +525,11 @@ export function RoomSidebar() {
         onDragOver={(e) => handleDragOver(e, room.roomId)}
         onDrop={(e) => handleDrop(e, room.roomId, spaceKey, layoutItems)}
         onDragEnd={handleDragEnd}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          const unread = room.membership === 'join' && (room.unreadCount > 0 || room.mentionCount > 0)
+          setReadMenu({ x: e.clientX, y: e.clientY, roomIds: unread ? [room.roomId] : [] })
+        }}
       >
         {isDropTarget && !isDragging && <div className="h-0.5 rounded-full bg-accent-pink mx-2 mb-0.5" />}
         <button
@@ -607,6 +615,7 @@ export function RoomSidebar() {
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="w-60 bg-bg-secondary flex flex-col border-r border-border">
+      <MarkReadMenu menu={readMenu} onMarkRead={(ids) => { void markRoomsRead(ids) }} onClose={() => setReadMenu(null)} />
       <div className="h-12 px-3 flex items-center justify-between border-b border-border shrink-0">
         <h2 className="font-semibold text-text-primary truncate text-sm">{spaceName}</h2>
         {activeSpaceId && canCreate && (

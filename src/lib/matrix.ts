@@ -2177,6 +2177,12 @@ export async function sendReadReceipt(roomId: string): Promise<void> {
   }
 }
 
+// Marque plusieurs salons comme lus d'un coup (clic droit « Marquer comme lu »), puis recalcule les pastilles.
+export async function markRoomsRead(roomIds: string[]): Promise<void> {
+  await Promise.all(roomIds.map((id) => sendReadReceipt(id)))
+  syncRooms()
+}
+
 export function isMessageReadByOthers(roomId: string, eventId: string, senderId: string): boolean {
   if (!client) return false
   const me = client.getUserId()
