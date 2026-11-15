@@ -35,6 +35,8 @@ const ERROR: u32 = 0xff5c7a;
 const SIDEBAR_WIDTH: f32 = 280.0;
 /// Hauteur **constante** d'une ligne de message : prérequis de la virtualisation (`uniform_list`).
 pub const EVENT_ROW_HEIGHT: f32 = 52.0;
+/// Largeur réservée aux boutons Modifier / Supprimer, à droite de chaque ligne.
+const ACTIONS_COLUMN_WIDTH: f32 = 150.0;
 /// On demande une page plus ancienne quand la vue est à moins de N lignes du haut de la liste.
 const PAGINATE_THRESHOLD_ROWS: f32 = 5.0;
 /// Sous ce nombre de lignes chargées, la liste ne remplit peut-être pas la fenêtre : on pagine d'office.
@@ -1321,6 +1323,7 @@ impl MainView {
         let media_aria = media.as_ref().map(|m| m.aria.clone());
         div()
             .id(SharedString::from(format!("event-{index}")))
+            .w_full()
             .h(px(EVENT_ROW_HEIGHT))
             .px_3()
             .flex()
@@ -1377,8 +1380,32 @@ impl MainView {
                             .child(body_text.clone()),
                     ),
             )
-            .children(media.as_ref().map(|m| Self::media_box(index, m)))
-            .children(actions)
+            .child(
+                // Colonne de droite à bords fixes : la vignette et les boutons gardent la même
+                // abscisse d'une ligne à l'autre, quelle que soit la longueur du texte.
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(THUMBNAIL_SIDE as f32))
+                            .flex_none()
+                            .flex()
+                            .justify_end()
+                            .children(media.as_ref().map(|m| Self::media_box(index, m))),
+                    )
+                    .child(
+                        div()
+                            .w(px(ACTIONS_COLUMN_WIDTH))
+                            .flex_none()
+                            .flex()
+                            .justify_end()
+                            .children(actions),
+                    ),
+            )
             .test_support()
             .aria_label(SharedString::from(format!(
                 "{} : {}{}{}{}{}{}",
