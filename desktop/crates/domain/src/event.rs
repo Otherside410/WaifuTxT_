@@ -14,6 +14,8 @@ pub enum EventState {
     Indechiffrable,
     /// Écho local pas encore confirmé par le serveur.
     Local,
+    /// Envoi refusé ou échoué côté serveur : le message n'est pas parti.
+    EchecEnvoi,
 }
 
 /// Placeholder affiché à la place d'un corps de message indéchiffrable.
@@ -22,7 +24,9 @@ pub const UNDECRYPTABLE_PLACEHOLDER: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventVm {
-    /// Identifiant stable (id d'événement, ou identifiant de transaction pour un écho local).
+    /// Identifiant **stable pendant toute la vie du message** : il ne change pas quand un écho local est
+    /// confirmé par le serveur (la couche Matrix utilise l'identifiant unique de l'élément de timeline,
+    /// pas l'id d'événement, qui n'existe qu'après l'envoi).
     pub id: EventId,
     pub sender_name: String,
     pub sender_initials: String,
@@ -82,12 +86,14 @@ pub enum TimelineUpdate {
     /// Page ou instantané d'événements pour `room` ; `at_start` indique si le début du salon est atteint.
     Events { room: RoomId, events: Vec<EventVm>, at_start: Option<bool> },
     Failed { room: RoomId, message: String },
+    /// L'envoi d'un message n'a pas pu être mis en file : `text` est le brouillon à restituer.
+    SendFailed { room: RoomId, text: String, message: String },
 }
 
 impl TimelineUpdate {
     pub fn room(&self) -> &RoomId {
         match self {
-            Self::Events { room, .. } | Self::Failed { room, .. } => room,
+            Self::Events { room, .. } | Self::Failed { room, .. } | Self::SendFailed { room, .. } => room,
         }
     }
 }
@@ -110,6 +116,20 @@ pub struct Applied {
     pub merge: MergeOutcome,
 }
 
+/// Brouillon d'un message dont l'envoi a échoué, avec la raison affichable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendFailure {
+    pub text: String,
+    pub message: String,
+}
+
+/// Texte à envoyer pour la saisie `raw` : `None` si elle est vide ou ne contient que des espaces (rien
+/// ne part, aucun effet). Les espaces de bord sont retirés, les sauts de ligne internes conservés.
+pub fn prepare_message(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 /// Timeline du salon sélectionné. Une réponse tardive d'un ancien salon est ignorée.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineState {
@@ -118,6 +138,7 @@ pub struct TimelineState {
     events: Vec<EventVm>,
     at_start: bool,
     loading_older: bool,
+    send_failure: Option<SendFailure>,
 }
 
 impl Default for TimelineState {
@@ -128,6 +149,7 @@ impl Default for TimelineState {
             events: Vec::new(),
             at_start: false,
             loading_older: false,
+            send_failure: None,
         }
     }
 }
@@ -147,6 +169,13 @@ impl TimelineState {
     }
     pub fn is_loading_older(&self) -> bool {
         self.loading_older
+    }
+    /// Dernier envoi échoué du salon sélectionné, tant que l'utilisateur ne l'a pas relancé.
+    pub fn send_failure(&self) -> Option<&SendFailure> {
+        self.send_failure.as_ref()
+    }
+    pub fn clear_send_failure(&mut self) {
+        self.send_failure = None;
     }
 
     /// Sélectionne un salon : l'état précédent est abandonné.
@@ -189,6 +218,10 @@ impl TimelineState {
                 self.loading_older = false;
                 self.status = TimelineStatus::Ready;
                 Applied { ignored: false, merge }
+            }
+            TimelineUpdate::SendFailed { text, message, .. } => {
+                self.send_failure = Some(SendFailure { text, message });
+                Applied::default()
             }
             TimelineUpdate::Failed { message, .. } => {
                 self.loading_older = false;
@@ -368,6 +401,90 @@ mod tests {
         state.retry();
         assert_eq!(state.status(), &TimelineStatus::Loading);
         assert_eq!(state.room(), Some(&RoomId::from("!a:x")));
+    }
+
+    #[test]
+    fn a_local_echo_confirmed_by_the_server_replaces_the_row_without_duplicate() {
+        let mut list = vec![ev("$1", 10)];
+        let mut echo = ev("$local", 100);
+        echo.state = EventState::Local;
+        merge_events(&mut list, vec![echo]);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].state, EventState::Local);
+
+        // Confirmation : même id stable, état et horodatage serveur mis à jour.
+        let mut confirmed = ev("$local", 105);
+        confirmed.state = EventState::Normal;
+        let out = merge_events(&mut list, vec![confirmed]);
+        assert_eq!(ids(&list), ["$1", "$local"]);
+        assert_eq!(list[1].state, EventState::Normal);
+        assert_eq!(list[1].timestamp_ms, 105);
+        assert_eq!(out, MergeOutcome::default(), "rien de nouveau : une mise à jour");
+    }
+
+    #[test]
+    fn a_confirmed_echo_keeps_its_place_when_the_server_time_reorders_it() {
+        let mut list = vec![ev("$a", 10)];
+        let mut echo = ev("$local", 100);
+        echo.state = EventState::Local;
+        merge_events(&mut list, vec![echo, ev("$b", 102)]);
+        assert_eq!(ids(&list), ["$a", "$local", "$b"]);
+        // Le serveur date le message après $b : la ligne bouge, sans être dupliquée.
+        merge_events(&mut list, vec![ev("$local", 103)]);
+        assert_eq!(ids(&list), ["$a", "$b", "$local"]);
+    }
+
+    #[test]
+    fn empty_or_blank_text_is_not_sent() {
+        assert_eq!(prepare_message(""), None);
+        assert_eq!(prepare_message("   "), None);
+        assert_eq!(prepare_message("\n\t \n"), None);
+    }
+
+    #[test]
+    fn text_is_trimmed_but_inner_newlines_are_kept() {
+        assert_eq!(prepare_message("  bonjour  "), Some("bonjour".to_owned()));
+        assert_eq!(prepare_message("a\nb\n"), Some("a\nb".to_owned()));
+    }
+
+    #[test]
+    fn a_send_failure_keeps_the_draft_and_is_scoped_to_the_selected_room() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        state.apply(events_update("!a:x", vec![ev("$1", 1)], Some(false)));
+        let late = TimelineUpdate::SendFailed {
+            room: RoomId::from("!autre:x"),
+            text: "ancien".into(),
+            message: "x".into(),
+        };
+        assert!(state.apply(late).ignored);
+        assert_eq!(state.send_failure(), None);
+
+        let failed = TimelineUpdate::SendFailed {
+            room: RoomId::from("!a:x"),
+            text: "mon brouillon".into(),
+            message: "réseau coupé".into(),
+        };
+        state.apply(failed);
+        let failure = state.send_failure().expect("échec mémorisé");
+        assert_eq!(failure.text, "mon brouillon");
+        assert_eq!(failure.message, "réseau coupé");
+        assert_eq!(state.status(), &TimelineStatus::Ready, "la timeline affichée n'est pas détruite");
+        state.clear_send_failure();
+        assert_eq!(state.send_failure(), None);
+    }
+
+    #[test]
+    fn selecting_another_room_drops_a_pending_send_failure() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!a:x"));
+        state.apply(TimelineUpdate::SendFailed {
+            room: RoomId::from("!a:x"),
+            text: "t".into(),
+            message: "m".into(),
+        });
+        state.select(RoomId::from("!b:x"));
+        assert_eq!(state.send_failure(), None);
     }
 
     #[test]

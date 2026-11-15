@@ -36,6 +36,11 @@ impl TimelineHandle {
     pub fn load_older(&self) {
         let _ = self.commands.send(TimelineCommand::LoadOlder);
     }
+
+    /// Met un message texte en file d'envoi ; `false` si la tâche de timeline n'écoute plus.
+    pub fn send_text(&self, body: String) -> bool {
+        self.commands.send(TimelineCommand::SendText(body)).is_ok()
+    }
 }
 
 impl Drop for TimelineHandle {

@@ -9,10 +9,11 @@ use domain::{
     initials, EventId, EventState, EventVm, RoomId, TimelineUpdate, UNDECRYPTABLE_PLACEHOLDER,
 };
 use futures_util::StreamExt;
+use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::RoomId as SdkRoomId;
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
-    MsgLikeKind, RoomExt, TimelineDetails, TimelineEventItemId, TimelineItem, TimelineItemContent,
+    EventSendState, MsgLikeKind, RoomExt, TimelineDetails, TimelineItem, TimelineItemContent,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -22,10 +23,12 @@ use crate::error::MatrixError;
 pub const PAGE_SIZE: u16 = 50;
 
 /// Demande de l'UI à la tâche de timeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimelineCommand {
     /// Charger une page plus ancienne.
     LoadOlder,
+    /// Envoyer un message texte brut dans le salon (chiffré automatiquement par le SDK si le salon l'est).
+    SendText(String),
 }
 
 /// `HH:MM` dans le fuseau donné ; chaîne vide si l'horodatage est hors bornes.
@@ -62,13 +65,16 @@ fn to_event_vm(item: &TimelineItem) -> Option<EventVm> {
         _ => ("[contenu non pris en charge]".to_owned(), EventState::Normal),
     };
     if event.is_local_echo() && state == EventState::Normal {
-        state = EventState::Local;
+        state = match event.send_state() {
+            Some(EventSendState::SendingFailed { .. }) => EventState::EchecEnvoi,
+            _ => EventState::Local,
+        };
     }
 
-    let id = match event.identifier() {
-        TimelineEventItemId::EventId(id) => id.to_string(),
-        TimelineEventItemId::TransactionId(id) => id.to_string(),
-    };
+    // Identifiant unique de l'élément de timeline : il ne change pas quand l'écho local devient
+    // l'événement confirmé (contrairement à `identifier()`, qui passe de l'id de transaction à l'id
+    // d'événement), donc la fusion par id remplace la ligne au lieu de la dupliquer.
+    let id = item.unique_id().0.clone();
     let sender_name = match event.sender_profile() {
         TimelineDetails::Ready(profile) => profile.display_name.clone(),
         _ => None,
@@ -101,6 +107,9 @@ pub async fn run_timeline(
     publish: impl Fn(TimelineUpdate),
 ) {
     let fail = |message: String| publish(TimelineUpdate::Failed { room: room.clone(), message });
+    let send_failed = |text: String, message: String| {
+        publish(TimelineUpdate::SendFailed { room: room.clone(), text, message })
+    };
     let events = |events: Vec<EventVm>, at_start: Option<bool>| {
         publish(TimelineUpdate::Events { room: room.clone(), events, at_start })
     };
@@ -139,6 +148,13 @@ pub async fn run_timeline(
             }
             command = commands.recv() => match command {
                 None => return,
+                Some(TimelineCommand::SendText(body)) => {
+                    // La file d'envoi du SDK chiffre si besoin ; l'écho local arrive par le flux.
+                    let content = RoomMessageEventContent::text_plain(body.clone());
+                    if let Err(err) = timeline.send(content.into()).await {
+                        send_failed(body, format!("Envoi impossible : {err}"));
+                    }
+                }
                 Some(TimelineCommand::LoadOlder) => {
                     match timeline.paginate_backwards(PAGE_SIZE).await {
                         Ok(hit_start) => {

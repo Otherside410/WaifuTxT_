@@ -5,11 +5,11 @@ use std::cell::RefCell;
 use std::fmt;
 
 use domain::{
-    validate_recovery_key, EventState, EventVm, KeyStatus, RecoveryKey, RoomId, RoomKind, RoomVm,
+    prepare_message, validate_recovery_key, EventId, EventState, EventVm, KeyStatus, RecoveryKey, RoomId, RoomKind, RoomVm,
     TimelineState, TimelineStatus, TimelineUpdate,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::Disableable;
 use gpui_kit::*;
 
@@ -34,6 +34,9 @@ const PAGINATE_THRESHOLD_ROWS: f32 = 5.0;
 const FILL_ROWS: usize = 20;
 /// Hauteur réservée au bandeau « chargement… / début de la conversation » (constante, voir plus bas).
 const BANNER_HEIGHT: f32 = 24.0;
+/// Délai avant la confirmation simulée d'un envoi en mode démonstration.
+const DEMO_CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+const COMPOSER_PLACEHOLDER: &str = "Écrire un message… (Entrée : envoyer, Maj+Entrée : saut de ligne)";
 
 /// Ce que la liste de salons affiche.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +77,8 @@ pub enum MainEvent {
     SelectRoom(RoomId),
     /// Charger une page plus ancienne du salon sélectionné.
     LoadOlder(RoomId),
+    /// Envoyer `body` (texte déjà validé, non vide) dans `room`.
+    SendText { room: RoomId, body: String },
 }
 
 pub struct MainView {
@@ -84,6 +89,14 @@ pub struct MainView {
     keys: KeyStatus,
     modal: ModalState,
     key_input: Entity<InputState>,
+    /// Zone de saisie des messages : une ligne qui grandit jusqu'à 5.
+    composer: Entity<TextareaState>,
+    /// Brouillon d'un envoi échoué à remettre dans le champ au prochain rendu.
+    pending_restore: Option<String>,
+    /// Compteur des échos locaux de démonstration.
+    demo_sent: u32,
+    /// Démonstration : l'écho local n'est jamais confirmé (pour le montrer à l'écran).
+    demo_hold_pending: bool,
     /// Mode `--demo-ui` : aucune connexion, la saisie de clé n'est jamais transmise.
     demo: bool,
 }
@@ -101,6 +114,20 @@ impl MainView {
             }
         })
         .detach();
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, 5)
+                .placeholder(COMPOSER_PLACEHOLDER)
+                .submit_on_enter(true)
+        });
+        // Désactivée tant qu'aucun salon n'est sélectionné.
+        composer.update(cx, |state, cx| state.set_disabled(true, cx));
+        cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                this.submit_composer(window, cx);
+            }
+        })
+        .detach();
         Self {
             user_label,
             rooms: RoomsState::Syncing,
@@ -109,6 +136,10 @@ impl MainView {
             keys: KeyStatus::Unknown,
             modal: ModalState::default(),
             key_input,
+            composer,
+            pending_restore: None,
+            demo_sent: 0,
+            demo_hold_pending: false,
             demo: false,
         }
     }
@@ -132,6 +163,7 @@ impl MainView {
             }
         }
         self.rooms = rooms;
+        self.sync_composer(cx);
         cx.notify();
     }
 
@@ -188,6 +220,17 @@ impl MainView {
         view
     }
 
+    /// Démonstration de l'envoi : comme [`MainView::demo_timeline`], avec un message déjà « envoyé » dont
+    /// l'écho local n'est jamais confirmé (état `Local` visible à l'écran).
+    pub fn demo_send(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::demo_timeline(window, cx);
+        view.demo_hold_pending = true;
+        if let Some(room) = view.timeline.room().cloned() {
+            view.send_body(room, "Bonjour depuis la démo !".to_owned(), window, cx);
+        }
+        view
+    }
+
     pub fn selected(&self) -> Option<&RoomId> {
         self.timeline.room()
     }
@@ -235,6 +278,7 @@ impl MainView {
         } else {
             cx.emit(MainEvent::SelectRoom(id));
         }
+        self.sync_composer(cx);
         cx.notify();
     }
 
@@ -257,6 +301,7 @@ impl MainView {
         } else {
             cx.emit(MainEvent::SelectRoom(id));
         }
+        self.sync_composer(cx);
         cx.notify();
     }
 
@@ -265,10 +310,21 @@ impl MainView {
     pub fn apply_timeline(&mut self, update: TimelineUpdate, cx: &mut Context<Self>) {
         let was_empty = self.timeline.events().is_empty();
         let at_bottom = self.scroll.is_scrolled_to_end() != Some(false);
+        // Échec d'envoi : le brouillon retourne dans le champ (au prochain rendu, qui a la fenêtre).
+        let draft_to_restore = match &update {
+            TimelineUpdate::SendFailed { room, text, .. } if self.timeline.room() == Some(room) => {
+                Some(text.clone())
+            }
+            _ => None,
+        };
         let applied = self.timeline.apply(update);
         if applied.ignored {
             return;
         }
+        if draft_to_restore.is_some() {
+            self.pending_restore = draft_to_restore;
+        }
+        self.sync_composer(cx);
         if was_empty && !self.timeline.events().is_empty() {
             // Premier affichage : on lit les derniers messages.
             self.scroll.scroll_to_bottom();
@@ -331,6 +387,131 @@ impl MainView {
         } else {
             cx.emit(MainEvent::LoadOlder(room));
         }
+    }
+
+    /// La saisie est active si un salon est sélectionné et que sa timeline n'est pas en erreur.
+    fn composer_enabled(&self) -> bool {
+        self.timeline.room().is_some() && !matches!(self.timeline.status(), TimelineStatus::Failed(_))
+    }
+
+    fn sync_composer(&mut self, cx: &mut Context<Self>) {
+        let disabled = !self.composer_enabled();
+        self.composer.update(cx, |state, cx| state.set_disabled(disabled, cx));
+    }
+
+    /// Entrée : envoie le contenu du champ s'il n'est pas vide (sinon, aucun effet).
+    fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.composer_enabled() {
+            return;
+        }
+        let Some(room) = self.timeline.room().cloned() else {
+            return;
+        };
+        let typed = self.composer.read(cx).value();
+        let Some(body) = prepare_message(&typed) else {
+            return;
+        };
+        self.send_body(room, body, window, cx);
+    }
+
+    /// Envoi : champ vidé, focus conservé, vue collée en bas, puis commande vers le pont (ou écho
+    /// simulé en démonstration). Aucun appel réseau ici.
+    fn send_body(&mut self, room: RoomId, body: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.timeline.clear_send_failure();
+        self.composer.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+            state.focus(window, cx);
+        });
+        self.scroll.scroll_to_bottom();
+        if self.demo {
+            self.demo_send_echo(room, body, cx);
+        } else {
+            cx.emit(MainEvent::SendText { room, body });
+        }
+        cx.notify();
+    }
+
+    /// Nouvelle tentative après un échec d'envoi : renvoie le brouillon mémorisé.
+    fn retry_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(room), Some(failure)) =
+            (self.timeline.room().cloned(), self.timeline.send_failure().cloned())
+        else {
+            return;
+        };
+        self.send_body(room, failure.text, window, cx);
+    }
+
+    /// Démonstration : écho local immédiat, confirmé après un délai (sans réseau).
+    fn demo_send_echo(&mut self, room: RoomId, body: String, cx: &mut Context<Self>) {
+        self.demo_sent += 1;
+        let last_ts = self.timeline.events().last().map_or(0, |e| e.timestamp_ms);
+        let echo = EventVm {
+            id: EventId::from(format!("$demo-local-{}", self.demo_sent).as_str()),
+            sender_name: "Moi (démo)".to_owned(),
+            sender_initials: "MD".to_owned(),
+            timestamp_ms: last_ts + 60_000,
+            time_label: String::new(),
+            body,
+            state: EventState::Local,
+        };
+        self.apply_timeline(
+            TimelineUpdate::Events { room: room.clone(), events: vec![echo.clone()], at_start: None },
+            cx,
+        );
+        if self.demo_hold_pending {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DEMO_CONFIRM_DELAY).await;
+            this.update(cx, |this, cx| {
+                // Confirmation : même id, état `Normal` (la fusion remplace la ligne).
+                let confirmed = EventVm { state: EventState::Normal, ..echo };
+                this.apply_timeline(
+                    TimelineUpdate::Events { room, events: vec![confirmed], at_start: None },
+                    cx,
+                );
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn composer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let enabled = self.composer_enabled();
+        let failure = self.timeline.send_failure().cloned();
+        div()
+            .id("composer")
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .border_t_1()
+            .border_color(rgb(BORDER))
+            .children(failure.map(|failure| {
+                let label = SharedString::from(failure.message.clone());
+                div()
+                    .id("composer-error")
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().flex_1().text_sm().text_color(rgb(ERROR)).child(failure.message))
+                    .child(
+                        Button::new("composer-retry")
+                            .label("Réessayer")
+                            .on_click(cx.listener(|this, _, window, cx| this.retry_send(window, cx))),
+                    )
+                    .test_support()
+                    .aria_label(label)
+            }))
+            .child(
+                Textarea::new(&self.composer)
+                    .accessibility_id("composer-input")
+                    .disabled(!enabled)
+                    .aria_label("Message"),
+            )
+            .test_support()
+            .aria_label("Zone de saisie")
     }
 
     fn room_row(&self, index: usize, room: &RoomVm, cx: &mut Context<Self>) -> impl IntoElement {
@@ -433,7 +614,13 @@ impl MainView {
 
     fn event_row(index: usize, event: &EventVm) -> impl IntoElement {
         let undecryptable = event.state == EventState::Indechiffrable;
+        let failed = event.state == EventState::EchecEnvoi;
         let dim = event.state == EventState::Local;
+        let time_label = match event.state {
+            EventState::Local => "envoi…".to_owned(),
+            EventState::EchecEnvoi => "non envoyé".to_owned(),
+            _ => event.time_label.clone(),
+        };
         div()
             .id(SharedString::from(format!("event-{index}")))
             .h(px(EVENT_ROW_HEIGHT))
@@ -471,7 +658,7 @@ impl MainView {
                                 div()
                                     .text_xs()
                                     .text_color(rgb(TEXT_SECONDARY))
-                                    .child(event.time_label.clone()),
+                                    .child(time_label),
                             ),
                     )
                     .child(
@@ -481,16 +668,25 @@ impl MainView {
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_sm()
-                            .text_color(rgb(if undecryptable { ERROR } else { TEXT_SECONDARY }))
+                            .text_color(rgb(if undecryptable || failed { ERROR } else { TEXT_SECONDARY }))
                             .child(event.body.clone()),
                     ),
             )
             .test_support()
-            .aria_label(SharedString::from(format!("{} : {}", event.sender_name, event.body)))
+            .aria_label(SharedString::from(format!(
+                "{} : {}{}",
+                event.sender_name,
+                event.body,
+                match event.state {
+                    EventState::Local => " [envoi en cours]",
+                    EventState::EchecEnvoi => " [non envoyé]",
+                    _ => "",
+                }
+            )))
     }
 
     fn timeline_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let base = div().flex_1().h_full().flex().flex_col().min_w_0();
+        let base = div().flex_1().min_h_0().flex().flex_col().min_w_0();
         let message = |id: &'static str, text: String, color: u32| {
             div()
                 .id(id)
@@ -681,7 +877,16 @@ impl MainView {
 }
 
 impl Render for MainView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(draft) = self.pending_restore.take() {
+            let composer = self.composer.clone();
+            composer.update(cx, |state, cx| {
+                // On ne piétine pas ce que l'utilisateur a déjà retapé entre-temps.
+                if state.value().is_empty() {
+                    state.set_value(draft, window, cx);
+                }
+            });
+        }
         let header = div()
             .flex()
             .flex_col()
@@ -719,7 +924,15 @@ impl Render for MainView {
             .test_support()
             .aria_label("Salons");
 
-        let center = self.timeline_panel(cx);
+        let timeline = self.timeline_panel(cx);
+        let center = div()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(timeline)
+            .child(self.composer_panel(cx));
 
         div()
             .size_full()

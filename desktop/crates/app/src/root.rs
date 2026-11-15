@@ -1,7 +1,7 @@
 //! Racine de l'application : choisit l'écran (reprise, connexion, session ouverte) et câble
 //! les actions utilisateur vers le [`Bridge`].
 
-use domain::Session;
+use domain::{Session, TimelineUpdate};
 use gpui_kit::*;
 use matrix::{Client, SyncUpdate};
 use ui::{LoginEvent, LoginView, MainEvent, MainView, RoomsState};
@@ -59,6 +59,23 @@ impl AppRoot {
         cx.subscribe_in(&main, window, |this, main, event: &MainEvent, window, cx| match event {
             MainEvent::SignOut => this.sign_out(window, cx),
             MainEvent::SelectRoom(room) => this.open_timeline(main, room.clone(), window, cx),
+            MainEvent::SendText { room, body } => {
+                let queued = match &this.screen {
+                    Screen::SignedIn { timeline: Some(timeline), .. } => {
+                        timeline.send_text(body.clone())
+                    }
+                    _ => false,
+                };
+                if !queued {
+                    // Pas de timeline active : on rend le brouillon à l'utilisateur au lieu de le perdre.
+                    let update = TimelineUpdate::SendFailed {
+                        room: room.clone(),
+                        text: body.clone(),
+                        message: "Envoi impossible : la conversation n'est pas prête.".to_owned(),
+                    };
+                    main.update(cx, |main, cx| main.apply_timeline(update, cx));
+                }
+            }
             MainEvent::LoadOlder(_) => {
                 if let Screen::SignedIn { timeline: Some(timeline), .. } = &this.screen {
                     timeline.load_older();

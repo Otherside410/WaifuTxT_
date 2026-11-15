@@ -3,45 +3,11 @@
 
 mod common;
 
-use common::open_main;
+use common::{close_modal_and_open, open_main, rendered_rows, row_id, top_row};
 use domain::{EventId, EventState, EventVm, TimelineUpdate};
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{point, px, AppContext, ScrollDelta, SharedString, TestAppContext, Window};
+use gpui_kit::{point, px, AppContext, ScrollDelta, TestAppContext};
 use ui::{RoomsState, EVENT_ROW_HEIGHT};
-
-const MAX_EVENTS_PROBED: usize = 400;
-
-/// Identifiant d'accessibilité de la ligne `index` (propriétaire : l'id ne doit pas emprunter).
-fn row_id(index: usize) -> SharedString {
-    SharedString::from(format!("event-{index}"))
-}
-
-/// Indices des lignes `event-N` actuellement rendues (virtualisation : seulement les visibles).
-fn rendered_rows(window: &Window) -> Vec<usize> {
-    (0..MAX_EVENTS_PROBED)
-        .filter(|i| window.try_find(row_id(*i)).is_some())
-        .collect()
-}
-
-/// Ligne rendue la plus haute : `(libellé, ordonnée)`.
-fn top_row(window: &Window) -> (String, f32) {
-    let rows = rendered_rows(window);
-    let first = *rows.first().expect("au moins une ligne rendue");
-    let snapshot = window.find(row_id(first));
-    (snapshot.label().unwrap_or_default().to_owned(), f32::from(snapshot.bounds().origin.y))
-}
-
-fn close_modal_and_open(cx: &mut TestAppContext, handle: gpui_kit::WindowHandle<gpui_kit::base::Root>, room: &'static str) {
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("recovery-cancel", cx);
-        window.render_frame(cx);
-        window.click(room, cx);
-        window.render_frame(cx);
-    })
-    .expect("fenêtre");
-    cx.run_until_parked();
-}
 
 #[gpui_kit::test]
 fn selecting_the_demo_room_shows_a_virtualized_timeline_of_constant_height_rows(
