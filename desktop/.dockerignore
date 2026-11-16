@@ -1,0 +1,8 @@
+# Contexte de build du Dockerfile : rien de volumineux ni de généré.
+target
+spikes
+packaging/build
+packaging/out
+packaging/*.AppImage
+packaging/*.tar.gz
+**/*.AppImage
