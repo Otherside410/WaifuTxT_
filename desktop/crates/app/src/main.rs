@@ -52,13 +52,17 @@ const DEMO_TIMELINE_FLAG: &str = "--demo-timeline";
 const DEMO_SEND_FLAG: &str = "--demo-send";
 /// Variante : médias de démonstration (images générées, fichier, image chiffrée indisponible, échec d'envoi).
 const DEMO_MEDIA_FLAG: &str = "--demo-media";
+/// Banc W06 : fait défiler 5 000 messages de démonstration dans une vraie fenêtre, imprime les intervalles entre rendus
+/// (médiane / p95 / max) et le nombre de lignes construites par rendu, puis quitte. Ni réseau, ni client Matrix.
+const BENCH_TIMELINE_FLAG: &str = "--bench-timeline";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let demo_media = args.iter().any(|arg| arg == DEMO_MEDIA_FLAG);
     let demo_send = args.iter().any(|arg| arg == DEMO_SEND_FLAG);
     let demo_timeline = demo_media || demo_send || args.iter().any(|arg| arg == DEMO_TIMELINE_FLAG);
-    let demo = demo_timeline || args.iter().any(|arg| arg == DEMO_FLAG);
+    let bench_timeline = args.iter().any(|arg| arg == BENCH_TIMELINE_FLAG);
+    let demo = bench_timeline || demo_timeline || args.iter().any(|arg| arg == DEMO_FLAG);
 
     if !has_display() {
         eprintln!("{APP_TITLE} : aucun affichage détecté (ni WAYLAND_DISPLAY ni DISPLAY) ; impossible d'ouvrir la fenêtre.");
@@ -103,6 +107,9 @@ fn main() -> ExitCode {
                 cx.new(|cx| AppRoot::new(bridge, window, cx))
             })
             .map(|_| ()),
+            None if bench_timeline => {
+                gpui_kit::open_window(options, cx, |_, cx| cx.new(ui::TimelineBench::new)).map(|_| ())
+            }
             None => gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| {
                     if demo_media {

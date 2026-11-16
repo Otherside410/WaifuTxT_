@@ -4,6 +4,7 @@ pub mod demo;
 pub mod login;
 pub mod main_view;
 pub mod modal;
+pub mod timeline_proto;
 
 pub use login::{initial_homeserver, LoginEvent, LoginView, DEFAULT_HOMESERVER};
 pub use main_view::{
@@ -11,3 +12,4 @@ pub use main_view::{
     PICKER_UNAVAILABLE,
 };
 pub use modal::ModalState;
+pub use timeline_proto::{generate_messages, summarize, BenchReport, ProtoBody, ProtoMessage, TimelineBench, TimelineProto, PROTO_MESSAGES};
