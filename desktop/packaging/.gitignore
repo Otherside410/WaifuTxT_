@@ -2,3 +2,4 @@
 *.AppImage
 *.tar.gz
 /out/
+/staging-out/
