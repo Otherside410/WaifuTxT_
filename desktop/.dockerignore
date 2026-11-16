@@ -6,3 +6,5 @@ packaging/out
 packaging/*.AppImage
 packaging/*.tar.gz
 **/*.AppImage
+out
+*.tar.gz
