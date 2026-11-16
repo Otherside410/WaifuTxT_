@@ -2,6 +2,7 @@
 
 mod bridge;
 mod root;
+mod update;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -58,6 +59,15 @@ const BENCH_TIMELINE_FLAG: &str = "--bench-timeline";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Mise à jour et retour arrière : lignes de commande sans fenêtre (voir `update.rs`).
+    match update::parse(&args) {
+        Ok(Some(request)) => return update::run(request),
+        Ok(None) => {}
+        Err(message) => {
+            eprintln!("{APP_TITLE} : {message}");
+            return ExitCode::FAILURE;
+        }
+    }
     let demo_media = args.iter().any(|arg| arg == DEMO_MEDIA_FLAG);
     let demo_send = args.iter().any(|arg| arg == DEMO_SEND_FLAG);
     let demo_timeline = demo_media || demo_send || args.iter().any(|arg| arg == DEMO_TIMELINE_FLAG);

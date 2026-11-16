@@ -12,6 +12,7 @@ path = "src/main.rs"
 domain.workspace = true
 matrix = { path = "../matrix" }
 ui.workspace = true
+updater = { path = "../updater" }
 gpui-kit.workspace = true
 dirs = "6"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

@@ -16,7 +16,7 @@ VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}'
 OUT="$HERE/WaifuChat-${VERSION}-x86_64.AppImage"
 
 echo "==> cargo build --release"
-(cd "$DESKTOP" && cargo build --release)
+(cd "$DESKTOP" && cargo build --release --locked)
 BIN="$DESKTOP/target/release/waifu-desktop"
 [ -x "$BIN" ] || { echo "binaire release absent : $BIN" >&2; exit 1; }
 
@@ -50,6 +50,11 @@ else
   printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMw+8/wHwAEoAIB3ZV5HQAAAABJRU5ErkJggg==' | base64 -d > "$APPDIR/waifu-desktop.png"
 fi
 ln -sf waifu-desktop.png "$APPDIR/.DirIcon"
+
+# Reproductibilité : toutes les dates de l'AppDir et du squashfs sont fixées à SOURCE_DATE_EPOCH (par défaut : date du
+# dernier commit, sinon 0), de sorte que deux exécutions sur le même binaire donnent la même AppImage, octet pour octet.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+find "$APPDIR" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 echo "==> appimagetool"
 if [ ! -x "$APPIMAGETOOL" ]; then
