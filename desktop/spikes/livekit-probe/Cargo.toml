@@ -1,0 +1,14 @@
+# SPIKE W08 : sonde des capacités de `livekit` 0.11.0 sur la VM de développement. HORS du workspace de `desktop/`
+# (la table `[workspace]` ci-dessous le détache) : n'altère ni `desktop/Cargo.toml` ni `desktop/Cargo.lock`.
+# Dépendances nouvelles, à valider par Otherside avant tout usage dans le workspace : `livekit =0.11.0` (+ `tokio`).
+[package]
+name = "livekit-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+livekit = { version = "=0.11.0", features = ["glib-main-loop"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
