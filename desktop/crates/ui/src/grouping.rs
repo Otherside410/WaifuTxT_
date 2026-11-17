@@ -44,6 +44,12 @@ pub fn group_events(events: &[EventVm]) -> Vec<GroupPosition> {
         .collect()
 }
 
+/// Le bouton « Envoyer » est actif seulement si le composeur l'est et que le champ contient autre chose que des
+/// espaces — la même condition que `prepare_message` côté envoi, pour qu'un bouton actif ne soit jamais sans effet.
+pub fn send_enabled(composer_enabled: bool, value: &str) -> bool {
+    composer_enabled && !value.trim().is_empty()
+}
+
 /// Hachage FNV-1a 32 bits du nom : stable d'un lancement à l'autre et d'une machine à l'autre (contrairement à
 /// `DefaultHasher`, dont la graine peut changer).
 pub fn name_hash(name: &str) -> u32 {
@@ -193,6 +199,15 @@ mod tests {
         assert!(used.len() > 1, "six noms ne tombent pas tous dans la même case");
         let (a, b) = ("Alice Demo", "Bob Demo");
         assert_eq!(avatar_slot(a, slots) == avatar_slot(b, slots), name_hash(a) as usize % slots == name_hash(b) as usize % slots);
+    }
+
+    #[test]
+    fn the_send_button_needs_an_enabled_composer_and_non_blank_text() {
+        assert!(!send_enabled(true, ""));
+        assert!(!send_enabled(true, "  \n\t "));
+        assert!(send_enabled(true, "salut"));
+        assert!(send_enabled(true, "  salut "));
+        assert!(!send_enabled(false, "salut"));
     }
 
     #[test]

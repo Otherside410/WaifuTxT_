@@ -22,7 +22,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::demo;
-use crate::grouping::{actions_visible_at_rest, avatar_slot, starts_group, status_suffix};
+use crate::grouping::{actions_visible_at_rest, avatar_slot, send_enabled, starts_group, status_suffix};
 use crate::modal::ModalState;
 use crate::theme_gpui::Palette;
 
@@ -42,7 +42,9 @@ const FILL_ROWS: usize = 20;
 const BANNER_HEIGHT: f32 = 24.0;
 /// Délai avant la confirmation simulée d'un envoi en mode démonstration.
 const DEMO_CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
-const COMPOSER_PLACEHOLDER: &str = "Écrire un message… (Entrée : envoyer, Maj+Entrée : saut de ligne)";
+const COMPOSER_PLACEHOLDER: &str = "Écrire un message…";
+/// Aide clavier, affichée en 11 px sous le champ (elle ne tient plus dans le placeholder).
+const COMPOSER_HINT: &str = "Entrée : envoyer · Maj+Entrée : saut de ligne";
 
 /// En-tête d'une ligne de message : ouvre-t-elle un groupe, et la photo de l'expéditeur si ses octets sont en cache.
 struct RowHead {
@@ -686,6 +688,8 @@ impl MainView {
     /// Un changement de texte : au plus une notice « j'écris » par fenêtre de temps (voir
     /// [`TypingThrottle`]), et un arrêt automatique après inactivité.
     fn on_composer_changed(&mut self, cx: &mut Context<Self>) {
+        // Le bouton « Envoyer » dépend du contenu : on redessine à chaque changement.
+        cx.notify();
         let Some(room) = self.timeline.room().cloned() else {
             return;
         };
@@ -1105,25 +1109,59 @@ impl MainView {
                     .test_support()
                     .aria_label(label)
             }))
+            // Bloc de saisie arrondi : champ transparent, puis une barre (aide clavier à gauche, Joindre et Envoyer à droite).
             .child(
                 div()
+                    .id("composer-box")
                     .flex()
-                    .items_end()
-                    .gap_2()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded_lg()
+                    .bg(p.panel)
+                    .border_1()
+                    .border_color(p.border)
+                    .test_support()
+                    .aria_label("Bloc de saisie")
                     .child(
-                        div().flex_1().child(
-                            Textarea::new(&self.composer)
-                                .bg(p.field)
-                                .accessibility_id("composer-input")
-                                .disabled(!enabled)
-                                .aria_label("Message"),
-                        ),
+                        Textarea::new(&self.composer)
+                            .appearance(false)
+                            .accessibility_id("composer-input")
+                            .disabled(!enabled)
+                            .aria_label("Message"),
                     )
                     .child(
-                        Button::new("attach-button")
-                            .label("Joindre")
-                            .disabled(!enabled)
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_attachment(cx))),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(META_TEXT_SIZE))
+                                    .text_color(p.text_secondary)
+                                    .child(COMPOSER_HINT),
+                            )
+                            .child(
+                                Button::new("attach-button")
+                                    .label("Joindre")
+                                    .small()
+                                    .disabled(!enabled)
+                                    .on_click(cx.listener(|this, _, _, cx| this.pick_attachment(cx))),
+                            )
+                            .child(
+                                // Même chemin que la touche Entrée : `submit_composer`, sans logique propre.
+                                Button::new("send-button")
+                                    .primary()
+                                    .label("Envoyer")
+                                    .small()
+                                    .disabled(!send_enabled(enabled, &self.composer.read(cx).value()))
+                                    .on_click(cx.listener(|this, _, window, cx| this.submit_composer(window, cx))),
+                            ),
                     ),
             )
             // Glisser-déposer d'un fichier sur la zone de saisie.

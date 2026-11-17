@@ -323,3 +323,45 @@ fn the_raw_picker_outcomes_are_classified_without_hiding_failures() {
     let channel_dropped: Result<Result<Option<Vec<PathBuf>>, ()>, ()> = Err(());
     assert_eq!(classify_pick(channel_dropped), PickResult::Unavailable, "canal fermé sans réponse");
 }
+
+#[gpui_kit::test]
+fn the_send_button_is_present_inert_when_blank_and_sends_through_the_enter_path(cx: &mut TestAppContext) {
+    let (handle, _view) = open_main(cx, true);
+    close_modal_and_open(cx, handle, "room-1");
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("send-button").is_some(), "bouton « Envoyer » présent");
+        assert!(window.try_find("composer-box").is_some(), "bloc de saisie arrondi présent");
+
+        // Champ vide, puis espaces seuls : bouton désactivé, un clic n'envoie rien.
+        window.click("send-button", cx);
+        window.click("composer", cx);
+        window.input("   ", cx);
+        window.render_frame(cx);
+        window.click("send-button", cx);
+        window.render_frame(cx);
+        assert_eq!(rows_containing(window, "[envoi en cours]"), 0, "rien d'envoyé à vide");
+        assert_eq!(field_value(window), "   ", "le champ n'a pas été vidé");
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.input("bonjour par le bouton", cx);
+        window.render_frame(cx);
+        window.click("send-button", cx);
+    })
+    .expect("fenêtre");
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // Même effet que la touche Entrée : champ vidé, un seul écho local en état « envoi ».
+        assert_eq!(field_value(window), "");
+        assert_eq!(rows_containing(window, "bonjour par le bouton"), 1);
+        assert_eq!(rows_containing(window, "[envoi en cours]"), 1);
+    })
+    .expect("fenêtre");
+}
