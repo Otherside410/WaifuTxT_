@@ -13,7 +13,8 @@ domain = { path = "crates/domain" }
 ui = { path = "crates/ui" }
 
 [profile.dev]
-debug = 1
+# 0 et non 1 : moins de code généré et d'octets écrits (target plus petit, donc moins tenté d'être nettoyé).
+debug = 0
 
 [profile.dev.package."*"]
 debug = false
