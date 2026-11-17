@@ -1,0 +1,16 @@
+# Image de build volontairement ancienne : Debian 12 = glibc 2.36.
+# Un binaire n'est exécutable que sur une glibc >= à celle de compilation.
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential clang pkg-config libssl-dev libvulkan-dev libwayland-dev \
+      libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+      libfontconfig-dev libasound2-dev libfreetype-dev \
+      curl ca-certificates git file \
+    && rm -rf /var/lib/apt/lists/*
+
+# Toolchain installée hors de $HOME pour rester lisible avec --userns=keep-id.
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
+    && chmod -R a+rX /opt/rustup /opt/cargo

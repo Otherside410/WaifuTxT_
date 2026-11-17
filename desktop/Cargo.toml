@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.67.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+gpui-kit = "=0.9.1"
+domain = { path = "crates/domain" }
+ui = { path = "crates/ui" }
+
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false

@@ -1,0 +1,26 @@
+[package]
+name = "matrix"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain.workspace = true
+matrix-sdk = { version = "0.19.1", default-features = false, features = ["e2e-encryption", "sqlite", "bundled-sqlite", "rustls-aws-lc-rs"] }
+matrix-sdk-ui = { version = "0.19.1", default-features = false, features = ["rustls-aws-lc-rs"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["sync", "macros", "rt", "fs"] }
+mime = "0.3"
+mime_guess = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json = "1"
+getrandom = "0.3"
+thiserror = "2"
+# Dimensions des images à l'envoi : lecture de l'en-tête seulement (pas de décodage).
+imagesize = { version = "0.14", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+# Tests d'intégration contre un homeserver (tests/homeserver.rs, gated par WAIFU_IT_HOMESERVER).
+tempfile = "3"
+md-5 = "0.10"

@@ -1,0 +1,157 @@
+name: Desktop Rust (natif GPUI)
+
+# Build, tests et distribution du client natif (desktop/). Workflow SÉPARÉ de desktop-build.yml (Electron) : les deux
+# cohabitent pendant le chantier. NON EXÉCUTÉ à la date d'écriture (aucun push autorisé) : les commandes du job Linux ont été
+# rejouées à la main sur la VM de développement, celles du job Windows n'ont jamais tourné (voir .design/RAPPORT-W07.md).
+#
+# Secrets / variables attendus (à créer par Otherside, rien n'est créé ici) :
+#   vars.WAIFU_UPDATE_PUBKEY          clé publique ed25519 de mise à jour (hex, 64 car.), compilée dans le binaire
+#   secrets.WAIFU_UPDATE_SIGNING_KEY  clé secrète correspondante (hex, 64 car.), utilisée seulement pour signer un manifeste
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop-rust.yml"
+  push:
+    tags:
+      - "desktop-v*"
+
+concurrency:
+  group: desktop-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: desktop
+
+env:
+  CARGO_TERM_COLOR: always
+  WAIFU_UPDATE_PUBKEY: ${{ vars.WAIFU_UPDATE_PUBKEY }}
+
+jobs:
+  linux:
+    name: Linux (build, tests, AppImage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dépendances système de GPUI / matrix-sdk (liste de packaging/Containerfile.build, noms Debian/Ubuntu).
+      - name: Dépendances système
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang pkg-config libssl-dev libvulkan-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libfontconfig-dev libasound2-dev libfreetype-dev curl ca-certificates file
+
+      - name: Chaîne Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/target
+          key: desktop-rust-${{ runner.os }}-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: desktop-rust-${{ runner.os }}-
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # Les tests d'intégration contre un homeserver sont #[ignore] : ils ne tournent pas ici (aucun Synapse sur le runner).
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: AppImage
+        run: bash packaging/build-appimage.sh
+
+      - name: Empreinte
+        run: sha256sum packaging/WaifuChat-*-x86_64.AppImage | tee packaging/WaifuChat.AppImage.sha256
+
+      # Manifeste signé : uniquement sur un tag, avec le secret. La clé n'est écrite que dans un fichier temporaire du runner.
+      - name: Manifeste signé (tag desktop-v*)
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          SIGNING_KEY: ${{ secrets.WAIFU_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$SIGNING_KEY" ] || { echo "secret WAIFU_UPDATE_SIGNING_KEY absent" >&2; exit 1; }
+          VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml | head -n1)"
+          APPIMAGE="packaging/WaifuChat-${VERSION}-x86_64.AppImage"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$(basename "$APPIMAGE")"
+          KEYFILE="$(mktemp)"; trap 'shred -u "$KEYFILE" 2>/dev/null || rm -f "$KEYFILE"' EXIT
+          umask 077; printf '%s' "$SIGNING_KEY" > "$KEYFILE"
+          cargo run --release --locked -p updater --bin waifu-updater -- manifest --version "$VERSION" --url "$URL" --file "$APPIMAGE" --out packaging/manifest.json
+          cargo run --release --locked -p updater --bin waifu-updater -- sign --key "$KEYFILE" packaging/manifest.json
+          cat packaging/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waifuchat-linux
+          path: |
+            desktop/packaging/WaifuChat-*-x86_64.AppImage
+            desktop/packaging/WaifuChat.AppImage.sha256
+            desktop/packaging/manifest.json
+            desktop/packaging/manifest.json.sig
+          if-no-files-found: error
+
+  windows:
+    name: Windows (NSIS + portable)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Chaîne Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+
+      - name: NSIS
+        run: |
+          choco install nsis -y --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            desktop\target
+          key: desktop-rust-${{ runner.os }}-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: desktop-rust-${{ runner.os }}-
+
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: NSIS + portable
+        run: ./packaging/build-windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waifuchat-windows
+          path: |
+            desktop/packaging/out/WaifuChat-*-x64-setup.exe
+            desktop/packaging/out/WaifuChat-*-x64-portable.exe
+          if-no-files-found: error

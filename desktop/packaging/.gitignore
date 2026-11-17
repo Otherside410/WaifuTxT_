@@ -1,0 +1,5 @@
+/build/
+*.AppImage
+*.tar.gz
+/out/
+/staging-out/
