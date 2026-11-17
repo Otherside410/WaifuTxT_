@@ -28,6 +28,39 @@ pub const REDACTED_PLACEHOLDER: &str = "Message supprimé";
 pub const UNDECRYPTABLE_PLACEHOLDER: &str =
     "Message chiffré : clé manquante (utilise « Restaurer les clés »)";
 
+/// Disponibilité d'un utilisateur (`m.presence`). `Unknown` : aucun événement reçu — l'UI ne dessine alors rien.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum Presence {
+    Online,
+    Unavailable,
+    Offline,
+    #[default]
+    Unknown,
+}
+
+impl Presence {
+    /// Mapping de la valeur `presence` d'un événement Matrix (`online`, `unavailable`, `offline`) ; toute autre
+    /// valeur (état futur non reconnu) est `Unknown`.
+    pub fn from_matrix(state: &str) -> Self {
+        match state {
+            "online" => Self::Online,
+            "unavailable" => Self::Unavailable,
+            "offline" => Self::Offline,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Libellé d'accessibilité ; `None` pour `Unknown` (aucune pastille).
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Online => Some("en ligne"),
+            Self::Unavailable => Some("absent"),
+            Self::Offline => Some("hors ligne"),
+            Self::Unknown => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventVm {
     /// Identifiant **stable pendant toute la vie du message** : il ne change pas quand un écho local est
@@ -38,6 +71,9 @@ pub struct EventVm {
     pub sender_initials: String,
     /// URI `mxc://…` de la photo de profil de l'expéditeur dans ce salon ; `None` si le membre n'en a pas (repli : initiales).
     pub sender_avatar: Option<String>,
+    /// Identifiant Matrix de l'expéditeur (`@alice:serveur`) ; sert de clé à la présence et au regroupement (le nom
+    /// d'affichage n'est pas unique). Vide dans les fixtures qui n'en ont pas besoin : jamais de présence associée.
+    pub sender_id: String,
     /// Horodatage en millisecondes Unix : sert à l'ordre chronologique.
     pub timestamp_ms: u64,
     /// Heure locale déjà formatée (ex. `14:05`), calculée par la couche Matrix.
@@ -298,6 +334,9 @@ pub struct TimelineState {
     typing: Vec<String>,
     read_marked: Option<EventId>,
     media: HashMap<String, MediaPayload>,
+    /// Table latérale de présence, par identifiant d'utilisateur. Globale (indépendante du salon sélectionné) :
+    /// `select` la conserve, seul `clear` (déconnexion) l'efface. Absent de la table = [`Presence::Unknown`].
+    presence: HashMap<String, Presence>,
 }
 
 impl Default for TimelineState {
@@ -312,6 +351,7 @@ impl Default for TimelineState {
             typing: Vec::new(),
             read_marked: None,
             media: HashMap::new(),
+            presence: HashMap::new(),
         }
     }
 }
@@ -402,7 +442,22 @@ impl TimelineState {
 
     /// Sélectionne un salon : l'état précédent est abandonné.
     pub fn select(&mut self, room: RoomId) {
-        *self = Self { room: Some(room), status: TimelineStatus::Loading, ..Self::default() };
+        let presence = std::mem::take(&mut self.presence);
+        *self = Self { room: Some(room), status: TimelineStatus::Loading, presence, ..Self::default() };
+    }
+
+    /// Présence connue de `user_id` ([`Presence::Unknown`] si aucun événement n'est arrivé).
+    pub fn presence_of(&self, user_id: &str) -> Presence {
+        self.presence.get(user_id).copied().unwrap_or_default()
+    }
+
+    /// Enregistre la présence d'un seul utilisateur. Renvoie `true` si elle a changé (l'UI ne redessine que dans ce
+    /// cas) ; `Unknown` retire l'entrée.
+    pub fn set_presence(&mut self, user_id: &str, state: Presence) -> bool {
+        if state == Presence::Unknown {
+            return self.presence.remove(user_id).is_some();
+        }
+        self.presence.insert(user_id.to_owned(), state) != Some(state)
     }
 
     /// Oublie le salon (ex. déconnexion).
@@ -505,6 +560,7 @@ mod tests {
             sender_name: "Alice".into(),
             sender_initials: "A".into(),
             sender_avatar: None,
+            sender_id: String::new(),
             timestamp_ms: ts,
             time_label: String::new(),
             body: format!("msg {id}"),
@@ -1033,5 +1089,42 @@ mod tests {
         state.apply(events_update("!a:x", vec![], Some(true)));
         assert_eq!(state.status(), &TimelineStatus::Ready);
         assert!(state.events().is_empty());
+    }
+
+    #[test]
+    fn presence_maps_the_three_matrix_states_and_everything_else_is_unknown_without_a_label() {
+        assert_eq!(Presence::from_matrix("online"), Presence::Online);
+        assert_eq!(Presence::from_matrix("unavailable"), Presence::Unavailable);
+        assert_eq!(Presence::from_matrix("offline"), Presence::Offline);
+        assert_eq!(Presence::from_matrix("busy"), Presence::Unknown);
+        assert_eq!(Presence::from_matrix(""), Presence::Unknown);
+        assert_eq!(Presence::Online.label(), Some("en ligne"));
+        assert_eq!(Presence::Unavailable.label(), Some("absent"));
+        assert_eq!(Presence::Offline.label(), Some("hors ligne"));
+        assert_eq!(Presence::Unknown.label(), None, "inconnu : aucune pastille");
+    }
+
+    #[test]
+    fn a_presence_update_touches_one_user_only_and_reports_whether_it_changed() {
+        let mut state = TimelineState::default();
+        assert_eq!(state.presence_of("@a:x"), Presence::Unknown);
+        assert!(state.set_presence("@a:x", Presence::Online));
+        assert!(!state.set_presence("@a:x", Presence::Online), "même valeur : pas de changement");
+        assert!(state.set_presence("@b:x", Presence::Offline));
+        assert!(state.set_presence("@a:x", Presence::Unavailable));
+        assert_eq!(state.presence_of("@a:x"), Presence::Unavailable);
+        assert_eq!(state.presence_of("@b:x"), Presence::Offline, "l'autre expéditeur n'a pas bougé");
+        assert!(state.set_presence("@a:x", Presence::Unknown), "Unknown retire l'entrée");
+        assert_eq!(state.presence_of("@a:x"), Presence::Unknown);
+    }
+
+    #[test]
+    fn selecting_another_room_keeps_the_presence_table() {
+        let mut state = TimelineState::default();
+        state.set_presence("@a:x", Presence::Online);
+        state.select(RoomId::from("!r:x"));
+        assert_eq!(state.presence_of("@a:x"), Presence::Online);
+        state.clear();
+        assert_eq!(state.presence_of("@a:x"), Presence::Unknown, "déconnexion : table effacée");
     }
 }

@@ -30,6 +30,10 @@ pub struct Palette {
     /// Fond des champs de saisie (`bg-bg-tertiary`) : posé explicitement, le kit ne rend que 30 % de `input`.
     pub field: Hsla,
     pub scrim: Hsla,
+    /// Pastille de présence : en ligne (succès), absent (avertissement), hors ligne (texte secondaire).
+    pub presence_online: Hsla,
+    pub presence_away: Hsla,
+    pub presence_offline: Hsla,
     /// Couleurs des disques d'initiales (repli sans photo), toutes tirées du thème ; choisies par `grouping::avatar_slot`.
     pub avatar_fallbacks: [Hsla; 6],
 }
@@ -64,6 +68,9 @@ impl Palette {
                 t.status.danger.hsla(),
                 t.accent.link.hsla(),
             ],
+            presence_online: t.status.success.hsla(),
+            presence_away: t.status.warning.hsla(),
+            presence_offline: s.text_secondary.hsla(),
             scrim: Rgba::hex_a(0x000000b0).hsla(),
         }
     }

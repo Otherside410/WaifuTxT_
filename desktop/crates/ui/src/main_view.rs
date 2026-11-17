@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use domain::{
-    avatar_key,
+    avatar_key, Presence,
     last_read_marker, ConnectionState, media_display, prepare_message, read_by_label, sniff_image_format,
     typing_label, validate_recovery_key, EventId, EventState, EventVm, FailedAction, ImageKind,
     KeyStatus, MediaDisplay, MediaKind, MediaPayload, MediaStatus, MediaVm, RecoveryKey, RoomId,
@@ -31,6 +31,8 @@ const SIDEBAR_WIDTH: f32 = 280.0;
 pub const EVENT_ROW_HEIGHT: f32 = 48.0;
 /// Avatar de l'en-tête de groupe.
 const AVATAR_SIZE: f32 = 32.0;
+/// Diamètre de la pastille de présence (hors anneau de 1 px).
+const PRESENCE_DOT: f32 = 8.0;
 /// Échelle typographique de la timeline : corps 13 px, métadonnées 11 px.
 const BODY_TEXT_SIZE: f32 = 13.0;
 const META_TEXT_SIZE: f32 = 11.0;
@@ -52,6 +54,8 @@ const COMPOSER_HINT: &str = "Entrée : envoyer · Maj+Entrée : saut de ligne";
 struct RowHead {
     starts_group: bool,
     avatar: Option<Arc<Image>>,
+    /// Présence de l'expéditeur : pastille sur l'avatar sauf si `Unknown`.
+    presence: Presence,
 }
 
 /// Ce que la liste de salons affiche.
@@ -168,6 +172,16 @@ impl MediaRender {
             card_label,
             aria,
         }
+    }
+}
+
+/// Couleur de la pastille ; `None` pour `Unknown` (aucun élément dessiné).
+fn presence_color(presence: Presence, p: &Palette) -> Option<Hsla> {
+    match presence {
+        Presence::Online => Some(p.presence_online),
+        Presence::Unavailable => Some(p.presence_away),
+        Presence::Offline => Some(p.presence_offline),
+        Presence::Unknown => None,
     }
 }
 
@@ -445,6 +459,23 @@ impl MainView {
             view.open_viewer(key, "paysage.bmp".to_owned(), window, cx);
         }
         view
+    }
+
+    /// Démonstration de la présence : `--demo-timeline` avec les trois états (Alice en ligne, Bob absent, moi hors
+    /// ligne), injectés en mémoire comme le ferait `SyncUpdate::Presence` ; sans ce drapeau, aucune pastille.
+    pub fn demo_presence(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::demo_timeline(window, cx);
+        view.apply_presence(demo::DEMO_ALICE, Presence::Online, cx);
+        view.apply_presence(demo::DEMO_BOB, Presence::Unavailable, cx);
+        view.apply_presence(demo::DEMO_ME, Presence::Offline, cx);
+        view
+    }
+
+    /// Présence d'un seul utilisateur : ne redessine que si elle a changé (pas de rechargement de la timeline).
+    pub fn apply_presence(&mut self, user_id: &str, state: Presence, cx: &mut Context<Self>) {
+        if self.timeline.set_presence(user_id, state) {
+            cx.notify();
+        }
     }
 
     pub fn selected(&self) -> Option<&RoomId> {
@@ -948,6 +979,7 @@ impl MainView {
             sender_name: "Moi (démo)".to_owned(),
             sender_initials: "MD".to_owned(),
             sender_avatar: None,
+            sender_id: String::new(),
             timestamp_ms: last_ts + 60_000,
             time_label: String::new(),
             body: name,
@@ -995,6 +1027,7 @@ impl MainView {
             sender_name: "Moi (démo)".to_owned(),
             sender_initials: "MD".to_owned(),
             sender_avatar: None,
+            sender_id: String::new(),
             timestamp_ms: last_ts + 60_000,
             time_label: String::new(),
             body,
@@ -1467,7 +1500,7 @@ impl MainView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let p = Palette::of(cx);
-        let RowHead { starts_group, avatar } = head;
+        let RowHead { starts_group, avatar, presence } = head;
         let undecryptable = event.state == EventState::Indechiffrable;
         let media_failed = matches!(
             media.as_ref().map(|m| &m.display),
@@ -1599,6 +1632,25 @@ impl MainView {
                 cx.notify();
             }))
             .child(if starts_group {
+                let background = if selected { p.selected } else { p.background };
+                let badge = presence_color(presence, &p).map(|color| {
+                    // Pastille de 8 px cerclée de 1 px à la couleur du fond de ligne, en bas à droite de l'avatar.
+                    div()
+                        .id(SharedString::from(format!("presence-{index}")))
+                        .absolute()
+                        .right(px(-2.0))
+                        .bottom(px(-2.0))
+                        .size(px(PRESENCE_DOT + 2.0))
+                        .rounded(px((PRESENCE_DOT + 2.0) / 2.0))
+                        .bg(background)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(div().size(px(PRESENCE_DOT)).rounded(px(PRESENCE_DOT / 2.0)).bg(color))
+                        .test_support()
+                        .aria_label(presence.label().unwrap_or_default())
+                });
+                let avatar_element = {
                 match avatar {
                     // Photo de profil ronde ; sans octets (pas de photo, téléchargement en cours ou échec) : initiales.
                     Some(image) => div()
@@ -1632,6 +1684,8 @@ impl MainView {
                         .aria_label(SharedString::from(format!("Initiales de {}", event.sender_name)))
                         .into_any_element(),
                 }
+                };
+                div().relative().size(px(AVATAR_SIZE)).flex_none().child(avatar_element).children(badge).into_any_element()
             } else {
                 // Suite de groupe : l'espace de l'avatar est conservé pour aligner les corps.
                 div().size(px(AVATAR_SIZE)).flex_none().into_any_element()
@@ -1772,12 +1826,13 @@ impl MainView {
                                 let selected = this.selected_event.as_ref() == Some(&event.id);
                                 let events = this.timeline.events();
                                 let starts = starts_group(index.checked_sub(1).map(|j| &events[j]), event);
+                                let presence = this.timeline.presence_of(&event.sender_id);
                                 let avatar = event
                                     .sender_avatar
                                     .as_deref()
                                     .and_then(|mxc| this.images.get(&avatar_key(mxc)))
                                     .cloned();
-                                Self::event_row(index, event, read, media, selected, RowHead { starts_group: starts, avatar }, cx)
+                                Self::event_row(index, event, read, media, selected, RowHead { starts_group: starts, avatar, presence }, cx)
                             })
                             .collect::<Vec<_>>()
                     }),

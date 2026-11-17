@@ -24,6 +24,7 @@ pub enum GroupPosition {
 pub fn starts_group(previous: Option<&EventVm>, current: &EventVm) -> bool {
     let Some(prev) = previous else { return true };
     prev.sender_name != current.sender_name
+        || prev.sender_id != current.sender_id
         || prev.is_own != current.is_own
         || current.timestamp_ms.checked_sub(prev.timestamp_ms).is_none_or(|gap| gap > GROUP_WINDOW_MS)
         || prev.timestamp_ms / DAY_MS != current.timestamp_ms / DAY_MS
@@ -101,6 +102,7 @@ mod tests {
             sender_name: name.to_owned(),
             sender_initials: "XX".to_owned(),
             sender_avatar: None,
+            sender_id: String::new(),
             timestamp_ms: ts,
             time_label: "00:00".to_owned(),
             body: "x".to_owned(),
@@ -118,6 +120,14 @@ mod tests {
     #[test]
     fn an_empty_list_has_no_group() {
         assert!(group_events(&[]).is_empty());
+    }
+
+    #[test]
+    fn two_members_with_the_same_display_name_but_different_ids_do_not_merge() {
+        let (mut a, mut b) = (ev("Sam", false, T0), ev("Sam", false, T0 + 1000));
+        a.sender_id = "@sam:a".into();
+        b.sender_id = "@sam:b".into();
+        assert_eq!(group_events(&[a, b]), vec![Start, Start]);
     }
 
     #[test]

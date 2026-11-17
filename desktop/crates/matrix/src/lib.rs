@@ -21,5 +21,5 @@ pub use error::{MatrixError, Result};
 pub use media::{MediaCache, MediaError};
 pub use recovery::{key_status, recover};
 pub use rooms::room_list;
-pub use sync::{local_snapshot, run_sync, SyncUpdate};
+pub use sync::{local_snapshot, presence_updates, run_sync, SyncUpdate};
 pub use timeline::{run_timeline, TimelineCommand, PAGE_SIZE};

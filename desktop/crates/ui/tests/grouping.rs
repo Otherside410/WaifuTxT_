@@ -13,6 +13,7 @@ fn msg(tag: &str, sender: &str, ts: u64, own: bool) -> EventVm {
         sender_name: sender.into(),
         sender_initials: sender[..1].into(),
         sender_avatar: None,
+        sender_id: String::new(),
         timestamp_ms: ts,
         time_label: "12:00".into(),
         body: format!("message {tag}"),

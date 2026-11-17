@@ -11,7 +11,7 @@ mod session;
 
 pub use connection::ConnectionState;
 pub use event::{
-    apply_edit, last_read_marker, merge_events, prepare_message, read_by_label, redact_event,
+    apply_edit, last_read_marker, Presence, merge_events, prepare_message, read_by_label, redact_event,
     typing_label, Applied, EventState, EventVm, FailedAction, MergeOutcome, SendFailure,
     TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle, REDACTED_PLACEHOLDER,
     TYPING_IDLE_MS, TYPING_RESEND_MS, UNDECRYPTABLE_PLACEHOLDER,

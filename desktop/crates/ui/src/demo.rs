@@ -35,6 +35,19 @@ pub fn demo_avatar_payload() -> (String, MediaPayload) {
     (domain::avatar_key(DEMO_AVATAR_MXC), MediaPayload::Ready(std::sync::Arc::new(gradient_bmp(64, 64))))
 }
 
+/// Identifiants Matrix des membres de la démo (clés de la présence).
+pub const DEMO_ALICE: &str = "@alice:demo";
+pub const DEMO_BOB: &str = "@bob:demo";
+pub const DEMO_ME: &str = "@moi:demo";
+
+fn demo_user_id(name: &str) -> &'static str {
+    match name {
+        "Alice Demo" => DEMO_ALICE,
+        "Bob Demo" => DEMO_BOB,
+        _ => DEMO_ME,
+    }
+}
+
 fn demo_event(rank: usize) -> EventVm {
     // Un message sur quatre est de moi : ceux-là peuvent être modifiés ou supprimés.
     let own = rank % 4 == 3;
@@ -53,6 +66,7 @@ fn demo_event(rank: usize) -> EventVm {
         sender_initials: initials.to_owned(),
         // Alice a une photo (octets injectés en mémoire par la démo) ; Bob et moi gardons le repli initiales.
         sender_avatar: (name == "Alice Demo").then(|| DEMO_AVATAR_MXC.to_owned()),
+        sender_id: demo_user_id(name).to_owned(),
         timestamp_ms: 1_700_000_000_000 + rank as u64 * 60_000,
         time_label: format!("{:02}:{:02}", minutes / 60, minutes % 60),
         body: if undecryptable {
@@ -121,6 +135,7 @@ fn media_event(
         sender_name: sender.to_owned(),
         sender_initials: initials.to_owned(),
         sender_avatar: None,
+        sender_id: demo_user_id(sender).to_owned(),
         timestamp_ms: ts,
         time_label: format!("{:02}:{:02}", minutes / 60, minutes % 60),
         body: media.filename.clone(),

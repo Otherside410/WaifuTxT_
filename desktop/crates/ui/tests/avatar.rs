@@ -15,6 +15,7 @@ fn msg(tag: &str, sender: &str, avatar: Option<&str>, ts: u64) -> EventVm {
         sender_name: sender.into(),
         sender_initials: sender[..1].into(),
         sender_avatar: avatar.map(str::to_owned),
+        sender_id: String::new(),
         timestamp_ms: ts,
         time_label: "12:00".into(),
         body: format!("message {tag}"),

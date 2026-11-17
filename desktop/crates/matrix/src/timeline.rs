@@ -408,6 +408,7 @@ fn to_event_vm(
         id: EventId::from(id.as_str()),
         sender_initials: initials(&sender_name),
         sender_avatar: sender_avatar.map(|mxc| mxc.to_string()),
+        sender_id: event.sender().to_string(),
         sender_name,
         timestamp_ms,
         time_label: format_time_label(timestamp_ms, &Local),

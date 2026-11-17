@@ -142,6 +142,7 @@ fn event(room_tag: &str, ts: u64) -> EventVm {
         sender_name: "Test".into(),
         sender_initials: "T".into(),
         sender_avatar: None,
+        sender_id: String::new(),
         timestamp_ms: ts,
         time_label: "12:00".into(),
         body: format!("message {room_tag}"),

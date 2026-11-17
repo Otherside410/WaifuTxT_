@@ -54,6 +54,7 @@ const DEMO_SEND_FLAG: &str = "--demo-send";
 /// Variante : médias de démonstration (images générées, fichier, image chiffrée indisponible, échec d'envoi).
 const DEMO_MEDIA_FLAG: &str = "--demo-media";
 const DEMO_VIEWER_FLAG: &str = "--demo-viewer";
+const DEMO_PRESENCE_FLAG: &str = "--demo-presence";
 /// Banc W06 : fait défiler 5 000 messages de démonstration dans une vraie fenêtre, imprime les intervalles entre rendus
 /// (médiane / p95 / max) et le nombre de lignes construites par rendu, puis quitte. Ni réseau, ni client Matrix.
 const BENCH_TIMELINE_FLAG: &str = "--bench-timeline";
@@ -69,10 +70,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    let demo_presence = args.iter().any(|arg| arg == DEMO_PRESENCE_FLAG);
     let demo_viewer = args.iter().any(|arg| arg == DEMO_VIEWER_FLAG);
     let demo_media = demo_viewer || args.iter().any(|arg| arg == DEMO_MEDIA_FLAG);
     let demo_send = args.iter().any(|arg| arg == DEMO_SEND_FLAG);
-    let demo_timeline = demo_media || demo_send || args.iter().any(|arg| arg == DEMO_TIMELINE_FLAG);
+    let demo_timeline = demo_presence || demo_media || demo_send || args.iter().any(|arg| arg == DEMO_TIMELINE_FLAG);
     let bench_timeline = args.iter().any(|arg| arg == BENCH_TIMELINE_FLAG);
     let demo = bench_timeline || demo_timeline || args.iter().any(|arg| arg == DEMO_FLAG);
 
@@ -125,7 +127,9 @@ fn main() -> ExitCode {
             }
             None => gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| {
-                    if demo_viewer {
+                    if demo_presence {
+                        MainView::demo_presence(window, cx)
+                    } else if demo_viewer {
                         MainView::demo_viewer(window, cx)
                     } else if demo_media {
                         MainView::demo_media(window, cx)

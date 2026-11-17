@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use domain::{KeyStatus, RoomVm};
+use domain::{KeyStatus, Presence, RoomVm};
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::{Client, LoopCtrl};
 
@@ -24,6 +24,41 @@ pub enum SyncUpdate {
     /// Le serveur ne répond pas (ou la synchronisation a échoué) : message lisible. Publié une fois par coupure ;
     /// le retour du serveur est annoncé par le prochain `Snapshot { from_server: true, .. }`.
     Failed(String),
+    /// Présence d'un utilisateur (`m.presence`), reçue dans la réponse `/sync` ou lue dans le store au démarrage.
+    /// Un message par utilisateur : l'UI ne met à jour que celui-là.
+    Presence { user_id: String, state: Presence },
+}
+
+/// Présences portées par des événements `m.presence` bruts. Un événement illisible est ignoré (jamais d'erreur :
+/// l'absence de pastille est le repli).
+pub fn presence_updates(
+    events: &[matrix_sdk::ruma::serde::Raw<matrix_sdk::ruma::events::presence::PresenceEvent>],
+) -> Vec<SyncUpdate> {
+    events
+        .iter()
+        .filter_map(|raw| raw.deserialize().ok())
+        .map(|event| SyncUpdate::Presence {
+            user_id: event.sender.to_string(),
+            state: Presence::from_matrix(event.content.presence.as_str()),
+        })
+        .collect()
+}
+
+/// Présences déjà connues du store local pour les membres des salons rejoints, publiées avant la première réponse
+/// du serveur (même principe que l'instantané initial : aucun accès réseau).
+async fn stored_presence(client: &Client) -> Vec<SyncUpdate> {
+    use matrix_sdk::RoomMemberships;
+    let mut ids = std::collections::BTreeSet::new();
+    for room in client.joined_rooms() {
+        if let Ok(members) = room.members_no_sync(RoomMemberships::JOIN).await {
+            ids.extend(members.into_iter().map(|member| member.user_id().to_owned()));
+        }
+    }
+    let ids: Vec<_> = ids.into_iter().collect();
+    match client.state_store().get_presence_events(&ids).await {
+        Ok(raws) => presence_updates(&raws),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Instantané initial, lu dans le store local (aucun accès réseau).
@@ -46,6 +81,9 @@ pub async fn run_sync(client: Client, publish: impl Fn(SyncUpdate)) {
     }
     // Point d'émission initial : AVANT le premier appel réseau.
     publish(local_snapshot(&client).await);
+    for update in stored_presence(&client).await {
+        publish(update);
+    }
 
     let offline = AtomicBool::new(false);
     let result = client
@@ -55,8 +93,12 @@ pub async fn run_sync(client: Client, publish: impl Fn(SyncUpdate)) {
             let offline = &offline;
             async move {
                 match response {
-                    Ok(_) => {
+                    Ok(response) => {
                         offline.store(false, Ordering::SeqCst);
+                        // Présence : événements de la réponse `/sync` (un message par utilisateur).
+                        for update in presence_updates(&response.presence) {
+                            publish(update);
+                        }
                         publish(server_snapshot(&client).await);
                     }
                     Err(err) => {
@@ -96,6 +138,34 @@ mod tests {
 
     /// D5/S2 : le premier instantané est publié AVANT toute réponse du serveur (ici : il n'y en aura jamais).
     /// Échoue si l'émission initiale de `run_sync` est retirée : le premier message serait alors `Failed`.
+    fn raw_presence(user: &str, state: &str) -> matrix_sdk::ruma::serde::Raw<matrix_sdk::ruma::events::presence::PresenceEvent> {
+        matrix_sdk::ruma::serde::Raw::from_json_string(format!(
+            r#"{{"type":"m.presence","sender":"{user}","content":{{"presence":"{state}","currently_active":true}}}}"#
+        ))
+        .expect("json")
+    }
+
+    /// Réception réelle impossible sans homeserver : le chemin est prouvé en injectant des événements `m.presence`
+    /// bruts (la forme exacte de `/sync`) dans la fonction que la boucle appelle sur `response.presence`.
+    #[test]
+    fn raw_presence_events_become_one_update_per_user_and_garbage_is_ignored() {
+        let garbage = matrix_sdk::ruma::serde::Raw::from_json_string(r#"{"type":"m.presence","content":{}}"#.to_owned()).expect("json");
+        let updates = presence_updates(&[
+            raw_presence("@a:x", "online"),
+            raw_presence("@b:x", "unavailable"),
+            raw_presence("@c:x", "offline"),
+            garbage,
+        ]);
+        assert_eq!(
+            updates,
+            vec![
+                SyncUpdate::Presence { user_id: "@a:x".into(), state: Presence::Online },
+                SyncUpdate::Presence { user_id: "@b:x".into(), state: Presence::Unavailable },
+                SyncUpdate::Presence { user_id: "@c:x".into(), state: Presence::Offline },
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn the_first_snapshot_comes_from_the_local_store_before_any_server_answer() {
         let (client, dir) = offline_client("sync-first").await;

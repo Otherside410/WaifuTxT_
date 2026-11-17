@@ -164,6 +164,7 @@ impl AppRoot {
                     SyncUpdate::Failed(message) => {
                         main.set_connection(ConnectionState::Offline(message), cx);
                     }
+                    SyncUpdate::Presence { user_id, state } => main.apply_presence(&user_id, state, cx),
                 });
                 if alive.is_err() {
                     break;
