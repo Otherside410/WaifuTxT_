@@ -44,6 +44,20 @@ pub fn group_events(events: &[EventVm]) -> Vec<GroupPosition> {
         .collect()
 }
 
+/// Hachage FNV-1a 32 bits du nom : stable d'un lancement à l'autre et d'une machine à l'autre (contrairement à
+/// `DefaultHasher`, dont la graine peut changer).
+pub fn name_hash(name: &str) -> u32 {
+    name.bytes().fold(0x811c_9dc5u32, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193))
+}
+
+/// Case de la palette de repli (initiales) pour cet expéditeur. `slots` doit être > 0 ; 0 renvoie 0.
+pub fn avatar_slot(name: &str, slots: usize) -> usize {
+    if slots == 0 {
+        return 0;
+    }
+    name_hash(name) as usize % slots
+}
+
 /// Les actions Modifier / Supprimer sont-elles visibles **au repos** (souris hors de la ligne) ?
 /// Seulement pour le message sélectionné (clic ou clavier) ; au survol, la ligne les révèle toujours.
 /// Un message sans action possible n'en montre jamais.
@@ -80,6 +94,7 @@ mod tests {
             id: EventId::from(format!("$e{ts}").as_str()),
             sender_name: name.to_owned(),
             sender_initials: "XX".to_owned(),
+            sender_avatar: None,
             timestamp_ms: ts,
             time_label: "00:00".to_owned(),
             body: "x".to_owned(),
@@ -156,6 +171,28 @@ mod tests {
         assert_eq!(group_events(&newer), vec![Start]);
         let both = [ev("A", false, T0 - 60_000), ev("A", false, T0)];
         assert_eq!(group_events(&both), vec![Start, Continue]);
+    }
+
+    #[test]
+    fn the_fallback_colour_slot_is_deterministic_and_within_range() {
+        // Valeurs figées : un changement de fonction de hachage changerait la couleur de tout le monde.
+        assert_eq!(name_hash(""), 0x811c_9dc5);
+        assert_eq!(name_hash("a"), 0xe40c_292c);
+        assert_eq!(avatar_slot("Alice Demo", 6), avatar_slot("Alice Demo", 6));
+        for name in ["Alice Demo", "Bob Demo", "Moi (démo)", "", "été"] {
+            assert!(avatar_slot(name, 6) < 6);
+        }
+        assert_eq!(avatar_slot("x", 0), 0);
+    }
+
+    #[test]
+    fn different_names_may_differ_and_collide_only_when_the_hash_says_so() {
+        let slots = 6;
+        let names = ["Alice Demo", "Bob Demo", "Moi (démo)", "Chloé", "Dave", "Eve"];
+        let used: std::collections::HashSet<_> = names.iter().map(|n| avatar_slot(n, slots)).collect();
+        assert!(used.len() > 1, "six noms ne tombent pas tous dans la même case");
+        let (a, b) = ("Alice Demo", "Bob Demo");
+        assert_eq!(avatar_slot(a, slots) == avatar_slot(b, slots), name_hash(a) as usize % slots == name_hash(b) as usize % slots);
     }
 
     #[test]

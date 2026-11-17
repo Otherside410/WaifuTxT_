@@ -141,6 +141,7 @@ fn event(room_tag: &str, ts: u64) -> EventVm {
         id: EventId::from(format!("${room_tag}-{ts}").as_str()),
         sender_name: "Test".into(),
         sender_initials: "T".into(),
+        sender_avatar: None,
         timestamp_ms: ts,
         time_label: "12:00".into(),
         body: format!("message {room_tag}"),

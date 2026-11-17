@@ -200,6 +200,7 @@ fn confirmed_message(tag: &str, ts: u64) -> EventVm {
         id: EventId::from(format!("${tag}").as_str()),
         sender_name: "Alice".into(),
         sender_initials: "A".into(),
+        sender_avatar: None,
         timestamp_ms: ts,
         time_label: "12:00".into(),
         body: format!("message {tag}"),

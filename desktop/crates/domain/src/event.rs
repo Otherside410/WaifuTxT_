@@ -36,6 +36,8 @@ pub struct EventVm {
     pub id: EventId,
     pub sender_name: String,
     pub sender_initials: String,
+    /// URI `mxc://…` de la photo de profil de l'expéditeur dans ce salon ; `None` si le membre n'en a pas (repli : initiales).
+    pub sender_avatar: Option<String>,
     /// Horodatage en millisecondes Unix : sert à l'ordre chronologique.
     pub timestamp_ms: u64,
     /// Heure locale déjà formatée (ex. `14:05`), calculée par la couche Matrix.
@@ -502,6 +504,7 @@ mod tests {
             id: EventId::from(id),
             sender_name: "Alice".into(),
             sender_initials: "A".into(),
+            sender_avatar: None,
             timestamp_ms: ts,
             time_label: String::new(),
             body: format!("msg {id}"),

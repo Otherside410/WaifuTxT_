@@ -67,6 +67,7 @@ fn the_image_box_does_not_move_between_loading_and_decoded(cx: &mut TestAppConte
         id: EventId::from("$img"),
         sender_name: "Alice".into(),
         sender_initials: "A".into(),
+        sender_avatar: None,
         timestamp_ms: 1,
         time_label: "12:00".into(),
         body: "grande.bmp".into(),

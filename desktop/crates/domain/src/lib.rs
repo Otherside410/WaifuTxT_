@@ -17,6 +17,7 @@ pub use event::{
     TYPING_IDLE_MS, TYPING_RESEND_MS, UNDECRYPTABLE_PLACEHOLDER,
 };
 pub use media::{
+    avatar_key,
     fit_within, format_size, media_display, sniff_image_format, too_large_message, ImageKind,
     MediaDisplay, MediaKind, MediaLoad, MediaPayload, MediaStatus, MediaVm, MAX_INLINE_IMAGE_BYTES,
     MAX_UPLOAD_BYTES, MEDIA_UNAVAILABLE, THUMBNAIL_SIDE, TOO_LARGE_PREFIX,

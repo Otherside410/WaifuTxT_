@@ -27,6 +27,14 @@ pub fn demo_rooms() -> Vec<RoomVm> {
     ]
 }
 
+/// `mxc://` de la photo de démonstration d'Alice ; ses octets sont fournis par [`demo_avatar_payload`], jamais téléchargés.
+pub const DEMO_AVATAR_MXC: &str = "mxc://demo/alice";
+
+/// Octets (BMP généré) de la photo d'Alice : carré de dégradé, pour que le rendu rond se mesure aux coins.
+pub fn demo_avatar_payload() -> (String, MediaPayload) {
+    (domain::avatar_key(DEMO_AVATAR_MXC), MediaPayload::Ready(std::sync::Arc::new(gradient_bmp(64, 64))))
+}
+
 fn demo_event(rank: usize) -> EventVm {
     // Un message sur quatre est de moi : ceux-là peuvent être modifiés ou supprimés.
     let own = rank % 4 == 3;
@@ -43,6 +51,8 @@ fn demo_event(rank: usize) -> EventVm {
         id: EventId::from(format!("$demo-{rank:04}").as_str()),
         sender_name: name.to_owned(),
         sender_initials: initials.to_owned(),
+        // Alice a une photo (octets injectés en mémoire par la démo) ; Bob et moi gardons le repli initiales.
+        sender_avatar: (name == "Alice Demo").then(|| DEMO_AVATAR_MXC.to_owned()),
         timestamp_ms: 1_700_000_000_000 + rank as u64 * 60_000,
         time_label: format!("{:02}:{:02}", minutes / 60, minutes % 60),
         body: if undecryptable {
@@ -110,6 +120,7 @@ fn media_event(
         id: EventId::from(format!("$demo-media-{n}").as_str()),
         sender_name: sender.to_owned(),
         sender_initials: initials.to_owned(),
+        sender_avatar: None,
         timestamp_ms: ts,
         time_label: format!("{:02}:{:02}", minutes / 60, minutes % 60),
         body: media.filename.clone(),

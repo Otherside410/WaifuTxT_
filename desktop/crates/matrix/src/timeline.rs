@@ -289,6 +289,11 @@ where
         .unwrap_or_default()
 }
 
+/// Clé de cache d'une photo de profil (même clé côté UI : `domain::avatar_key`).
+fn avatar_key(mxc: &str) -> String {
+    domain::avatar_key(mxc)
+}
+
 fn localpart(user_id: &str) -> &str {
     user_id.trim_start_matches('@').split(':').next().unwrap_or(user_id)
 }
@@ -369,6 +374,20 @@ fn to_event_vm(
     // l'événement confirmé (contrairement à `identifier()`, qui passe de l'id de transaction à l'id
     // d'événement), donc la fusion par id remplace la ligne au lieu de la dupliquer.
     let id = item.unique_id().0.clone();
+    // Photo de profil : lue dans le profil déjà joint à l'élément (aucun appel réseau ici) ; les octets sont
+    // demandés à `ImageFetcher` sous la clé `avatar:<mxc>`, dédoublonnée par expéditeur et par timeline.
+    let sender_avatar = match event.sender_profile() {
+        TimelineDetails::Ready(profile) => profile.avatar_url.clone(),
+        _ => None,
+    };
+    if let Some(mxc) = &sender_avatar {
+        requests.push(ImageRequest {
+            key: avatar_key(mxc.as_str()),
+            source: MediaSource::Plain(mxc.clone()),
+            thumbnail: None,
+            declared_size: None,
+        });
+    }
     let sender_name = match event.sender_profile() {
         TimelineDetails::Ready(profile) => profile.display_name.clone(),
         _ => None,
@@ -388,6 +407,7 @@ fn to_event_vm(
     Some(EventVm {
         id: EventId::from(id.as_str()),
         sender_initials: initials(&sender_name),
+        sender_avatar: sender_avatar.map(|mxc| mxc.to_string()),
         sender_name,
         timestamp_ms,
         time_label: format_time_label(timestamp_ms, &Local),

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use domain::{
+    avatar_key,
     last_read_marker, ConnectionState, media_display, prepare_message, read_by_label, sniff_image_format,
     typing_label, validate_recovery_key, EventId, EventState, EventVm, FailedAction, ImageKind,
     KeyStatus, MediaDisplay, MediaKind, MediaPayload, MediaStatus, MediaVm, RecoveryKey, RoomId,
@@ -21,7 +22,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::demo;
-use crate::grouping::{actions_visible_at_rest, starts_group, status_suffix};
+use crate::grouping::{actions_visible_at_rest, avatar_slot, starts_group, status_suffix};
 use crate::modal::ModalState;
 use crate::theme_gpui::Palette;
 
@@ -42,6 +43,12 @@ const BANNER_HEIGHT: f32 = 24.0;
 /// Délai avant la confirmation simulée d'un envoi en mode démonstration.
 const DEMO_CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
 const COMPOSER_PLACEHOLDER: &str = "Écrire un message… (Entrée : envoyer, Maj+Entrée : saut de ligne)";
+
+/// En-tête d'une ligne de message : ouvre-t-elle un groupe, et la photo de l'expéditeur si ses octets sont en cache.
+struct RowHead {
+    starts_group: bool,
+    avatar: Option<Arc<Image>>,
+}
 
 /// Ce que la liste de salons affiche.
 #[derive(Debug, Clone, PartialEq)]
@@ -365,6 +372,9 @@ impl MainView {
         let mut view = Self::demo(window, cx);
         view.modal.close();
         view.start_timeline(RoomId::from(demo::ROOM_ID), cx);
+        // Photo d'Alice fournie en mémoire (aucun téléchargement).
+        let (key, payload) = demo::demo_avatar_payload();
+        view.apply_timeline(TimelineUpdate::Media { room: RoomId::from(demo::ROOM_ID), key, payload }, cx);
         // Démonstration : un autre membre est en train d'écrire.
         view.timeline.apply(TimelineUpdate::Typing {
             room: RoomId::from(demo::ROOM_ID),
@@ -898,6 +908,7 @@ impl MainView {
             id: EventId::from(format!("$demo-attach-{}", self.demo_sent).as_str()),
             sender_name: "Moi (démo)".to_owned(),
             sender_initials: "MD".to_owned(),
+            sender_avatar: None,
             timestamp_ms: last_ts + 60_000,
             time_label: String::new(),
             body: name,
@@ -944,6 +955,7 @@ impl MainView {
             id: EventId::from(format!("$demo-local-{}", self.demo_sent).as_str()),
             sender_name: "Moi (démo)".to_owned(),
             sender_initials: "MD".to_owned(),
+            sender_avatar: None,
             timestamp_ms: last_ts + 60_000,
             time_label: String::new(),
             body,
@@ -1272,10 +1284,11 @@ impl MainView {
         read_label: Option<String>,
         media: Option<MediaRender>,
         selected: bool,
-        starts_group: bool,
+        head: RowHead,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let p = Palette::of(cx);
+        let RowHead { starts_group, avatar } = head;
         let undecryptable = event.state == EventState::Indechiffrable;
         let media_failed = matches!(
             media.as_ref().map(|m| &m.display),
@@ -1407,21 +1420,42 @@ impl MainView {
                 cx.notify();
             }))
             .child(if starts_group {
-                div()
-                    .opacity(opacity)
-                    .size(px(AVATAR_SIZE))
-                    .flex_none()
-                    .rounded(px(AVATAR_SIZE / 2.0))
-                    .bg(p.border)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(META_TEXT_SIZE))
-                    .text_color(p.text)
-                    .child(event.sender_initials.clone())
+                match avatar {
+                    // Photo de profil ronde ; sans octets (pas de photo, téléchargement en cours ou échec) : initiales.
+                    Some(image) => div()
+                        .opacity(opacity)
+                        .id(SharedString::from(format!("avatar-{index}")))
+                        .size(px(AVATAR_SIZE))
+                        .flex_none()
+                        .child(
+                            img(image)
+                                .size(px(AVATAR_SIZE))
+                                .rounded(px(AVATAR_SIZE / 2.0))
+                                .object_fit(ObjectFit::Cover),
+                        )
+                        .test_support()
+                        .aria_label(SharedString::from(format!("Photo de {}", event.sender_name)))
+                        .into_any_element(),
+                    None => div()
+                        .opacity(opacity)
+                        .id(SharedString::from(format!("avatar-{index}")))
+                        .size(px(AVATAR_SIZE))
+                        .flex_none()
+                        .rounded(px(AVATAR_SIZE / 2.0))
+                        .bg(p.avatar_fallbacks[avatar_slot(&event.sender_name, p.avatar_fallbacks.len())])
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(META_TEXT_SIZE))
+                        .text_color(p.background)
+                        .child(event.sender_initials.clone())
+                        .test_support()
+                        .aria_label(SharedString::from(format!("Initiales de {}", event.sender_name)))
+                        .into_any_element(),
+                }
             } else {
                 // Suite de groupe : l'espace de l'avatar est conservé pour aligner les corps.
-                div().size(px(AVATAR_SIZE)).flex_none()
+                div().size(px(AVATAR_SIZE)).flex_none().into_any_element()
             })
             .child(text_column)
             .children(
@@ -1553,7 +1587,12 @@ impl MainView {
                                 let selected = this.selected_event.as_ref() == Some(&event.id);
                                 let events = this.timeline.events();
                                 let starts = starts_group(index.checked_sub(1).map(|j| &events[j]), event);
-                                Self::event_row(index, event, read, media, selected, starts, cx)
+                                let avatar = event
+                                    .sender_avatar
+                                    .as_deref()
+                                    .and_then(|mxc| this.images.get(&avatar_key(mxc)))
+                                    .cloned();
+                                Self::event_row(index, event, read, media, selected, RowHead { starts_group: starts, avatar }, cx)
                             })
                             .collect::<Vec<_>>()
                     }),

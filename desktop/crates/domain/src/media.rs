@@ -13,6 +13,12 @@ pub const MAX_INLINE_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
 /// Côté (en pixels logiques) de la vignette réservée dans une ligne de timeline.
 pub const THUMBNAIL_SIDE: u32 = 44;
 
+/// Clé logique (cache de médias, canal `TimelineUpdate::Media`, `images` de l'UI) de la photo de profil `mxc`.
+/// Préfixée pour ne jamais entrer en collision avec la clé d'un média de message portant le même `mxc://`.
+pub fn avatar_key(mxc: &str) -> String {
+    format!("avatar:{mxc}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
     Image,

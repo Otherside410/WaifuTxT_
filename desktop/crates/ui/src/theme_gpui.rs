@@ -30,6 +30,8 @@ pub struct Palette {
     /// Fond des champs de saisie (`bg-bg-tertiary`) : posé explicitement, le kit ne rend que 30 % de `input`.
     pub field: Hsla,
     pub scrim: Hsla,
+    /// Couleurs des disques d'initiales (repli sans photo), toutes tirées du thème ; choisies par `grouping::avatar_slot`.
+    pub avatar_fallbacks: [Hsla; 6],
 }
 
 impl Palette {
@@ -54,6 +56,14 @@ impl Palette {
             accent: t.accent.base.hsla(),
             error: t.status.danger.hsla(),
             field: s.bg_tertiary.hsla(),
+            avatar_fallbacks: [
+                t.accent.base.hsla(),
+                t.status.success.hsla(),
+                t.status.info.hsla(),
+                t.status.warning.hsla(),
+                t.status.danger.hsla(),
+                t.accent.link.hsla(),
+            ],
             scrim: Rgba::hex_a(0x000000b0).hsla(),
         }
     }
