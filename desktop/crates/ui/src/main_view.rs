@@ -21,14 +21,18 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::demo;
+use crate::grouping::{actions_visible_at_rest, starts_group, status_suffix};
 use crate::modal::ModalState;
 use crate::theme_gpui::Palette;
 
 const SIDEBAR_WIDTH: f32 = 280.0;
 /// Hauteur **constante** d'une ligne de message : prérequis de la virtualisation (`uniform_list`).
-pub const EVENT_ROW_HEIGHT: f32 = 52.0;
-/// Largeur réservée aux boutons Modifier / Supprimer, à droite de chaque ligne.
-const ACTIONS_COLUMN_WIDTH: f32 = 150.0;
+pub const EVENT_ROW_HEIGHT: f32 = 48.0;
+/// Avatar de l'en-tête de groupe.
+const AVATAR_SIZE: f32 = 32.0;
+/// Échelle typographique de la timeline : corps 13 px, métadonnées 11 px.
+const BODY_TEXT_SIZE: f32 = 13.0;
+const META_TEXT_SIZE: f32 = 11.0;
 /// On demande une page plus ancienne quand la vue est à moins de N lignes du haut de la liste.
 const PAGINATE_THRESHOLD_ROWS: f32 = 5.0;
 /// Sous ce nombre de lignes chargées, la liste ne remplit peut-être pas la fenêtre : on pagine d'office.
@@ -1268,6 +1272,7 @@ impl MainView {
         read_label: Option<String>,
         media: Option<MediaRender>,
         selected: bool,
+        starts_group: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let p = Palette::of(cx);
@@ -1279,18 +1284,12 @@ impl MainView {
         let failed = event.state == EventState::EchecEnvoi || media_failed;
         let deleted = event.state == EventState::Supprime;
         let dim = event.state == EventState::Local || deleted;
-        let mut time_label = match event.state {
-            EventState::Local => "envoi…".to_owned(),
-            EventState::EchecEnvoi => "non envoyé".to_owned(),
-            _ => event.time_label.clone(),
+        // Libellés d'état : en en-tête avec l'heure, sinon (suite de groupe) à la suite du corps.
+        let status = status_suffix(event.state, event.edited, read_label.as_deref());
+        let time_label = match &status {
+            Some(status) => format!("{} · {status}", event.time_label),
+            None => event.time_label.clone(),
         };
-        if event.edited {
-            time_label.push_str(" · modifié");
-        }
-        if let Some(read) = &read_label {
-            time_label.push_str(" · ");
-            time_label.push_str(read);
-        }
         // Deuxième ligne : le texte, ou le résumé du média (nom · taille · dimensions · type).
         let body_text = match (&event.media, media.as_ref().map(|m| &m.display)) {
             (Some(m), Some(MediaDisplay::Unavailable(reason))) => format!("{reason} — {}", m.filename),
@@ -1307,9 +1306,24 @@ impl MainView {
             let body = event.body.clone();
             let (edit_id, delete_id) = (event_id.clone(), event_id);
             div()
+                .id(SharedString::from(format!("actions-{index}")))
+                .absolute()
+                .right_3()
+                .top_1()
                 .flex_none()
                 .flex()
                 .gap_1()
+                .p_1()
+                .rounded_md()
+                .bg(p.panel)
+                .border_1()
+                .border_color(p.border)
+                // Invisibles au repos, révélées au survol de la ligne ; le message sélectionné les garde
+                // visibles (accès sans souris : sélection puis Tab vers les boutons).
+                .opacity(if actions_visible_at_rest(selected, true) { 1.0 } else { 0.0 })
+                .group_hover("event-row", |style| style.opacity(1.0))
+                .test_support()
+                .aria_label("Actions du message")
                 // Un média n'a pas de texte à modifier : seule la suppression est proposée.
                 .children(event.media.is_none().then(|| {
                     Button::new(SharedString::from(format!("edit-{index}")))
@@ -1334,8 +1348,53 @@ impl MainView {
         });
         let row_id = event.id.clone();
         let media_aria = media.as_ref().map(|m| m.aria.clone());
+        let opacity = if dim { 0.6 } else { 1.0 };
+        let body_color = if undecryptable || failed { p.error } else { p.text_secondary };
+        let body = div()
+            .w_full()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .text_size(px(BODY_TEXT_SIZE))
+            .when(deleted, |row| row.italic())
+            .text_color(body_color)
+            .child(body_text.clone());
+        let text_column = if starts_group {
+            div()
+                .opacity(opacity)
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id(SharedString::from(format!("event-header-{index}")))
+                        .flex()
+                        .gap_2()
+                        .items_baseline()
+                        .child(div().text_size(px(BODY_TEXT_SIZE)).text_color(p.text).child(event.sender_name.clone()))
+                        .child(div().text_size(px(META_TEXT_SIZE)).text_color(p.text_secondary).child(time_label))
+                        .test_support()
+                        .aria_label(SharedString::from(format!("{} {}", event.sender_name, event.time_label))),
+                )
+                .child(body)
+        } else {
+            div()
+                .opacity(opacity)
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_baseline()
+                .gap_2()
+                .child(div().min_w_0().flex_1().child(body))
+                .children(
+                    status.map(|status| div().flex_none().text_size(px(META_TEXT_SIZE)).text_color(p.text_secondary).child(status)),
+                )
+        };
         div()
             .id(SharedString::from(format!("event-{index}")))
+            .group("event-row")
+            .relative()
             .w_full()
             .h(px(EVENT_ROW_HEIGHT))
             .px_3()
@@ -1347,78 +1406,36 @@ impl MainView {
                 this.selected_event = Some(row_id.clone());
                 cx.notify();
             }))
-            .child(
+            .child(if starts_group {
                 div()
-                    .opacity(if dim { 0.6 } else { 1.0 })
-                    .size(px(32.0))
+                    .opacity(opacity)
+                    .size(px(AVATAR_SIZE))
                     .flex_none()
-                    .rounded(px(16.0))
+                    .rounded(px(AVATAR_SIZE / 2.0))
                     .bg(p.border)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_sm()
+                    .text_size(px(META_TEXT_SIZE))
                     .text_color(p.text)
-                    .child(event.sender_initials.clone()),
+                    .child(event.sender_initials.clone())
+            } else {
+                // Suite de groupe : l'espace de l'avatar est conservé pour aligner les corps.
+                div().size(px(AVATAR_SIZE)).flex_none()
+            })
+            .child(text_column)
+            .children(
+                // Vignette à droite ; les actions flottent par-dessus la ligne (aucune colonne réservée).
+                media.as_ref().map(|m| {
+                    div()
+                        .w(px(THUMBNAIL_SIDE as f32))
+                        .flex_none()
+                        .flex()
+                        .justify_end()
+                        .child(Self::media_box(index, m, p))
+                }),
             )
-            .child(
-                div()
-                    .opacity(if dim { 0.6 } else { 1.0 })
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_baseline()
-                            .child(div().text_sm().text_color(p.text).child(event.sender_name.clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(p.text_secondary)
-                                    .child(time_label),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .text_sm()
-                            .when(deleted, |row| row.italic())
-                            .text_color(if undecryptable || failed { p.error } else { p.text_secondary })
-                            .child(body_text.clone()),
-                    ),
-            )
-            .child(
-                // Colonne de droite à bords fixes : la vignette et les boutons gardent la même
-                // abscisse d'une ligne à l'autre, quelle que soit la longueur du texte.
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(px(THUMBNAIL_SIDE as f32))
-                            .flex_none()
-                            .flex()
-                            .justify_end()
-                            .children(media.as_ref().map(|m| Self::media_box(index, m, p))),
-                    )
-                    .child(
-                        div()
-                            .w(px(ACTIONS_COLUMN_WIDTH))
-                            .flex_none()
-                            .flex()
-                            .justify_end()
-                            .children(actions),
-                    ),
-            )
+            .children(actions)
             .test_support()
             .aria_label(SharedString::from(format!(
                 "{} : {}{}{}{}{}{}",
@@ -1534,7 +1551,9 @@ impl MainView {
                                     &this.images,
                                 ));
                                 let selected = this.selected_event.as_ref() == Some(&event.id);
-                                Self::event_row(index, event, read, media, selected, cx)
+                                let events = this.timeline.events();
+                                let starts = starts_group(index.checked_sub(1).map(|j| &events[j]), event);
+                                Self::event_row(index, event, read, media, selected, starts, cx)
                             })
                             .collect::<Vec<_>>()
                     }),

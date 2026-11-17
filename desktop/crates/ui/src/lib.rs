@@ -1,6 +1,7 @@
 //! Vues GPUI de WaifuChat. Aucune logique réseau : une vue reçoit son état, elle ne va pas le chercher.
 
 pub mod demo;
+pub mod grouping;
 pub mod login;
 pub mod main_view;
 pub mod modal;
