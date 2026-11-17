@@ -34,6 +34,8 @@ const AVATAR_SIZE: f32 = 32.0;
 /// Échelle typographique de la timeline : corps 13 px, métadonnées 11 px.
 const BODY_TEXT_SIZE: f32 = 13.0;
 const META_TEXT_SIZE: f32 = 11.0;
+/// Bande de légende de la visionneuse, sous l'image.
+const VIEWER_CAPTION_HEIGHT: f32 = 20.0;
 /// On demande une page plus ancienne quand la vue est à moins de N lignes du haut de la liste.
 const PAGINATE_THRESHOLD_ROWS: f32 = 5.0;
 /// Sous ce nombre de lignes chargées, la liste ne remplit peut-être pas la fenêtre : on pagine d'office.
@@ -134,8 +136,10 @@ pub fn classify_pick<E1, E2>(
 struct MediaRender {
     display: MediaDisplay,
     image: Option<Arc<Image>>,
-    /// Taille de l'image dans la boîte de vignette, ratio conservé.
-    thumb: (u32, u32),
+    /// Clé du média (identifie l'image à agrandir).
+    key: String,
+    /// Nom de fichier, pour le libellé de la visionneuse.
+    filename: String,
     /// Texte court de la carte d'un fichier (extension en majuscules).
     card_label: String,
     /// Libellé d'accessibilité : type, nom, état.
@@ -159,14 +163,34 @@ impl MediaRender {
         Self {
             display,
             image: images.get(&media.key).cloned(),
-            thumb: media.thumbnail_size(THUMBNAIL_SIDE),
+            key: media.key.clone(),
+            filename: media.filename.clone(),
             card_label,
             aria,
         }
     }
 }
 
+/// Gestionnaire de clic d'une vignette décodée.
+type OpenViewer = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+/// Image agrandie dans la visionneuse : clé dans `images` et nom affiché.
+struct ViewerState {
+    key: String,
+    title: String,
+}
+
+impl MediaRender {
+    /// Seule une image **décodée** s'agrandit : ni chargement, ni échec, ni fichier, ni envoi en cours.
+    fn viewable(&self) -> bool {
+        matches!(self.display, MediaDisplay::Thumbnail) && self.image.is_some()
+    }
+}
+
 pub struct MainView {
+    /// Visionneuse plein écran ouverte (`None` : fermée) et son focus, pris à l'ouverture pour que Échap la ferme.
+    viewer: Option<ViewerState>,
+    viewer_focus: FocusHandle,
     user_label: String,
     rooms: RoomsState,
     /// Liaison avec le serveur : bandeau « connexion » / « hors ligne » tant que ce n'est pas `Online`.
@@ -252,6 +276,8 @@ impl MainView {
             list_seen_prev: px(0.0),
             list_verifying: false,
             list_pinned: true,
+            viewer: None,
+            viewer_focus: cx.focus_handle(),
             keys: KeyStatus::Unknown,
             modal: ModalState::default(),
             key_input,
@@ -408,6 +434,15 @@ impl MainView {
         );
         for (key, payload) in payloads {
             view.apply_timeline(TimelineUpdate::Media { room: room.clone(), key, payload }, cx);
+        }
+        view
+    }
+
+    /// Démonstration de la visionneuse : comme [`MainView::demo_media`], avec la première image déjà agrandie.
+    pub fn demo_viewer(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::demo_media(window, cx);
+        if let Some(key) = demo::media_events().1.into_iter().map(|(key, _)| key).next() {
+            view.open_viewer(key, "paysage.bmp".to_owned(), window, cx);
         }
         view
     }
@@ -1279,17 +1314,36 @@ impl MainView {
 
     /// Contenu de la boîte de vignette d'un média : de taille **fixe** (`THUMBNAIL_SIDE`) quel que soit
     /// l'état, donc aucun saut de mise en page entre « chargement », image décodée et échec.
-    fn media_box(index: usize, media: &MediaRender, p: Palette) -> impl IntoElement {
+    fn media_box(index: usize, media: &MediaRender, p: Palette, open: Option<OpenViewer>) -> impl IntoElement {
         let side = px(THUMBNAIL_SIDE as f32);
-        let (inner_w, inner_h) = media.thumb;
         let glyph = |text: String| div().text_xs().text_color(p.text_secondary).child(text);
+        // Clic : ouvre la visionneuse ; le bouton enfoncé ne remonte pas, donc la ligne n'est pas sélectionnée.
+        let boxed = div()
+            .id(SharedString::from(format!("media-{index}")))
+            .size(side)
+            .flex_none()
+            .when_some(open, |this, open| {
+                this.cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(open)
+            });
         let content: AnyElement = match (&media.display, &media.image) {
-            (MediaDisplay::Thumbnail, Some(image)) => div()
-                .w(px(inner_w as f32))
-                .h(px(inner_h as f32))
-                .overflow_hidden()
-                .child(img(image.clone()).size_full().object_fit(ObjectFit::Contain))
-                .into_any_element(),
+            // L'image remplit la boîte (recadrage centré, ratio conservé) et porte elle-même l'arrondi : le
+            // recadrage rectangulaire d'`overflow_hidden` ne suit pas les coins.
+            (MediaDisplay::Thumbnail, Some(image)) => {
+                return boxed
+                    .child(
+                        img(image.clone())
+                            .id(SharedString::from(format!("media-image-{index}")))
+                            .size(side)
+                            .rounded_md()
+                            .object_fit(ObjectFit::Cover)
+                            .test_support()
+                            .aria_label(SharedString::from(media.aria.clone())),
+                    )
+                    .test_support()
+                    .aria_label(SharedString::from(media.aria.clone()));
+            }
             // Octets pas encore là (ou image refusée) : espace réservé de même taille.
             (MediaDisplay::Thumbnail | MediaDisplay::Loading, _) => glyph("…".to_owned()).into_any_element(),
             (MediaDisplay::Unavailable(_), _) => glyph("?".to_owned()).into_any_element(),
@@ -1301,10 +1355,7 @@ impl MainView {
                 div().text_xs().text_color(p.error).child("!").into_any_element()
             }
         };
-        div()
-            .id(SharedString::from(format!("media-{index}")))
-            .size(side)
-            .flex_none()
+        boxed
             .rounded_md()
             .overflow_hidden()
             .bg(p.border)
@@ -1314,6 +1365,96 @@ impl MainView {
             .child(content)
             .test_support()
             .aria_label(SharedString::from(media.aria.clone()))
+    }
+
+    /// Ouvre la visionneuse sur une image décodée et prend le focus (pour que Échap la ferme).
+    fn open_viewer(&mut self, key: String, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.viewer = Some(ViewerState { key, title });
+        window.focus(&self.viewer_focus, cx);
+        cx.notify();
+    }
+
+    fn close_viewer(&mut self, cx: &mut Context<Self>) {
+        if self.viewer.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Visionneuse plein écran : voile `p.background` à 90 %, image entière (`Contain`) ; Échap ou un clic hors
+    /// de l'image la ferme.
+    fn media_viewer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = Palette::of(cx);
+        let viewer = self.viewer.as_ref()?;
+        let image = self.images.get(&viewer.key)?.clone();
+        let label = SharedString::from(format!("Visionneuse d'image : {}", viewer.title));
+        Some(
+            div()
+                .id("media-viewer")
+                .track_focus(&self.viewer_focus)
+                .absolute()
+                .size_full()
+                .bg(p.background.opacity(0.9))
+                .flex()
+                .flex_col()
+                .items_center()
+                .px_8()
+                .pt_8()
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.close_viewer(cx);
+                    }
+                }))
+                .on_click(cx.listener(|this, _, _, cx| this.close_viewer(cx)))
+                .child(
+                    // Un clic sur l'image ne ferme pas : on coupe la propagation du bouton enfoncé.
+                    div()
+                        .id("media-viewer-frame")
+                        .w_full()
+                        .flex_1()
+                        .min_h_0()
+                        // Cadre positionné + découpe : l'image, en absolu, prend la taille *résolue* du cadre
+                        // (en `size_full` d'un enfant flex, la hauteur en % restait indéfinie et `Contain`
+                        // dimensionnait l'image sur la largeur seule : 9 px de peinture sous le cadre).
+                        .relative()
+                        .overflow_hidden()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            img(image)
+                                .id("media-viewer-image")
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .rounded_md()
+                                .object_fit(ObjectFit::Contain)
+                                .test_support()
+                                .aria_label(label.clone()),
+                        )
+                        .test_support()
+                        .aria_label("Cadre de l'image"),
+                )
+                .child(
+                    // Légende dans sa propre bande sous l'image (jamais posée dessus) : la zone image vaut
+                    // « fenêtre − bande », l'image reste entière (`Contain`).
+                    div()
+                        .id("media-viewer-caption")
+                        .w_full()
+                        .h(px(VIEWER_CAPTION_HEIGHT))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(p.background.opacity(0.9))
+                        .text_size(px(META_TEXT_SIZE))
+                        .text_color(p.text_secondary)
+                        .child(format!("{} · Échap ou clic hors de l'image pour fermer", viewer.title))
+                        .test_support()
+                        .aria_label(SharedString::from(format!("Légende : {}", viewer.title))),
+                )
+                .test_support()
+                .aria_label(label)
+                .into_any_element(),
+        )
     }
 
     fn event_row(
@@ -1499,12 +1640,18 @@ impl MainView {
             .children(
                 // Vignette à droite ; les actions flottent par-dessus la ligne (aucune colonne réservée).
                 media.as_ref().map(|m| {
+                    let open: Option<OpenViewer> = m.viewable().then(|| {
+                        let (key, title) = (m.key.clone(), m.filename.clone());
+                        Box::new(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_viewer(key.clone(), title.clone(), window, cx);
+                        })) as OpenViewer
+                    });
                     div()
                         .w(px(THUMBNAIL_SIDE as f32))
                         .flex_none()
                         .flex()
                         .justify_end()
-                        .child(Self::media_box(index, m, p))
+                        .child(Self::media_box(index, m, p, open))
                 }),
             )
             .children(actions)
@@ -1853,5 +2000,6 @@ impl Render for MainView {
             .child(sidebar)
             .child(center)
             .children(self.recovery_modal(cx))
+            .children(self.media_viewer(cx))
     }
 }
