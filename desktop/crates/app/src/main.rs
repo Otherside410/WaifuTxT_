@@ -101,6 +101,7 @@ fn main() -> ExitCode {
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        ui::install_theme(ui::ThemeMode::Dark, &ui::AccentChoice::Solid(ui::theme::Accent::DEFAULT_BASE), cx);
 
         let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
         let options = WindowOptions {

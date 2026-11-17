@@ -9,6 +9,8 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::Disableable;
 use gpui_kit::*;
 
+use crate::theme_gpui::Palette;
+
 /// Homeserver pré-rempli sur un écran neuf : **aucun**. Un domaine public codé en dur ferait partir identifiant
 /// et mot de passe vers un serveur que l'utilisateur n'a pas choisi dès qu'il valide sans y penser.
 /// Le repli sur `https://matrix.org` d'un champ vide se fait à la validation (`domain::validate_login`).
@@ -23,10 +25,6 @@ pub fn initial_homeserver(last_used: Option<&str>) -> String {
         .map_or_else(|| DEFAULT_HOMESERVER.to_owned(), str::to_owned)
 }
 
-const BACKGROUND: u32 = 0x0b0b12;
-const TEXT: u32 = 0xe8e8f0;
-const TEXT_SECONDARY: u32 = 0x8888a8;
-const ERROR: u32 = 0xff5c7a;
 
 /// Événement émis par [`LoginView`].
 pub enum LoginEvent {
@@ -104,7 +102,8 @@ impl LoginView {
 
 impl Render for LoginView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let label = |text: &'static str| div().text_sm().text_color(rgb(TEXT_SECONDARY)).child(text);
+        let p = Palette::of(cx);
+        let label = |text: &'static str| div().text_sm().text_color(p.text_secondary).child(text);
 
         let button = Button::new("login-submit")
             .primary()
@@ -115,7 +114,7 @@ impl Render for LoginView {
 
         div()
             .size_full()
-            .bg(rgb(BACKGROUND))
+            .bg(p.background)
             .flex()
             .items_center()
             .justify_center()
@@ -125,15 +124,15 @@ impl Render for LoginView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().text_xl().text_color(rgb(TEXT)).child("WaifuChat"))
+                    .child(div().text_xl().text_color(p.text).child("WaifuChat"))
                     .child(label("Homeserver"))
-                    .child(Input::new(&self.homeserver).id("login-homeserver"))
+                    .child(Input::new(&self.homeserver).id("login-homeserver").bg(p.field))
                     .child(label("Identifiant"))
-                    .child(Input::new(&self.username).id("login-username"))
+                    .child(Input::new(&self.username).id("login-username").bg(p.field))
                     .child(label("Mot de passe"))
-                    .child(Input::new(&self.password).id("login-password"))
+                    .child(Input::new(&self.password).id("login-password").bg(p.field))
                     .children(self.error.clone().map(|message| {
-                        div().text_sm().text_color(rgb(ERROR)).child(message)
+                        div().text_sm().text_color(p.error).child(message)
                     }))
                     .child(button),
             )

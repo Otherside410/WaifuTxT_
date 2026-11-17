@@ -4,8 +4,8 @@
 Matrix**, le **chargement des messages** et la **reprise par clé de récupération**. Rien de plus n'est revendiqué pour cette
 version : c'est un socle technique, pas encore un client de tous les jours.
 
-Numérotation : on continue la ligne de version de l'application (dernière publiée : `v0.66.1`), pas celle du crate
-(`desktop/Cargo.toml`, encore à `0.1.0` — alignement prévu avec le lot suivant).
+Numérotation : on continue la ligne de version de l'application (dernière publiée : `v0.66.1`), et le crate natif
+(`desktop/Cargo.toml`) est aligné sur `0.67.0` — `waifu-desktop --version` affiche donc la même version que le tag.
 
 ## Périmètre revendiqué
 

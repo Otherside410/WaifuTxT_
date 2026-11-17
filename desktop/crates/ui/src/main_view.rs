@@ -22,16 +22,8 @@ use gpui_kit::*;
 
 use crate::demo;
 use crate::modal::ModalState;
+use crate::theme_gpui::Palette;
 
-const BACKGROUND: u32 = 0x0b0b12;
-const PANEL: u32 = 0x12121f;
-const HOVER: u32 = 0x252540;
-const SELECTED: u32 = 0x2e2e50;
-const BORDER: u32 = 0x2a2a40;
-const TEXT: u32 = 0xe8e8f0;
-const TEXT_SECONDARY: u32 = 0x8888a8;
-const ACCENT: u32 = 0xff2d78;
-const ERROR: u32 = 0xff5c7a;
 const SIDEBAR_WIDTH: f32 = 280.0;
 /// Hauteur **constante** d'une ligne de message : prérequis de la virtualisation (`uniform_list`).
 pub const EVENT_ROW_HEIGHT: f32 = 52.0;
@@ -985,6 +977,7 @@ impl MainView {
     }
 
     fn composer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = Palette::of(cx);
         let enabled = self.composer_enabled();
         let failure = self.timeline.send_failure().cloned();
         let typing = typing_label(self.timeline.typing());
@@ -998,14 +991,14 @@ impl MainView {
             .gap_2()
             .p_3()
             .border_t_1()
-            .border_color(rgb(BORDER))
+            .border_color(p.border)
             // Indicateur de frappe : hauteur réservée pour ne pas faire sauter la liste.
             .child(
                 div()
                     .id("typing-indicator")
                     .h(px(16.0))
                     .text_xs()
-                    .text_color(rgb(TEXT_SECONDARY))
+                    .text_color(p.text_secondary)
                     .children(typing.clone())
                     .test_support()
                     .aria_label(SharedString::from(typing.unwrap_or_default())),
@@ -1020,7 +1013,7 @@ impl MainView {
                         div()
                             .flex_1()
                             .text_sm()
-                            .text_color(rgb(TEXT))
+                            .text_color(p.text)
                             .child("Supprimer ce message ? Cette action est définitive."),
                     )
                     .child(
@@ -1050,7 +1043,7 @@ impl MainView {
                         div()
                             .flex_1()
                             .text_sm()
-                            .text_color(rgb(TEXT_SECONDARY))
+                            .text_color(p.text_secondary)
                             .child("Modification du message (Entrée : valider)"),
                     )
                     .child(
@@ -1068,7 +1061,7 @@ impl MainView {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(div().flex_1().min_w_0().text_sm().text_color(rgb(ERROR)).child(message))
+                    .child(div().flex_1().min_w_0().text_sm().text_color(p.error).child(message))
                     .child(
                         Button::new("composer-notice-dismiss")
                             .label("Fermer")
@@ -1087,7 +1080,7 @@ impl MainView {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(div().flex_1().min_w_0().text_sm().text_color(rgb(ERROR)).child(failure.message))
+                    .child(div().flex_1().min_w_0().text_sm().text_color(p.error).child(failure.message))
                     .child(
                         Button::new("composer-retry")
                             .label("Réessayer")
@@ -1104,6 +1097,7 @@ impl MainView {
                     .child(
                         div().flex_1().child(
                             Textarea::new(&self.composer)
+                                .bg(p.field)
                                 .accessibility_id("composer-input")
                                 .disabled(!enabled)
                                 .aria_label("Message"),
@@ -1127,6 +1121,7 @@ impl MainView {
     }
 
     fn room_row(&self, index: usize, room: &RoomVm, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = Palette::of(cx);
         let selected = self.timeline.room() == Some(&room.id);
         let id = room.id.clone();
         let row_id = SharedString::from(format!("room-{index}"));
@@ -1142,19 +1137,19 @@ impl MainView {
             .py_1()
             .rounded_md()
             .cursor_pointer()
-            .bg(rgb(if selected { SELECTED } else { PANEL }))
-            .hover(|style| style.bg(rgb(if selected { SELECTED } else { HOVER })))
+            .bg(if selected { p.selected } else { p.panel })
+            .hover(|style| style.bg(if selected { p.selected } else { p.hover }))
             .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
             .child(
                 div()
                     .size(px(32.0))
                     .rounded(px(if room.kind == RoomKind::Space { 8.0 } else { 16.0 }))
-                    .bg(rgb(BORDER))
+                    .bg(p.border)
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_sm()
-                    .text_color(rgb(TEXT))
+                    .text_color(p.text)
                     .child(room.avatar_initials.clone()),
             )
             .child(
@@ -1162,7 +1157,7 @@ impl MainView {
                     .flex_1()
                     .overflow_hidden()
                     .text_sm()
-                    .text_color(rgb(if room.unread > 0 { TEXT } else { TEXT_SECONDARY }))
+                    .text_color(if room.unread > 0 { p.text } else { p.text_secondary })
                     .child(room.name.clone()),
             )
             .children((room.unread > 0).then(|| {
@@ -1170,9 +1165,9 @@ impl MainView {
                     .id(SharedString::from(format!("unread-{index}")))
                     .px_2()
                     .rounded_full()
-                    .bg(rgb(ACCENT))
+                    .bg(p.accent)
                     .text_xs()
-                    .text_color(rgb(TEXT))
+                    .text_color(p.text)
                     .child(badge_text.clone())
                     .test_support()
                     .aria_label(SharedString::from(format!("{badge_text} non lus")))
@@ -1181,17 +1176,18 @@ impl MainView {
             .aria_label(accessible_name)
     }
 
-    fn section_title(label: &'static str) -> impl IntoElement {
-        div().px_2().pt_3().pb_1().text_xs().text_color(rgb(TEXT_SECONDARY)).child(label)
+    fn section_title(label: &'static str, p: Palette) -> impl IntoElement {
+        div().px_2().pt_3().pb_1().text_xs().text_color(p.text_secondary).child(label)
     }
 
     fn sidebar_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = Palette::of(cx);
         match &self.rooms {
             RoomsState::Syncing => div()
                 .id("rooms-state")
                 .p_3()
                 .text_sm()
-                .text_color(rgb(TEXT_SECONDARY))
+                .text_color(p.text_secondary)
                 .child("Synchronisation…")
                 .test_support()
                 .aria_label("Synchronisation…")
@@ -1199,13 +1195,13 @@ impl MainView {
             RoomsState::Failed(message) => div()
                 .p_3()
                 .text_sm()
-                .text_color(rgb(ERROR))
+                .text_color(p.error)
                 .child(message.clone())
                 .into_any_element(),
             RoomsState::Ready(rooms) if rooms.is_empty() => div()
                 .p_3()
                 .text_sm()
-                .text_color(rgb(TEXT_SECONDARY))
+                .text_color(p.text_secondary)
                 .child("Aucun salon pour l'instant.")
                 .into_any_element(),
             RoomsState::Ready(rooms) => {
@@ -1217,7 +1213,7 @@ impl MainView {
                             RoomKind::Space => "ESPACES",
                             RoomKind::Room => "SALONS",
                             RoomKind::Dm => "MESSAGES DIRECTS",
-                        }));
+                        }, p));
                         last_kind = Some(room.kind);
                     }
                     column = column.child(self.room_row(index, room, cx));
@@ -1229,10 +1225,10 @@ impl MainView {
 
     /// Contenu de la boîte de vignette d'un média : de taille **fixe** (`THUMBNAIL_SIDE`) quel que soit
     /// l'état, donc aucun saut de mise en page entre « chargement », image décodée et échec.
-    fn media_box(index: usize, media: &MediaRender) -> impl IntoElement {
+    fn media_box(index: usize, media: &MediaRender, p: Palette) -> impl IntoElement {
         let side = px(THUMBNAIL_SIDE as f32);
         let (inner_w, inner_h) = media.thumb;
-        let glyph = |text: String| div().text_xs().text_color(rgb(TEXT_SECONDARY)).child(text);
+        let glyph = |text: String| div().text_xs().text_color(p.text_secondary).child(text);
         let content: AnyElement = match (&media.display, &media.image) {
             (MediaDisplay::Thumbnail, Some(image)) => div()
                 .w(px(inner_w as f32))
@@ -1248,7 +1244,7 @@ impl MainView {
                 glyph(percent.map_or_else(|| "↑".to_owned(), |p| format!("{p} %"))).into_any_element()
             }
             (MediaDisplay::UploadFailed(_), _) => {
-                div().text_xs().text_color(rgb(ERROR)).child("!").into_any_element()
+                div().text_xs().text_color(p.error).child("!").into_any_element()
             }
         };
         div()
@@ -1257,7 +1253,7 @@ impl MainView {
             .flex_none()
             .rounded_md()
             .overflow_hidden()
-            .bg(rgb(BORDER))
+            .bg(p.border)
             .flex()
             .items_center()
             .justify_center()
@@ -1274,6 +1270,7 @@ impl MainView {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let p = Palette::of(cx);
         let undecryptable = event.state == EventState::Indechiffrable;
         let media_failed = matches!(
             media.as_ref().map(|m| &m.display),
@@ -1345,7 +1342,7 @@ impl MainView {
             .flex()
             .items_center()
             .gap_3()
-            .bg(rgb(if selected { SELECTED } else { BACKGROUND }))
+            .bg(if selected { p.selected } else { p.background })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.selected_event = Some(row_id.clone());
                 cx.notify();
@@ -1356,12 +1353,12 @@ impl MainView {
                     .size(px(32.0))
                     .flex_none()
                     .rounded(px(16.0))
-                    .bg(rgb(BORDER))
+                    .bg(p.border)
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_sm()
-                    .text_color(rgb(TEXT))
+                    .text_color(p.text)
                     .child(event.sender_initials.clone()),
             )
             .child(
@@ -1376,11 +1373,11 @@ impl MainView {
                             .flex()
                             .gap_2()
                             .items_baseline()
-                            .child(div().text_sm().text_color(rgb(TEXT)).child(event.sender_name.clone()))
+                            .child(div().text_sm().text_color(p.text).child(event.sender_name.clone()))
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(TEXT_SECONDARY))
+                                    .text_color(p.text_secondary)
                                     .child(time_label),
                             ),
                     )
@@ -1392,7 +1389,7 @@ impl MainView {
                             .text_ellipsis()
                             .text_sm()
                             .when(deleted, |row| row.italic())
-                            .text_color(rgb(if undecryptable || failed { ERROR } else { TEXT_SECONDARY }))
+                            .text_color(if undecryptable || failed { p.error } else { p.text_secondary })
                             .child(body_text.clone()),
                     ),
             )
@@ -1411,7 +1408,7 @@ impl MainView {
                             .flex_none()
                             .flex()
                             .justify_end()
-                            .children(media.as_ref().map(|m| Self::media_box(index, m))),
+                            .children(media.as_ref().map(|m| Self::media_box(index, m, p))),
                     )
                     .child(
                         div()
@@ -1443,15 +1440,16 @@ impl MainView {
     }
 
     fn timeline_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = Palette::of(cx);
         let base = div().flex_1().min_h_0().flex().flex_col().min_w_0();
-        let message = |id: &'static str, text: String, color: u32| {
+        let message = |id: &'static str, text: String, color: Hsla| {
             div()
                 .id(id)
                 .flex_1()
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(color))
+                .text_color(color)
                 .child(text.clone())
                 .test_support()
                 .aria_label(SharedString::from(text))
@@ -1459,7 +1457,7 @@ impl MainView {
 
         let Some(room) = self.timeline.room().cloned() else {
             return base
-                .child(message("timeline-placeholder", "Sélectionne un salon".to_owned(), TEXT_SECONDARY))
+                .child(message("timeline-placeholder", "Sélectionne un salon".to_owned(), p.text_secondary))
                 .into_any_element();
         };
         let title = match &self.rooms {
@@ -1472,8 +1470,8 @@ impl MainView {
             .px_3()
             .py_2()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .text_color(rgb(TEXT))
+            .border_color(p.border)
+            .text_color(p.text)
             .child(title.clone())
             .test_support()
             .aria_label(SharedString::from(title));
@@ -1481,7 +1479,7 @@ impl MainView {
         match self.timeline.status().clone() {
             TimelineStatus::Idle | TimelineStatus::Loading => base
                 .child(header)
-                .child(message("timeline-loading", "Chargement des messages…".to_owned(), TEXT_SECONDARY))
+                .child(message("timeline-loading", "Chargement des messages…".to_owned(), p.text_secondary))
                 .into_any_element(),
             TimelineStatus::Failed(error) => base
                 .child(header)
@@ -1496,7 +1494,7 @@ impl MainView {
                         .gap_3()
                         .child(
                             div()
-                                .text_color(rgb(ERROR))
+                                .text_color(p.error)
                                 .child(format!("Impossible de charger les messages : {error}")),
                         )
                         .child(
@@ -1510,7 +1508,7 @@ impl MainView {
                 .into_any_element(),
             TimelineStatus::Ready if self.timeline.events().is_empty() => base
                 .child(header)
-                .child(message("timeline-empty", "Aucun message dans ce salon.".to_owned(), TEXT_SECONDARY))
+                .child(message("timeline-empty", "Aucun message dans ce salon.".to_owned(), p.text_secondary))
                 .into_any_element(),
             TimelineStatus::Ready => {
                 let count = self.timeline.events().len();
@@ -1584,7 +1582,7 @@ impl MainView {
                     .items_center()
                     .justify_center()
                     .text_xs()
-                    .text_color(rgb(TEXT_SECONDARY))
+                    .text_color(p.text_secondary)
                     .children(banner.map(|(id, text)| {
                         div().id(id).child(text).test_support().aria_label(text)
                     }));
@@ -1615,6 +1613,7 @@ impl MainView {
     }
 
     fn recovery_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = Palette::of(cx);
         let ModalState::Open { busy, error } = &self.modal else {
             return None;
         };
@@ -1625,7 +1624,7 @@ impl MainView {
                 .id("recovery-modal")
                 .absolute()
                 .size_full()
-                .bg(rgba(0x000000b0))
+                .bg(p.scrim)
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1637,17 +1636,17 @@ impl MainView {
                         .gap_3()
                         .p_4()
                         .rounded_lg()
-                        .bg(rgb(PANEL))
+                        .bg(p.panel)
                         .border_1()
-                        .border_color(rgb(BORDER))
-                        .child(div().text_lg().text_color(rgb(TEXT)).child("Restaurer les clés"))
-                        .child(div().text_sm().text_color(rgb(TEXT_SECONDARY)).child(
+                        .border_color(p.border)
+                        .child(div().text_lg().text_color(p.text).child("Restaurer les clés"))
+                        .child(div().text_sm().text_color(p.text_secondary).child(
                             "Saisis ta clé de récupération pour déchiffrer l'historique de tes salons. \
                              Elle n'est jamais enregistrée.",
                         ))
-                        .child(Input::new(&self.key_input).id("recovery-key"))
+                        .child(Input::new(&self.key_input).id("recovery-key").bg(p.field))
                         .children(
-                            error.map(|m| div().text_sm().text_color(rgb(ERROR)).child(m)),
+                            error.map(|m| div().text_sm().text_color(p.error).child(m)),
                         )
                         .child(
                             div()
@@ -1681,6 +1680,7 @@ impl MainView {
 
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = Palette::of(cx);
         if let Some(draft) = self.pending_restore.take() {
             let composer = self.composer.clone();
             composer.update(cx, |state, cx| {
@@ -1696,9 +1696,9 @@ impl Render for MainView {
             .gap_2()
             .p_3()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(div().text_color(rgb(TEXT)).child("WaifuChat"))
-            .child(div().text_xs().text_color(rgb(TEXT_SECONDARY)).child(self.user_label.clone()))
+            .border_color(p.border)
+            .child(div().text_color(p.text).child("WaifuChat"))
+            .child(div().text_xs().text_color(p.text_secondary).child(self.user_label.clone()))
             .children((self.keys == KeyStatus::Needed).then(|| {
                 Button::new("recovery-open")
                     .primary()
@@ -1706,7 +1706,7 @@ impl Render for MainView {
                     .on_click(cx.listener(|this, _, _, cx| this.open_recovery(cx)))
             }));
 
-        let footer = div().p_2().border_t_1().border_color(rgb(BORDER)).child(
+        let footer = div().p_2().border_t_1().border_color(p.border).child(
             Button::new("sign-out")
                 .label("Se déconnecter")
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(MainEvent::SignOut))),
@@ -1718,9 +1718,9 @@ impl Render for MainView {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
+            .bg(p.panel)
             .border_r_1()
-            .border_color(rgb(BORDER))
+            .border_color(p.border)
             .child(header)
             .children(self.connection.banner().map(|text| {
                 let offline = matches!(self.connection, ConnectionState::Offline(_));
@@ -1729,7 +1729,7 @@ impl Render for MainView {
                     .px_3()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(if offline { ERROR } else { TEXT_SECONDARY }))
+                    .text_color(if offline { p.error } else { p.text_secondary })
                     .child(text.clone())
                     .test_support()
                     .aria_label(SharedString::from(text))
@@ -1752,7 +1752,7 @@ impl Render for MainView {
         div()
             .size_full()
             .relative()
-            .bg(rgb(BACKGROUND))
+            .bg(p.background)
             .flex()
             .child(sidebar)
             .child(center)
