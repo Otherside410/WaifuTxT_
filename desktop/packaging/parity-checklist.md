@@ -1,6 +1,6 @@
 # Checklist de parité — WaifuChat natif (Rust/GPUI) face au web actuel (W09)
 
-Sources : `README.md` (liste « Fonctionnalités », l. 13-64 et « Problèmes connus », l. 166-167) et `.design/gpui/INVENTAIRE.md` (W02 : section A = fonctions Matrix, ligne = n° + 11 ; section B = capacités Electron, ligne = n° + 99). Code natif : `desktop/crates/{domain,matrix,ui,app,updater}`. État mesuré le 2026-11-16 à HEAD `fed22ec`.
+Sources : `README.md` (liste « Fonctionnalités », l. 13-64 et « Problèmes connus », l. 166-167) et `.design/gpui/INVENTAIRE.md` (W02 : section A = fonctions Matrix, ligne = n° + 11 ; section B = capacités Electron, ligne = n° + 99). Code natif : `desktop/crates/{domain,matrix,ui,app,updater}`. État mesuré le 2026-11-16 à HEAD `fed22ec`, puis remis à jour à HEAD `5bc1652` pour quatre lignes (réactions, présence, thème, avatars) et les totaux ; les autres lignes datent encore de `fed22ec`.
 
 **Statuts** (un seul par ligne) :
 - **OK** : prouvé par un test automatisé nommé (fichier:ligne), exécutable ;
@@ -32,7 +32,7 @@ Sources : `README.md` (liste « Fonctionnalités », l. 13-64 et « Problèmes c
 | Threads (m.thread) : panneau et liste | README.md:36 ; INVENTAIRE.md:25-27 | fils de discussion | absent | `grep -E 'm\.thread\|thread_root\|ThreadSummary\|ThreadPanel' crates/*/src` : 0 fichier ; banc B11 SKIP |
 | Édition (m.replace) avec « modifié » | README.md:37 ; INVENTAIRE.md:28 | texte remplacé, même ligne | OK | `ui/tests/actions.rs:28` ; `matrix/tests/homeserver.rs:734` (relation `m.replace` sur le fil) |
 | Réponses (m.in_reply_to) | README.md:38 | aperçu type Discord | absent | `grep -E 'in_reply_to\|reply' crates/*/src` : 0 fichier |
-| Réactions (picker, réactions rapides) | README.md:39 ; INVENTAIRE.md:19-20 ; INVENTAIRE.md:18 (n° 7) | ajout / retrait d'une réaction | absent | `grep -E 'm\.reaction\|toggle_reaction\|[Rr]eaction' crates/*/src` : 0 fichier ; banc B09 SKIP |
+| Réactions (picker, réactions rapides) | README.md:39 ; INVENTAIRE.md:19-20 ; INVENTAIRE.md:18 (n° 7) | ajout / retrait d'une réaction | différent | fait (V1-3) : ajout / retrait d'une réaction (`Timeline::toggle_reaction`, commande `ToggleReaction`), pastilles sous le message, bouton « Réagir » et sélecteur rapide de 16 émojis + 8 récents de session. Absent : sélecteur complet (catégories, recherche, emojibase, Twemoji). Preuves : `ui/tests/reactions.rs:90` (pastille reçue par le canal), `:135` (clic → `ToggleReaction`), `:169` (sélecteur, récents), `:206` (Échap, clic extérieur) ; mapping SDK `matrix/src/timeline.rs` test `sdk_reactions_become_one_entry_per_key_with_count_ownership_and_stable_order`. Bout en bout : `matrix/tests/homeserver.rs:733` est `#[ignore]` et **n'a jamais été exécuté** (pas de homeserver local) |
 | Épinglage (m.room.pinned_events), panneau | README.md:40 ; INVENTAIRE.md:87-91 | épingler, lister, désépingler | absent | `grep -E 'pinned_events\|PinnedEvent\|unpin' crates/*/src` : 0 fichier ; banc B12 SKIP |
 | Suppression (redaction) avec confirmation | README.md:41 ; INVENTAIRE.md:39 ; INVENTAIRE.md:40 (n° 29) | espace réservé « Message supprimé » | OK | `ui/tests/actions.rs:84` (confirmation puis ligne de même hauteur) ; `matrix/tests/homeserver.rs:734` (`m.room.redaction`) |
 | Copier le contenu d'un message | README.md:42 | bouton sur les messages éligibles | absent | `grep -E 'ClipboardItem\|write_to_clipboard' crates/*/src` : 0 fichier |
@@ -50,10 +50,10 @@ Sources : `README.md` (liste « Fonctionnalités », l. 13-64 et « Problèmes c
 | **Bug connu : image + texte dans un même message (Element)** | README.md:167 ; CLAUDE.local.md « Défauts connus » | l'image se charge quand elle accompagne un texte | non mesuré | aucun test ne fabrique un message mixte d'Element ; non reproduit ici ; banc B13 SKIP ; à mesurer avec un vrai message Element (image avec légende, `body` ≠ `filename`) |
 | Messages vocaux (enregistrement, `m.audio` + drapeaux) | README.md:53 ; INVENTAIRE.md:45 | lecteur dans la timeline | absent | aucun code audio ; drapeau vocal à poser explicitement (CLAUDE.local.md) |
 | Aperçus d'URL (Open Graph) | README.md:54 ; INVENTAIRE.md:85-86 | carte d'aperçu | absent | `grep -E 'url_preview\|preview_url' crates/*/src` : 0 fichier |
-| Statut personnalisé / présence | README.md:58 ; INVENTAIRE.md:58-64 ; INVENTAIRE.md:68 (n° 57) | statut visible en ligne / profil | absent | `grep -i presence crates/*/src` : 0 fichier |
-| Avatar de profil (recadrage, upload) ; avatars d'utilisateurs | README.md:59 ; INVENTAIRE.md:21-22 ; INVENTAIRE.md:66-67 ; INVENTAIRE.md:65 (n° 54) ; INVENTAIRE.md:81-82 (n° 70-71) ; INVENTAIRE.md:92 (n° 81) | image d'avatar | différent | initiales colorées seulement (`EventVm.sender_initials`) ; aucun avatar image |
+| Statut personnalisé / présence | README.md:58 ; INVENTAIRE.md:58-64 ; INVENTAIRE.md:68 (n° 57) | statut visible en ligne / profil | différent | fait (V1-2B2) : pastille de présence (en ligne / absent / hors ligne) reçue par l'abonnement `presence` de `/sync` et lue dans le store au démarrage (`matrix/src/sync.rs`, `presence_updates`). Absent : statut personnalisé, réglage de sa propre présence (`grep -rnE 'custom_status\|status_msg\|set_my_presence' crates/*/src` : 0 résultat, rc 1). Preuves : `ui/tests/presence.rs:32` ; `matrix/src/sync.rs:151` (événements `m.presence` bruts → une mise à jour par utilisateur) |
+| Avatar de profil (recadrage, upload) ; avatars d'utilisateurs | README.md:59 ; INVENTAIRE.md:21-22 ; INVENTAIRE.md:66-67 ; INVENTAIRE.md:65 (n° 54) ; INVENTAIRE.md:81-82 (n° 70-71) ; INVENTAIRE.md:92 (n° 81) | image d'avatar | différent | fait (V1-2B1) : photo ronde de 32 px dans la timeline quand elle existe, repli sur des initiales colorées sinon ou si le téléchargement échoue. Absent : upload et recadrage (`grep -rnE 'set_avatar\|upload_avatar\|crop' crates/*/src` : 0 résultat, rc 1). Preuves : `ui/tests/avatar.rs:32` (photo si octets en cache, initiales sinon), `:74` (échec de téléchargement → initiales) |
 | Bannière et bio de profil | INVENTAIRE.md:69-75 | upload, lecture | absent | `grep -E 'avatar_url\|set_avatar' crates/*/src` : 0 fichier |
-| Thème clair / sombre et couleur d'accent | README.md:60 | choix de l'utilisateur | différent | thème sombre fixe ; clair, OLED et accent non faits (types de thème conçus dans UI-MAPPING.md §3, non intégrés) |
+| Thème clair / sombre et couleur d'accent | README.md:60 | choix de l'utilisateur | différent | fait (V1-THEME) : `ThemeMode` (Dark / Oled / Light) et `AccentChoice` dans `ui/src/theme.rs` (`:40`, `:132`). Absent : tout réglage utilisateur, le thème est **câblé en dur** : `app/src/main.rs:111` appelle `ui::install_theme(ui::ThemeMode::Dark, &ui::AccentChoice::Solid(Accent::DEFAULT_BASE), cx)` ; `grep -nE 'ThemeMode::(Light\|Oled)\|AccentChoice' crates/app/src crates/ui/src/main_view.rs` ne trouve que cette ligne (rc 0) |
 | Waifu (opt-in) Miku / Airi | README.md:61 | illustrations locales | absent | `grep -iE 'miku|\bairi\b' crates/*/src` : 0 fichier |
 | Notifications | README.md:62 ; INVENTAIRE.md:114 | notifications système | absent | `grep -E 'notify_rust|Notification::new|send_notification' crates/*/src` : 0 fichier |
 | Raccourcis clavier | README.md:63 | hooks par écran | absent | seuls Entrée / Maj+Entrée du composeur (ligne ci-dessus) ; aucun raccourci global |
@@ -82,13 +82,13 @@ Sources : `README.md` (liste « Fonctionnalités », l. 13-64 et « Problèmes c
 |---|---|
 | OK | 16 |
 | KO | 0 |
-| absent | 33 |
-| différent | 11 |
+| absent | 31 |
+| différent | 13 |
 | non mesuré | 2 |
 
 ## Rejouer les preuves
 
-- Tests d'interface (sans réseau) : `cd desktop && cargo test --locked` (199 passés, 13 ignorés).
+- Tests d'interface (sans réseau) : `cd desktop && cargo test --locked` (254 passés, 0 échec, 14 ignorés, mesuré à `5bc1652`).
 - Tests contre le homeserver de test : `packaging/bench-headless.sh` (étapes B03-B10 ; voir son rapport).
 - Recherches « absent » : le banc les rejoue pour réactions, fils et épinglage (B09, B11, B12) ; les autres sont les `grep` de la colonne « preuve ».
 - Rendu réel : `packaging/visual-check.sh` sur le poste Nobara (`.design/gpui/ENVIRONNEMENTS.md` §5).

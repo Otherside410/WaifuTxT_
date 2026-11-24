@@ -7,14 +7,14 @@ racine de ce dépôt (`src/`), pas un portage : mêmes fonctions visées, pile c
 - Version : `0.67.0` — lignée de version de l'application, pas une numérotation séparée. `waifu-desktop --version` et le tag
   Git disent la même chose.
 - État : **socle**. Voir « Ce qui marche » et `packaging/parity-checklist.md` (16 fonctions prouvées OK sur 62 lignes de
-  référence, 33 absentes, 11 différentes, 2 non mesurées).
+  référence, 31 absentes, 13 différentes, 2 non mesurées).
 
 ## Construire et lancer
 
 ```bash
 cd desktop
 cargo build --locked                       # debug
-cargo test --locked                        # 206 tests, 13 ignorés (réseau/homeserver)
+cargo test --locked                        # 254 tests, 14 ignorés (réseau/homeserver)
 ./target/debug/waifu-desktop               # connexion Matrix classique
 ./target/debug/waifu-desktop --demo-ui     # démonstration hors ligne : barre latérale + panneau de clés
 ./target/debug/waifu-desktop --demo-timeline   # démonstration hors ligne : salon, messages, actions
@@ -45,10 +45,10 @@ Le détail ligne par ligne, avec le test qui le prouve, est dans `packaging/pari
 
 ## Ce qui n'existe pas encore
 
-Réactions, fils, épinglage, réponses, mentions, markdown, emoji, avatars image, panneau des membres, création/renommage de
-salon, invitations, notifications système, raccourcis clavier, thème clair/OLED et accent configurable, messages et salons
-vocaux. L'interface est encore utilitaire : les actions d'un message sont visibles en permanence au lieu d'apparaître au survol,
-les messages ne sont pas regroupés par expéditeur, et les vignettes d'images ne s'affichent pas.
+Sélecteur d'émojis complet (les réactions rapides existent, sans catégories ni recherche), fils, épinglage, réponses,
+mentions, markdown, upload et recadrage d'avatar, panneau des membres, création/renommage de salon, invitations,
+notifications système, raccourcis clavier, réglage du thème clair/OLED et de l'accent (le thème est câblé en sombre),
+messages et salons vocaux.
 
 ## Organisation du code
 
