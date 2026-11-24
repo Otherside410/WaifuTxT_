@@ -39,6 +39,7 @@ import {
   canUserPinMessages,
   redactMessage,
   canUserRedact,
+  videoMimeFromName,
   type UrlPreviewData,
 } from '../../lib/matrix'
 import { useUiStore } from '../../stores/uiStore'
@@ -1110,7 +1111,7 @@ function VideoAttachment({ message }: { message: MessageEvent }) {
 
   return (
     <div className="mt-1 max-w-lg">
-      <video src={videoUrl} poster={posterUrl || undefined} controls className="rounded-lg max-h-80" preload="metadata" />
+      <video src={videoUrl} poster={posterUrl || undefined} controls className="rounded-lg max-h-80 max-w-full" preload="metadata" />
     </div>
   )
 }
@@ -1586,11 +1587,11 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
           )
         )}
 
-        {message.type === 'm.video' && (message.fileUrl || message.encryptedFile) && <VideoAttachment message={message} />}
+        {(message.type === 'm.video' || (message.type === 'm.file' && !!videoMimeFromName(message.fileName || ''))) && (message.fileUrl || message.encryptedFile) && <VideoAttachment message={message} />}
         {message.type === 'm.audio' && message.isVoiceMessage && (message.fileUrl || message.encryptedFile) && (
           <VoiceMessagePlayer message={message} />
         )}
-        {(message.type === 'm.file' || (message.type === 'm.audio' && !message.isVoiceMessage)) && (message.fileUrl || message.encryptedFile) && (
+        {((message.type === 'm.file' && !videoMimeFromName(message.fileName || '')) || (message.type === 'm.audio' && !message.isVoiceMessage)) && (message.fileUrl || message.encryptedFile) && (
           <FileAttachment message={message} />
         )}
 

@@ -13,7 +13,7 @@ import emojibaseData from 'emojibase-data/en/data.json'
 import { useRoomStore } from '../../stores/roomStore'
 import { useUiStore } from '../../stores/uiStore'
 import { useAuthStore } from '../../stores/authStore'
-import { sendMessage, sendFile, sendImage, sendVideo, sendTyping, sendVoiceMessage } from '../../lib/matrix'
+import { sendMessage, sendFile, sendImage, sendVideo, videoMimeFromName, sendTyping, sendVoiceMessage } from '../../lib/matrix'
 import { Avatar } from '../common/Avatar'
 import type { RoomMember, RoomSummary } from '../../types/matrix'
 import { EmojiPicker, addRecentEmoji } from '../common/EmojiPicker'
@@ -642,7 +642,7 @@ export function MessageInput() {
 
     if (file.type.startsWith('image/')) {
       await sendImage(activeRoomId, file)
-    } else if (file.type.startsWith('video/')) {
+    } else if (file.type.startsWith('video/') || videoMimeFromName(file.name)) {
       await sendVideo(activeRoomId, file)
     } else {
       await sendFile(activeRoomId, file)

@@ -1876,14 +1876,26 @@ export function canUserRenameRoom(roomId: string): boolean {
   return userPowerLevel >= requiredLevel
 }
 
+const VIDEO_MIME_BY_EXT: Record<string, string> = {
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+}
+
+export function videoMimeFromName(name: string): string | undefined {
+  return VIDEO_MIME_BY_EXT[name.split('.').pop()?.toLowerCase() || '']
+}
+
 export async function sendVideo(roomId: string, file: File): Promise<void> {
   if (!client) return
-  const upload = await client.uploadContent(file)
+  const mimetype = file.type.startsWith('video/') ? file.type : videoMimeFromName(file.name) || file.type
+  const upload = await client.uploadContent(file, { type: mimetype || undefined })
   await client.sendMessage(roomId, {
     msgtype: 'm.video',
     body: file.name || 'video.mp4',
     url: upload.content_uri,
-    info: { mimetype: file.type, size: file.size },
+    info: { mimetype, size: file.size },
   } as any)
 }
 
