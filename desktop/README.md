@@ -7,7 +7,7 @@ racine de ce dépôt (`src/`), pas un portage : mêmes fonctions visées, pile c
 - Version : `0.67.0` — lignée de version de l'application, pas une numérotation séparée. `waifu-desktop --version` et le tag
   Git disent la même chose.
 - État : **socle**. Voir « Ce qui marche » et `packaging/parity-checklist.md` (16 fonctions prouvées OK sur 62 lignes de
-  référence, 31 absentes, 13 différentes, 2 non mesurées).
+  référence, 30 absentes, 14 différentes, 2 non mesurées).
 
 ## Construire et lancer
 
