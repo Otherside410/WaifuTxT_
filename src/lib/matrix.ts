@@ -1156,7 +1156,11 @@ function eventToMessage(event: MatrixEvent, roomId: string): MessageEvent | null
     const info = effectiveContent.info as Record<string, unknown> | undefined
     fileSize = typeof info?.size === 'number' ? info.size : undefined
     if (effectiveContent.file) encryptedFile = effectiveContent.file as EncryptedFileInfo
-    else if (effectiveContent.url) fileUrl = client?.mxcUrlToHttp(String(effectiveContent.url), undefined, undefined, undefined, false, true) || undefined
+    else if (effectiveContent.url) {
+      // Authenticated media endpoint + token: <video>/<audio> cannot send an Authorization header
+      const raw = client?.mxcUrlToHttp(String(effectiveContent.url), undefined, undefined, undefined, false, true, true)
+      fileUrl = (raw && getMediaUrlWithAccessToken(raw)) || raw || undefined
+    }
     if (type === 'm.video') {
       if (info?.thumbnail_file) encryptedThumbnailFile = info.thumbnail_file as EncryptedFileInfo
       if (typeof info?.thumbnail_url === 'string') {
