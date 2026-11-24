@@ -45,10 +45,11 @@ Le détail ligne par ligne, avec le test qui le prouve, est dans `packaging/pari
 
 ## Ce qui n'existe pas encore
 
-Sélecteur d'émojis complet (les réactions rapides existent, sans catégories ni recherche), fils, épinglage, réponses,
+Sélecteur de réactions complet (catégories, recherche, emojibase, Twemoji ; les réactions rapides existent, avec 16
+émojis et 8 récents), bouton d'émoji dans le composeur (complétion `:`, shortcodes), fils, épinglage, réponses,
 mentions, markdown, upload et recadrage d'avatar, panneau des membres, création/renommage de salon, invitations,
-notifications système, raccourcis clavier, réglage du thème clair/OLED et de l'accent (le thème est câblé en sombre),
-messages et salons vocaux.
+notifications système, raccourcis clavier, réglage du thème clair/OLED et de l'accent (le mode sombre et l'accent par
+défaut sont câblés en dur), messages et salons vocaux.
 
 ## Organisation du code
 
