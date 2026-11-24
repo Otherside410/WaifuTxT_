@@ -10,13 +10,14 @@ use std::sync::Arc;
 use domain::{
     avatar_key, Presence,
     last_read_marker, ConnectionState, media_display, prepare_message, read_by_label, sniff_image_format,
-    typing_label, validate_recovery_key, EventId, EventState, EventVm, FailedAction, ImageKind,
-    KeyStatus, MediaDisplay, MediaKind, MediaPayload, MediaStatus, MediaVm, RecoveryKey, RoomId,
+    remember_recent_emoji, typing_label, validate_recovery_key, EventId, EventState, EventVm, FailedAction, ImageKind,
+    KeyStatus, MediaDisplay, MediaKind, MediaPayload, MediaStatus, MediaVm, ReactionVm, RecoveryKey, RoomId,
     RoomKind, RoomVm, TimelineState, TimelineStatus, TimelineUpdate, TypingThrottle,
-    THUMBNAIL_SIDE, TYPING_IDLE_MS,
+    QUICK_EMOJIS, THUMBNAIL_SIDE, TYPING_IDLE_MS,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -46,6 +47,18 @@ const FILL_ROWS: usize = 20;
 const BANNER_HEIGHT: f32 = 24.0;
 /// Délai avant la confirmation simulée d'un envoi en mode démonstration.
 const DEMO_CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+/// Pastille de réaction : hauteur fixe, glissée sous le corps du message dans les 48 px de la ligne.
+/// Largeur du sélecteur : huit cellules de 28 px et le remplissage.
+const PICKER_WIDTH: f32 = 8.0 * 28.0 + 16.0;
+const REACTION_CHIP_HEIGHT: f32 = 18.0;
+/// Hauteur et interligne des deux lignes de texte d'un message **qui porte des réactions** (13 px de corps) :
+/// 15 + 15 + 18 (pastilles) = 48 px, quelle que soit la police. Sans réaction, rien n'est touché.
+const REACTION_TEXT_LINE_HEIGHT: f32 = 15.0;
+/// Un clic sur « Réagir » moins de ce délai après la fermeture du sélecteur par un clic extérieur n'ouvre rien : le
+/// même geste a déjà fermé le panneau (le bouton se comporte alors en bascule).
+const PICKER_REOPEN_GUARD: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Écart maximal entre le clic qui a fermé le sélecteur et celui reçu par le bouton pour y voir un seul geste.
+const PICKER_SAME_GESTURE: f32 = 24.0;
 const COMPOSER_PLACEHOLDER: &str = "Écrire un message…";
 /// Aide clavier, affichée en 11 px sous le champ (elle ne tient plus dans le placeholder).
 const COMPOSER_HINT: &str = "Entrée : envoyer · Maj+Entrée : saut de ligne";
@@ -56,6 +69,16 @@ struct RowHead {
     avatar: Option<Arc<Image>>,
     /// Présence de l'expéditeur : pastille sur l'avatar sauf si `Unknown`.
     presence: Presence,
+    /// Réactions du message (table latérale), vide : aucune rangée.
+    reactions: Vec<ReactionVm>,
+    /// Le sélecteur d'émojis de ce message est ouvert, avec les récents de la session et le focus du panneau.
+    picker: Option<PickerRender>,
+}
+
+/// Ce qu'il faut pour dessiner le sélecteur rapide d'un message.
+struct PickerRender {
+    recent: Vec<String>,
+    focus: FocusHandle,
 }
 
 /// Ce que la liste de salons affiche.
@@ -109,6 +132,8 @@ pub enum MainEvent {
     Typing { room: RoomId, typing: bool },
     /// Envoyer le fichier `path` en pièce jointe (lu et envoyé côté Tokio, jamais par l'UI).
     SendAttachment { room: RoomId, path: String },
+    /// Ajouter ou retirer ma réaction `key` sur le message `event_id` (le SDK décide selon l'état courant).
+    ToggleReaction { room: RoomId, event_id: EventId, key: String },
 }
 
 /// Message affiché quand le sélecteur de fichiers du système ne répond pas.
@@ -250,6 +275,13 @@ pub struct MainView {
     demo_hold_pending: bool,
     /// Mode `--demo-ui` : aucune connexion, la saisie de clé n'est jamais transmise.
     demo: bool,
+    /// Message dont le sélecteur d'émojis est ouvert, et son focus (pris à l'ouverture pour que Échap le ferme).
+    reaction_picker: Option<EventId>,
+    picker_focus: FocusHandle,
+    /// Dernière fermeture par clic extérieur (message, instant, position du clic), voir [`PICKER_REOPEN_GUARD`].
+    picker_dismissed: Option<(EventId, std::time::Instant, Point<Pixels>)>,
+    /// Émojis récents de la session, le plus récent en tête (rien n'est persisté).
+    recent_emojis: Vec<String>,
 }
 
 impl EventEmitter<MainEvent> for MainView {}
@@ -308,6 +340,10 @@ impl MainView {
             demo_sent: 0,
             demo_hold_pending: false,
             demo: false,
+            reaction_picker: None,
+            picker_focus: cx.focus_handle(),
+            picker_dismissed: None,
+            recent_emojis: Vec::new(),
         }
     }
 
@@ -417,6 +453,23 @@ impl MainView {
         // Photo d'Alice fournie en mémoire (aucun téléchargement).
         let (key, payload) = demo::demo_avatar_payload();
         view.apply_timeline(TimelineUpdate::Media { room: RoomId::from(demo::ROOM_ID), key, payload }, cx);
+        // Démonstration : un message avec trois réactions dont une de moi (n°196) et le n°198 avec une seule.
+        let reactions = |key: &str, senders: &[&str]| ReactionVm {
+            key: key.to_owned(),
+            count: senders.len(),
+            reacted_by_me: senders.contains(&"moi"),
+            senders: senders.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        view.timeline.apply(TimelineUpdate::Reactions {
+            room: RoomId::from(demo::ROOM_ID),
+            reactions: vec![
+                (
+                    EventId::from("$demo-ev-0196"),
+                    vec![reactions("👍", &["alice", "bob", "moi"]), reactions("🎉", &["alice"]), reactions("❤️", &["bob", "alice"])],
+                ),
+                (EventId::from("$demo-ev-0198"), vec![reactions("😂", &["bob"])]),
+            ],
+        });
         // Démonstration : un autre membre est en train d'écrire.
         view.timeline.apply(TimelineUpdate::Typing {
             room: RoomId::from(demo::ROOM_ID),
@@ -471,6 +524,17 @@ impl MainView {
         view
     }
 
+    /// Démonstration du sélecteur : `--demo-timeline` avec deux récents et le sélecteur ouvert sur le dernier message.
+    pub fn demo_picker(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::demo_timeline(window, cx);
+        remember_recent_emoji(&mut view.recent_emojis, QUICK_EMOJIS[6]);
+        remember_recent_emoji(&mut view.recent_emojis, QUICK_EMOJIS[2]);
+        view.reaction_picker = view.timeline.events().last().and_then(|event| event.event_id.clone());
+        view.selected_event = view.timeline.events().last().map(|event| event.id.clone());
+        window.focus(&view.picker_focus, cx);
+        view
+    }
+
     /// Présence d'un seul utilisateur : ne redessine que si elle a changé (pas de rechargement de la timeline).
     pub fn apply_presence(&mut self, user_id: &str, state: Presence, cx: &mut Context<Self>) {
         if self.timeline.set_presence(user_id, state) {
@@ -517,6 +581,7 @@ impl MainView {
         // On quitte le salon : plus de modification ni de suppression en attente, plus de « j'écris ».
         self.editing = None;
         self.pending_delete = None;
+        self.reaction_picker = None;
         self.stop_typing(cx);
         self.timeline.select(id.clone());
         self.scroll = UniformListScrollHandle::new();
@@ -886,6 +951,49 @@ impl MainView {
         cx.notify();
     }
 
+    /// Ouvre (ou ferme) le sélecteur d'émojis du message `event_id` ; le focus passe au panneau pour que Échap le ferme.
+    fn toggle_picker(&mut self, event_id: EventId, click: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Même geste que le clic extérieur qui vient de fermer ce sélecteur : le bouton se comporte en bascule.
+        let near = |a: Point<Pixels>, b: Point<Pixels>| {
+            f32::from((a.x - b.x).abs()) <= PICKER_SAME_GESTURE && f32::from((a.y - b.y).abs()) <= PICKER_SAME_GESTURE
+        };
+        let recently_dismissed = matches!(
+            (&self.picker_dismissed, click.mouse_position()),
+            (Some((id, at, down)), Some(up)) if *id == event_id && at.elapsed() < PICKER_REOPEN_GUARD && near(*down, up)
+        );
+        self.picker_dismissed = None;
+        if self.reaction_picker.as_ref() == Some(&event_id) || recently_dismissed {
+            self.reaction_picker = None;
+        } else {
+            self.reaction_picker = Some(event_id);
+            window.focus(&self.picker_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_picker(&mut self, cx: &mut Context<Self>) {
+        if self.reaction_picker.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Réaction `key` (ajout ou retrait, décidé par le SDK) sur `event_id` : le sélecteur se ferme, l'émoji passe en
+    /// tête des récents, puis commande vers le pont (ou bascule locale en démonstration). Aucun appel réseau ici.
+    fn react(&mut self, event_id: EventId, key: String, cx: &mut Context<Self>) {
+        let Some(room) = self.timeline.room().cloned() else {
+            return;
+        };
+        self.timeline.clear_send_failure();
+        self.reaction_picker = None;
+        remember_recent_emoji(&mut self.recent_emojis, &key);
+        if self.demo {
+            self.timeline.toggle_reaction_local(&event_id, &key, "moi");
+        } else {
+            cx.emit(MainEvent::ToggleReaction { room, event_id, key });
+        }
+        cx.notify();
+    }
+
     /// Nouvelle tentative après un échec : renvoie l'envoi, l'édition ou la suppression mémorisés.
     fn retry_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(room), Some(failure)) =
@@ -897,6 +1005,7 @@ impl MainView {
             FailedAction::Send => self.send_body(room, failure.text, window, cx),
             FailedAction::Edit(event_id) => self.edit_message(room, event_id, failure.text, window, cx),
             FailedAction::Delete(event_id) => self.redact(room, event_id, cx),
+            FailedAction::React(event_id, key) => self.react(event_id, key, cx),
             FailedAction::Attach(path) => {
                 self.timeline.clear_send_failure();
                 self.attach_path(std::path::PathBuf::from(path), cx);
@@ -1490,6 +1599,81 @@ impl MainView {
         )
     }
 
+    /// Sélecteur rapide ancré au bouton « Réagir » : récents de la session (8 max, le plus récent en tête) puis
+    /// grille fixe de 16 émojis. Échap, un clic extérieur ou un choix le ferme.
+    fn reaction_picker(
+        target: &Option<EventId>,
+        picker: PickerRender,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let PickerRender { recent, focus } = picker;
+        let cell = |id: String, emoji: &str, target: &Option<EventId>, cx: &mut Context<Self>| {
+            let (event_id, key) = (target.clone(), emoji.to_owned());
+            Button::new(SharedString::from(id))
+                .ghost()
+                .xsmall()
+                .label(emoji.to_owned())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(id) = event_id.clone() {
+                        this.react(id, key.clone(), cx);
+                    }
+                }))
+        };
+        let recents = (!recent.is_empty()).then(|| {
+            div()
+                .id("reaction-picker-recent")
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_size(px(META_TEXT_SIZE)).text_color(p.text_secondary).child("Récents"))
+                .child(div().flex().flex_wrap().children(
+                    recent.iter().enumerate().map(|(n, emoji)| cell(format!("picker-recent-{n}"), emoji, target, cx)),
+                ))
+                .test_support()
+                .aria_label("Émojis récents")
+        });
+        div()
+            .absolute()
+            .top_full()
+            .right_0()
+            .child(deferred(
+                anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
+                    div()
+                        .id("reaction-picker")
+                        .track_focus(&focus)
+                        .w(px(PICKER_WIDTH))
+                        .p_2()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .rounded_md()
+                        .bg(p.panel)
+                        .border_1()
+                        .border_color(p.border)
+                        .shadow_md()
+                        .occlude()
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                            if event.keystroke.key == "escape" {
+                                this.close_picker(cx);
+                            }
+                        }))
+                        .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            if let Some(id) = this.reaction_picker.take() {
+                                this.picker_dismissed = Some((id, std::time::Instant::now(), event.position));
+                                cx.notify();
+                            }
+                        }))
+                        .children(recents)
+                        .child(div().flex().flex_wrap().children(
+                            QUICK_EMOJIS.iter().enumerate().map(|(n, emoji)| cell(format!("picker-emoji-{n}"), emoji, target, cx)),
+                        ))
+                        .test_support()
+                        .aria_label("Choisir une réaction"),
+                ),
+            ))
+    }
+
     fn event_row(
         index: usize,
         event: &EventVm,
@@ -1500,7 +1684,8 @@ impl MainView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let p = Palette::of(cx);
-        let RowHead { starts_group, avatar, presence } = head;
+        let RowHead { starts_group, avatar, presence, reactions, picker } = head;
+        let has_reactions = !reactions.is_empty();
         let undecryptable = event.state == EventState::Indechiffrable;
         let media_failed = matches!(
             media.as_ref().map(|m| &m.display),
@@ -1526,10 +1711,19 @@ impl MainView {
             (Some(m), _) => m.summary(),
             (None, _) => event.body.clone(),
         };
-        let actions = event.can_edit_or_delete().then(|| {
-            let event_id = event.event_id.clone();
+        // « Réagir » : tout message confirmé et sain, le mien ou non ; modifier/supprimer : le mien seulement.
+        let actions = event.event_id.clone().filter(|_| event.state == EventState::Normal).map(|event_id| {
             let body = event.body.clone();
-            let (edit_id, delete_id) = (event_id.clone(), event_id);
+            let own = event.can_edit_or_delete();
+            let picker_open = picker.is_some();
+            let (edit_id, delete_id, react_id) = (event_id.clone(), event_id.clone(), event_id);
+            let react_button = Button::new(SharedString::from(format!("react-{index}")))
+                .label("Réagir")
+                .xsmall()
+                .on_click(cx.listener(move |this, click, window, cx| this.toggle_picker(react_id.clone(), click, window, cx)));
+            let panel = picker.map(|picker| {
+                Self::reaction_picker(&event.event_id, picker, p, cx)
+            });
             div()
                 .id(SharedString::from(format!("actions-{index}")))
                 .absolute()
@@ -1544,32 +1738,28 @@ impl MainView {
                 .border_1()
                 .border_color(p.border)
                 // Invisibles au repos, révélées au survol de la ligne ; le message sélectionné les garde
-                // visibles (accès sans souris : sélection puis Tab vers les boutons).
-                .opacity(if actions_visible_at_rest(selected, true) { 1.0 } else { 0.0 })
+                // visibles (accès sans souris : sélection puis Tab vers les boutons), de même tant que le
+                // sélecteur est ouvert (il est ancré à la barre).
+                .opacity(if picker_open || actions_visible_at_rest(selected, true) { 1.0 } else { 0.0 })
                 .group_hover("event-row", |style| style.opacity(1.0))
                 .test_support()
                 .aria_label("Actions du message")
+                .child(div().relative().child(react_button).children(panel))
                 // Un média n'a pas de texte à modifier : seule la suppression est proposée.
-                .children(event.media.is_none().then(|| {
+                .children((own && event.media.is_none()).then(|| {
                     Button::new(SharedString::from(format!("edit-{index}")))
                         .label("Modifier")
                         .xsmall()
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            if let Some(id) = edit_id.clone() {
-                                this.begin_edit(id, body.clone(), window, cx);
-                            }
+                            this.begin_edit(edit_id.clone(), body.clone(), window, cx);
                         }))
                 }))
-                .child(
+                .children(own.then(|| {
                     Button::new(SharedString::from(format!("delete-{index}")))
                         .label("Supprimer")
                         .xsmall()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(id) = delete_id.clone() {
-                                this.ask_delete(id, cx);
-                            }
-                        })),
-                )
+                        .on_click(cx.listener(move |this, _, _, cx| this.ask_delete(delete_id.clone(), cx)))
+                }))
         });
         let row_id = event.id.clone();
         let media_aria = media.as_ref().map(|m| m.aria.clone());
@@ -1581,9 +1771,55 @@ impl MainView {
             .whitespace_nowrap()
             .text_ellipsis()
             .text_size(px(BODY_TEXT_SIZE))
+            .when(has_reactions, |line| line.h(px(REACTION_TEXT_LINE_HEIGHT)).line_height(px(REACTION_TEXT_LINE_HEIGHT)))
             .when(deleted, |row| row.italic())
             .text_color(body_color)
             .child(body_text.clone());
+        // Rangée de pastilles **sous** le corps : jamais à sa place, hauteur fixe, dans les 48 px de la ligne.
+        let chips = has_reactions.then(|| {
+            div()
+                .id(SharedString::from(format!("reactions-{index}")))
+                .w_full()
+                .h(px(REACTION_CHIP_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_1()
+                .overflow_hidden()
+                .test_support()
+                .aria_label("Réactions")
+                .children(reactions.iter().map(|reaction| {
+                    let (event_id, key) = (event.event_id.clone(), reaction.key.clone());
+                    let senders = SharedString::from(reaction.senders.join(", "));
+                    let mine = reaction.reacted_by_me;
+                    div()
+                        .id(SharedString::from(format!("reaction-{index}-{}", reaction.key)))
+                        .h(px(REACTION_CHIP_HEIGHT))
+                        .flex_none()
+                        .px(px(6.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .rounded(px(REACTION_CHIP_HEIGHT / 2.0))
+                        .border_1()
+                        .border_color(if mine { p.accent } else { p.border })
+                        .bg(if mine { p.accent.opacity(0.18) } else { p.panel })
+                        .hover(|style| style.bg(if mine { p.accent.opacity(0.28) } else { p.hover }))
+                        .text_size(px(META_TEXT_SIZE))
+                        .text_color(if mine { p.text } else { p.text_secondary })
+                        .cursor_pointer()
+                        .child(reaction.key.clone())
+                        .child(reaction.count.to_string())
+                        .tooltip(move |window, cx| Tooltip::new(senders.clone()).build(window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(id) = event_id.clone() {
+                                this.react(id, key.clone(), cx);
+                            }
+                        }))
+                        .test_support()
+                        .aria_label(SharedString::from(reaction.aria_label()))
+                }))
+        });
         let text_column = if starts_group {
             div()
                 .opacity(opacity)
@@ -1597,24 +1833,27 @@ impl MainView {
                         .flex()
                         .gap_2()
                         .items_baseline()
+                        .when(has_reactions, |line| line.h(px(REACTION_TEXT_LINE_HEIGHT)).line_height(px(REACTION_TEXT_LINE_HEIGHT)))
                         .child(div().text_size(px(BODY_TEXT_SIZE)).text_color(p.text).child(event.sender_name.clone()))
                         .child(div().text_size(px(META_TEXT_SIZE)).text_color(p.text_secondary).child(time_label))
                         .test_support()
                         .aria_label(SharedString::from(format!("{} {}", event.sender_name, event.time_label))),
                 )
                 .child(body)
+                .children(chips)
         } else {
-            div()
-                .opacity(opacity)
-                .flex_1()
-                .min_w_0()
+            let line = div()
                 .flex()
                 .items_baseline()
                 .gap_2()
                 .child(div().min_w_0().flex_1().child(body))
                 .children(
                     status.map(|status| div().flex_none().text_size(px(META_TEXT_SIZE)).text_color(p.text_secondary).child(status)),
-                )
+                );
+            match chips {
+                Some(chips) => div().opacity(opacity).flex_1().min_w_0().flex().flex_col().child(line.w_full()).child(chips),
+                None => line.opacity(opacity).flex_1().min_w_0(),
+            }
         };
         div()
             .id(SharedString::from(format!("event-{index}")))
@@ -1832,7 +2071,15 @@ impl MainView {
                                     .as_deref()
                                     .and_then(|mxc| this.images.get(&avatar_key(mxc)))
                                     .cloned();
-                                Self::event_row(index, event, read, media, selected, RowHead { starts_group: starts, avatar, presence }, cx)
+                                let reactions = event
+                                    .event_id
+                                    .as_ref()
+                                    .map(|id| this.timeline.reactions_of(id).to_vec())
+                                    .unwrap_or_default();
+                                let picker = (event.event_id.is_some() && this.reaction_picker == event.event_id).then(|| {
+                                    PickerRender { recent: this.recent_emojis.clone(), focus: this.picker_focus.clone() }
+                                });
+                                Self::event_row(index, event, read, media, selected, RowHead { starts_group: starts, avatar, presence, reactions, picker }, cx)
                             })
                             .collect::<Vec<_>>()
                     }),

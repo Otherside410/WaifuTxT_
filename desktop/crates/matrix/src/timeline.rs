@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Local, TimeZone};
 use domain::{
-    initials, EventId, EventState, EventVm, MediaKind, MediaPayload, MediaStatus, MediaVm, RoomId,
+    initials, EventId, EventState, EventVm, MediaKind, MediaPayload, MediaStatus, MediaVm, ReactionVm, RoomId,
     TimelineUpdate, REDACTED_PLACEHOLDER, UNDECRYPTABLE_PLACEHOLDER,
 };
 use futures_util::StreamExt;
@@ -21,7 +21,7 @@ use matrix_sdk::ruma::{EventId as SdkEventId, RoomId as SdkRoomId, UserId as Sdk
 use matrix_sdk::attachment::{AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
-    AttachmentConfig, EventSendState, MsgLikeKind, RoomExt, TimelineDetails, TimelineEventItemId, TimelineItem,
+    AttachmentConfig, EventSendState, MsgLikeKind, ReactionsByKeyBySender, RoomExt, TimelineDetails, TimelineEventItemId, TimelineItem,
     TimelineItemContent,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -45,6 +45,9 @@ pub enum TimelineCommand {
     Edit { event_id: String, body: String },
     /// Supprimer (redacter) le message `event_id` (`Timeline::redact`).
     Redact { event_id: String },
+    /// Ajouter (ou retirer, si elle est déjà de moi) la réaction `key` au message `event_id`
+    /// (`Timeline::toggle_reaction`).
+    ToggleReaction { event_id: String, key: String },
     /// Marquer le salon comme lu jusqu'au dernier message (`Timeline::mark_as_read`).
     MarkRead,
     /// Annoncer que j'écris (`true`) ou que j'ai cessé (`false`) (`Room::typing_notice`).
@@ -314,6 +317,43 @@ fn readers<'a>(
     names
 }
 
+/// Réactions agrégées d'un message : une entrée par clé (ordre d'insertion du SDK), `reacted_by_me` si mon
+/// identifiant figure parmi les expéditeurs. Une clé sans expéditeur n'est pas renvoyée.
+fn reactions_vm(reactions: &ReactionsByKeyBySender, own: Option<&SdkUserId>) -> Vec<ReactionVm> {
+    reactions
+        .iter()
+        .filter(|(_, senders)| !senders.is_empty())
+        .map(|(key, senders)| ReactionVm {
+            key: key.clone(),
+            count: senders.len(),
+            reacted_by_me: own.is_some_and(|me| senders.contains_key(me)),
+            senders: senders.keys().map(|user| localpart(user.as_str()).to_owned()).collect(),
+        })
+        .collect()
+}
+
+/// Table des réactions de l'instantané : seuls les messages **confirmés** (id d'événement réel) en portent,
+/// puisque c'est la seule forme que `toggle_reaction` reçoit (voir `EventVm::event_id`).
+fn snapshot_reactions<'a>(
+    items: impl IntoIterator<Item = &'a std::sync::Arc<TimelineItem>>,
+    own: Option<&SdkUserId>,
+) -> Vec<(EventId, Vec<ReactionVm>)> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let event = item.as_event()?;
+            let TimelineItemContent::MsgLike(content) = event.content() else {
+                return None;
+            };
+            if event.is_local_echo() {
+                return None;
+            }
+            let list = reactions_vm(&content.reactions, own);
+            (!list.is_empty()).then(|| Some((EventId::from(event.event_id()?.as_str()), list))).flatten()
+        })
+        .collect()
+}
+
 /// Convertit un élément du SDK ; `None` pour ce qui n'est pas un message (séparateurs, changements
 /// d'état, appartenance…).
 fn to_event_vm(
@@ -462,6 +502,14 @@ pub async fn run_timeline(
     let attach_failed = |path: String, message: String| {
         publish(TimelineUpdate::AttachmentFailed { room: room.clone(), path, message })
     };
+    let reaction_failed = |event_id: String, key: String, message: String| {
+        publish(TimelineUpdate::ReactionFailed {
+            room: room.clone(),
+            event_id: EventId::from(event_id.as_str()),
+            key,
+            message,
+        })
+    };
     let events = |events: Vec<EventVm>, at_start: Option<bool>| {
         publish(TimelineUpdate::Events { room: room.clone(), events, at_start })
     };
@@ -484,9 +532,12 @@ pub async fn run_timeline(
     // Instantané → événements affichables + téléchargement des images nouvellement vues.
     macro_rules! emit {
         ($items:expr, $at_start:expr) => {{
-            let (vms, requests) = snapshot($items, own_user.as_deref());
+            let items = $items;
+            let reactions = snapshot_reactions(items.iter(), own_user.as_deref());
+            let (vms, requests) = snapshot(items.iter(), own_user.as_deref());
             fetcher.request(requests);
             events(vms, $at_start);
+            publish(TimelineUpdate::Reactions { room: room.clone(), reactions });
         }};
     }
     let (_typing_guard, mut typing_rx) = sdk_room.subscribe_to_typing_notifications();
@@ -497,10 +548,10 @@ pub async fn run_timeline(
 
     let (initial, stream) = timeline.subscribe().await;
     let mut stream = Box::pin(stream);
-    emit!(initial.iter(), None);
+    emit!(initial, None);
 
     match timeline.paginate_backwards(PAGE_SIZE).await {
-        Ok(hit_start) => emit!(timeline.items().await.iter(), Some(hit_start)),
+        Ok(hit_start) => emit!(timeline.items().await, Some(hit_start)),
         Err(err) => fail(MatrixError::Other(err.to_string()).to_string()),
     }
 
@@ -510,7 +561,7 @@ pub async fn run_timeline(
                 if batch.is_none() {
                     return fail("Timeline interrompue.".to_owned());
                 }
-                emit!(timeline.items().await.iter(), None);
+                emit!(timeline.items().await, None);
             }
             Some((key, payload)) = media_rx.recv() => {
                 publish(TimelineUpdate::Media { room: room.clone(), key, payload });
@@ -554,6 +605,20 @@ pub async fn run_timeline(
                         delete_failed(event_id, format!("Suppression impossible : {err}"));
                     }
                 }
+                Some(TimelineCommand::ToggleReaction { event_id, key }) => {
+                    // Le SDK sérialise les envois et décide ajout/retrait ; l'état revient par le flux.
+                    let result = match <&SdkEventId>::try_from(event_id.as_str()) {
+                        Ok(id) => timeline
+                            .toggle_reaction(&TimelineEventItemId::EventId(id.to_owned()), &key)
+                            .await
+                            .map(|_| ())
+                            .map_err(|err| err.to_string()),
+                        Err(_) => Err("identifiant de message invalide".to_owned()),
+                    };
+                    if let Err(err) = result {
+                        reaction_failed(event_id, key, format!("Réaction impossible : {err}"));
+                    }
+                }
                 Some(TimelineCommand::SendAttachment(path)) => {
                     let shown = path.to_string_lossy().into_owned();
                     match prepare_attachment(&path).await {
@@ -588,7 +653,7 @@ pub async fn run_timeline(
                 Some(TimelineCommand::LoadOlder) => {
                     match timeline.paginate_backwards(PAGE_SIZE).await {
                         Ok(hit_start) => {
-                            emit!(timeline.items().await.iter(), Some(hit_start));
+                            emit!(timeline.items().await, Some(hit_start));
                         }
                         Err(err) => fail(MatrixError::Other(err.to_string()).to_string()),
                     }
@@ -745,6 +810,54 @@ mod tests {
         }
         let stop = typing_request(user("@bob:localhost"), room, false);
         assert!(matches!(stop.state, Typing::No), "l'arrêt est un `m.typing: false` explicite");
+    }
+
+    fn info() -> matrix_sdk_ui::timeline::ReactionInfo {
+        matrix_sdk_ui::timeline::ReactionInfo {
+            timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(matrix_sdk::ruma::UInt::from(1_u32)),
+            send_state: None,
+        }
+    }
+
+    fn reactions(entries: &[(&str, &[&str])]) -> ReactionsByKeyBySender {
+        let mut map = ReactionsByKeyBySender::default();
+        for (key, senders) in entries {
+            let by_sender = map.entry((*key).to_owned()).or_default();
+            for sender in *senders {
+                by_sender.insert(user(sender), info());
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn sdk_reactions_become_one_entry_per_key_with_count_ownership_and_stable_order() {
+        let sdk = reactions(&[
+            ("👍", &["@alice:localhost", "@bob:localhost"]),
+            ("🎉", &["@carol:localhost"]),
+            ("❤️", &["@bob:localhost"]),
+        ]);
+        let me = user("@bob:localhost");
+        let vms = reactions_vm(&sdk, Some(&me));
+        assert_eq!(
+            vms,
+            vec![
+                ReactionVm { key: "👍".into(), count: 2, reacted_by_me: true, senders: vec!["alice".into(), "bob".into()] },
+                ReactionVm { key: "🎉".into(), count: 1, reacted_by_me: false, senders: vec!["carol".into()] },
+                ReactionVm { key: "❤️".into(), count: 1, reacted_by_me: true, senders: vec!["bob".into()] },
+            ],
+            "ordre d'insertion des clés conservé, compte = nombre d'expéditeurs"
+        );
+        assert_eq!(reactions_vm(&sdk, Some(&me)), vms, "le mapping est déterministe");
+        assert!(reactions_vm(&sdk, None).iter().all(|r| !r.reacted_by_me), "sans identité : jamais « la mienne »");
+    }
+
+    #[test]
+    fn no_reaction_and_empty_keys_give_no_chip() {
+        assert!(reactions_vm(&ReactionsByKeyBySender::default(), None).is_empty());
+        let mut sdk = ReactionsByKeyBySender::default();
+        sdk.entry("👍".to_owned()).or_default();
+        assert!(reactions_vm(&sdk, None).is_empty());
     }
 
     #[test]

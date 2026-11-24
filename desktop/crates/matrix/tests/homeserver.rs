@@ -212,6 +212,8 @@ struct Timeline {
     typing: Option<Vec<String>>,
     /// `at_start` du dernier instantané qui le précisait (début du salon atteint ?).
     at_start: Option<bool>,
+    /// Dernière table de réactions publiée (instantané complet), par id d'événement.
+    reactions: Vec<(domain::EventId, Vec<domain::ReactionVm>)>,
 }
 
 impl Timeline {
@@ -227,7 +229,7 @@ impl Timeline {
                 let _ = tx.send(update);
             },
         ));
-        Self { task, commands, updates, events: Vec::new(), media: HashMap::new(), typing: None, at_start: None }
+        Self { task, commands, updates, events: Vec::new(), media: HashMap::new(), typing: None, at_start: None, reactions: Vec::new() }
     }
 
     fn absorb(&mut self, update: TimelineUpdate) {
@@ -239,6 +241,8 @@ impl Timeline {
                 }
             }
             TimelineUpdate::Typing { users, .. } => self.typing = Some(users),
+            TimelineUpdate::Reactions { reactions, .. } => self.reactions = reactions,
+            TimelineUpdate::ReactionFailed { message, .. } => panic!("réaction en échec : {message}"),
             TimelineUpdate::Media { key, payload: MediaPayload::Ready(bytes), .. } => {
                 self.media.insert(key, bytes);
             }
@@ -720,6 +724,32 @@ impl Pair {
         self.alice_sync.stop().await;
         self.bob_sync.stop().await;
     }
+}
+
+/// T13 — réactions : bob réagit au message d'alice (`ToggleReaction`) ; alice voit la pastille (clé, compte 1, pas la
+///       sienne) ; un second toggle de bob la retire. Chez bob, la pastille est marquée « la mienne » puis disparaît.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "exige un homeserver : WAIFU_IT_HOMESERVER=http://127.0.0.1:8008 puis --ignored"]
+async fn a_reaction_shows_as_a_chip_for_the_other_member_and_a_second_toggle_removes_it() {
+    let mut pair = Pair::start().await;
+    let text = unique("reaction");
+    let event_id = pair.alice_says(&text).await;
+    pair.bob_tl.until_events("le message d'alice chez bob", |events| has_text(events, &text)).await;
+
+    let chip = |table: &[(domain::EventId, Vec<domain::ReactionVm>)]| {
+        table.iter().find(|(id, _)| id.as_str() == event_id).and_then(|(_, list)| list.iter().find(|r| r.key == "👍").cloned())
+    };
+    pair.bob_tl.send(TimelineCommand::ToggleReaction { event_id: event_id.clone(), key: "👍".to_owned() });
+    pair.alice_tl.until("la pastille 👍 chez alice", |tl| chip(&tl.reactions).is_some()).await;
+    let seen = chip(&pair.alice_tl.reactions).expect("pastille");
+    assert_eq!((seen.count, seen.reacted_by_me), (1, false), "chez alice : une réaction, pas la sienne");
+    assert_eq!(seen.senders, ["bob"].map(String::from));
+    pair.bob_tl.until("la pastille 👍 chez bob", |tl| chip(&tl.reactions).is_some_and(|r| r.reacted_by_me)).await;
+
+    pair.bob_tl.send(TimelineCommand::ToggleReaction { event_id: event_id.clone(), key: "👍".to_owned() });
+    pair.alice_tl.until("la pastille retirée chez alice", |tl| chip(&tl.reactions).is_none()).await;
+    pair.bob_tl.until("la pastille retirée chez bob", |tl| chip(&tl.reactions).is_none()).await;
+    pair.stop().await;
 }
 
 fn event_by_id<'a>(events: &'a [EventVm], event_id: &str) -> Option<&'a EventVm> {

@@ -61,6 +61,41 @@ impl Presence {
     }
 }
 
+/// Réaction agrégée d'un message : une clé (émoji), combien l'ont posée, et si j'en fais partie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReactionVm {
+    /// Clé de l'annotation (`👍`).
+    pub key: String,
+    pub count: usize,
+    pub reacted_by_me: bool,
+    /// Noms courts de ceux qui ont réagi, dans l'ordre d'arrivée.
+    pub senders: Vec<String>,
+}
+
+impl ReactionVm {
+    /// Libellé d'accessibilité : « N réactions, dont la vôtre » / « N réactions ».
+    pub fn aria_label(&self) -> String {
+        let noun = if self.count > 1 { "réactions" } else { "réaction" };
+        let base = format!("{} {noun} {}", self.count, self.key);
+        if self.reacted_by_me { format!("{base}, dont la vôtre") } else { base }
+    }
+}
+
+/// Émojis proposés par le sélecteur rapide (grille fixe, sans recherche).
+pub const QUICK_EMOJIS: [&str; 16] = [
+    "👍", "👎", "❤️", "😂", "😮", "😢", "🎉", "🙏", "🔥", "👀", "✅", "❌", "😍", "🤔", "👏", "💯",
+];
+
+/// Nombre maximal d'émojis récents mémorisés pour la session.
+pub const MAX_RECENT_EMOJIS: usize = 8;
+
+/// Place `emoji` en tête des récents (sans doublon), la liste étant tronquée à [`MAX_RECENT_EMOJIS`].
+pub fn remember_recent_emoji(recent: &mut Vec<String>, emoji: &str) {
+    recent.retain(|known| known != emoji);
+    recent.insert(0, emoji.to_owned());
+    recent.truncate(MAX_RECENT_EMOJIS);
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventVm {
     /// Identifiant **stable pendant toute la vie du message** : il ne change pas quand un écho local est
@@ -257,6 +292,10 @@ pub enum TimelineUpdate {
     DeleteFailed { room: RoomId, event_id: EventId, message: String },
     /// Membres qui écrivent actuellement dans le salon (moi exclu), par nom court.
     Typing { room: RoomId, users: Vec<String> },
+    /// Réactions de tous les messages confirmés du salon (instantané complet : remplace la table latérale).
+    Reactions { room: RoomId, reactions: Vec<(EventId, Vec<ReactionVm>)> },
+    /// L'ajout ou le retrait de la réaction `key` sur `event_id` a échoué.
+    ReactionFailed { room: RoomId, event_id: EventId, key: String, message: String },
     /// Octets d'un média téléchargé (ou échec) pour l'identifiant logique `key`.
     Media { room: RoomId, key: String, payload: MediaPayload },
     /// L'envoi de la pièce jointe `path` a échoué (fichier illisible, trop gros, réseau…).
@@ -272,6 +311,8 @@ impl TimelineUpdate {
             | Self::EditFailed { room, .. }
             | Self::DeleteFailed { room, .. }
             | Self::Typing { room, .. }
+            | Self::Reactions { room, .. }
+            | Self::ReactionFailed { room, .. }
             | Self::Media { room, .. }
             | Self::AttachmentFailed { room, .. } => room,
         }
@@ -304,6 +345,8 @@ pub enum FailedAction {
     Attach(String),
     Edit(EventId),
     Delete(EventId),
+    /// Ajout ou retrait de la réaction `key` sur le message.
+    React(EventId, String),
 }
 
 /// Action échouée (envoi, édition ou suppression) avec la raison affichable ; `text` est le brouillon à
@@ -337,6 +380,8 @@ pub struct TimelineState {
     /// Table latérale de présence, par identifiant d'utilisateur. Globale (indépendante du salon sélectionné) :
     /// `select` la conserve, seul `clear` (déconnexion) l'efface. Absent de la table = [`Presence::Unknown`].
     presence: HashMap<String, Presence>,
+    /// Table latérale des réactions, par id d'événement réel. Propre au salon sélectionné (effacée par `select`).
+    reactions: HashMap<EventId, Vec<ReactionVm>>,
 }
 
 impl Default for TimelineState {
@@ -352,6 +397,7 @@ impl Default for TimelineState {
             read_marked: None,
             media: HashMap::new(),
             presence: HashMap::new(),
+            reactions: HashMap::new(),
         }
     }
 }
@@ -460,6 +506,42 @@ impl TimelineState {
         self.presence.insert(user_id.to_owned(), state) != Some(state)
     }
 
+    /// Réactions agrégées d'un message confirmé (vide : aucune pastille).
+    pub fn reactions_of(&self, event_id: &EventId) -> &[ReactionVm] {
+        self.reactions.get(event_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Ajoute ou retire ma réaction `key` au message `target` en local (mode démonstration ; en réel, c'est le SDK
+    /// qui s'en charge et l'état revient par [`TimelineUpdate::Reactions`]). Renvoie `true` si elle est ajoutée.
+    pub fn toggle_reaction_local(&mut self, target: &EventId, key: &str, me: &str) -> bool {
+        let list = self.reactions.entry(target.clone()).or_default();
+        let added = match list.iter().position(|r| r.key == key) {
+            Some(i) if list[i].reacted_by_me => {
+                list[i].count -= 1;
+                list[i].reacted_by_me = false;
+                list[i].senders.retain(|name| name != me);
+                if list[i].count == 0 {
+                    list.remove(i);
+                }
+                false
+            }
+            Some(i) => {
+                list[i].count += 1;
+                list[i].reacted_by_me = true;
+                list[i].senders.push(me.to_owned());
+                true
+            }
+            None => {
+                list.push(ReactionVm { key: key.to_owned(), count: 1, reacted_by_me: true, senders: vec![me.to_owned()] });
+                true
+            }
+        };
+        if list.is_empty() {
+            self.reactions.remove(target);
+        }
+        added
+    }
+
     /// Oublie le salon (ex. déconnexion).
     pub fn clear(&mut self) {
         *self = Self::default();
@@ -515,6 +597,18 @@ impl TimelineState {
             }
             TimelineUpdate::Typing { users, .. } => {
                 self.typing = users;
+                Applied::default()
+            }
+            TimelineUpdate::Reactions { reactions, .. } => {
+                self.reactions = reactions.into_iter().filter(|(_, list)| !list.is_empty()).collect();
+                Applied::default()
+            }
+            TimelineUpdate::ReactionFailed { event_id, key, message, .. } => {
+                self.send_failure = Some(SendFailure {
+                    text: String::new(),
+                    message,
+                    action: FailedAction::React(event_id, key),
+                });
                 Applied::default()
             }
             TimelineUpdate::Media { key, payload, .. } => {
@@ -1126,5 +1220,89 @@ mod tests {
         assert_eq!(state.presence_of("@a:x"), Presence::Online);
         state.clear();
         assert_eq!(state.presence_of("@a:x"), Presence::Unknown, "déconnexion : table effacée");
+    }
+
+    fn reaction(key: &str, count: usize, mine: bool) -> ReactionVm {
+        ReactionVm { key: key.into(), count, reacted_by_me: mine, senders: vec!["alice".into(); count] }
+    }
+
+    #[test]
+    fn a_reactions_snapshot_replaces_the_side_table_and_leaves_the_events_alone() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!r:x"));
+        state.apply(TimelineUpdate::Events { room: RoomId::from("!r:x"), events: vec![ev("$1", 10)], at_start: None });
+        let update = |reactions| TimelineUpdate::Reactions { room: RoomId::from("!r:x"), reactions };
+        state.apply(update(vec![(EventId::from("$1"), vec![reaction("👍", 2, true)])]));
+        assert_eq!(state.reactions_of(&EventId::from("$1")), [reaction("👍", 2, true)]);
+        assert_eq!(state.events().len(), 1, "aucune ligne créée par une réaction");
+        state.apply(update(vec![(EventId::from("$1"), vec![])]));
+        assert!(state.reactions_of(&EventId::from("$1")).is_empty(), "snapshot suivant : pastille retirée");
+    }
+
+    #[test]
+    fn reactions_belong_to_the_selected_room_only() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!r:x"));
+        let late = TimelineUpdate::Reactions {
+            room: RoomId::from("!autre:x"),
+            reactions: vec![(EventId::from("$1"), vec![reaction("👍", 1, false)])],
+        };
+        assert!(state.apply(late).ignored);
+        assert!(state.reactions_of(&EventId::from("$1")).is_empty());
+        state.apply(TimelineUpdate::Reactions {
+            room: RoomId::from("!r:x"),
+            reactions: vec![(EventId::from("$1"), vec![reaction("👍", 1, false)])],
+        });
+        state.select(RoomId::from("!b:x"));
+        assert!(state.reactions_of(&EventId::from("$1")).is_empty(), "changer de salon efface la table");
+    }
+
+    #[test]
+    fn a_failed_reaction_is_remembered_with_its_key_for_a_retry() {
+        let mut state = TimelineState::default();
+        state.select(RoomId::from("!r:x"));
+        state.apply(TimelineUpdate::ReactionFailed {
+            room: RoomId::from("!r:x"),
+            event_id: EventId::from("$1"),
+            key: "👍".into(),
+            message: "Réaction impossible : réseau".into(),
+        });
+        let failure = state.send_failure().expect("échec mémorisé");
+        assert_eq!(failure.action, FailedAction::React(EventId::from("$1"), "👍".into()));
+        assert_eq!(failure.message, "Réaction impossible : réseau");
+    }
+
+    #[test]
+    fn the_local_toggle_adds_then_removes_my_reaction_and_drops_empty_entries() {
+        let mut state = TimelineState::default();
+        let id = EventId::from("$1");
+        assert!(state.toggle_reaction_local(&id, "👍", "moi"));
+        assert!(state.toggle_reaction_local(&id, "🎉", "moi"));
+        assert_eq!(state.reactions_of(&id).iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["👍", "🎉"]);
+        assert!(!state.toggle_reaction_local(&id, "👍", "moi"));
+        assert_eq!(state.reactions_of(&id).len(), 1);
+        assert!(!state.toggle_reaction_local(&id, "🎉", "moi"));
+        assert!(state.reactions_of(&id).is_empty());
+    }
+
+    #[test]
+    fn reaction_labels_follow_the_count_and_ownership() {
+        assert_eq!(reaction("👍", 3, true).aria_label(), "3 réactions 👍, dont la vôtre");
+        assert_eq!(reaction("👍", 2, false).aria_label(), "2 réactions 👍");
+        assert_eq!(reaction("👍", 1, false).aria_label(), "1 réaction 👍");
+    }
+
+    #[test]
+    fn recent_emojis_are_most_recent_first_without_duplicates_and_capped() {
+        let mut recent = Vec::new();
+        for emoji in QUICK_EMOJIS.iter().take(10) {
+            remember_recent_emoji(&mut recent, emoji);
+        }
+        assert_eq!(recent.len(), MAX_RECENT_EMOJIS);
+        assert_eq!(recent[0], QUICK_EMOJIS[9]);
+        remember_recent_emoji(&mut recent, QUICK_EMOJIS[5]);
+        assert_eq!(recent[0], QUICK_EMOJIS[5], "un émoji déjà présent remonte en tête");
+        assert_eq!(recent.iter().filter(|e| *e == QUICK_EMOJIS[5]).count(), 1);
+        assert_eq!(recent.len(), MAX_RECENT_EMOJIS);
     }
 }

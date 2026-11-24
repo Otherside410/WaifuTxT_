@@ -106,6 +106,23 @@ impl AppRoot {
                     main.update(cx, |main, cx| main.apply_timeline(update, cx));
                 }
             }
+            MainEvent::ToggleReaction { room, event_id, key } => {
+                let queued = this.with_timeline(|t| {
+                    t.command(TimelineCommand::ToggleReaction {
+                        event_id: event_id.to_string(),
+                        key: key.clone(),
+                    })
+                });
+                if queued != Some(true) {
+                    let update = TimelineUpdate::ReactionFailed {
+                        room: room.clone(),
+                        event_id: event_id.clone(),
+                        key: key.clone(),
+                        message: "Réaction impossible : la conversation n'est pas prête.".to_owned(),
+                    };
+                    main.update(cx, |main, cx| main.apply_timeline(update, cx));
+                }
+            }
             MainEvent::SendAttachment { room, path } => {
                 let queued = this.with_timeline(|t| {
                     t.command(TimelineCommand::SendAttachment(std::path::PathBuf::from(path)))
