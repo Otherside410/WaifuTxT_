@@ -37,52 +37,67 @@ env:
 jobs:
   linux:
     name: Linux (build, tests, AppImage)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # ubuntu-latest a glissé sur Ubuntu 26.04 (glibc 2.43) en nov. 2026 : tout binaire compilé sur le runner exigeait
+    # 2.43 et mourait sur Fedora/Nobara sans message (t_936d72cd, récidive du 16/11). L'AppImage est désormais compilée
+    # DANS le conteneur Debian 12 ci-dessous (glibc 2.36) : la glibc du runner n'entre plus dans le binaire distribué.
+    # L'épinglage 24.04 est une ceinture pour tout ce qui tourne encore sur l'hôte du job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      # Dépendances système de GPUI / matrix-sdk (liste de packaging/Containerfile.build, noms Debian/Ubuntu).
-      - name: Dépendances système
+      # Build + tests + AppImage dans un conteneur debian:12-slim (glibc 2.36) : un binaire n'est exécutable que sur une
+      # glibc >= à celle de compilation. `ubuntu-latest` a glissé sur Ubuntu 26.04 (glibc 2.43) et a produit une AppImage
+      # inutilisable sur Fedora/Nobara (récidive du 16/11 puis du 25/11, t_936d72cd). Ne jamais compiler l'AppImage sur le runner.
+      - name: Image de build (debian:12-slim)
+        working-directory: .
+        run: docker build -t waifu-build:debian12 -f desktop/packaging/Containerfile.build desktop/packaging
+
+      # Les tests d'intégration contre un homeserver sont #[ignore] : aucun Synapse sur le runner.
+      # Le composant clippy est installé dans l'image (Containerfile.build) : /opt/rustup n'est pas inscriptible
+      # pour l'utilisateur du conteneur, donc `rustup component add` est impossible ici.
+      - name: Build, clippy, tests, AppImage (conteneur Debian 12)
         working-directory: .
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang pkg-config libssl-dev libvulkan-dev libwayland-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
-            libfontconfig-dev libasound2-dev libfreetype-dev curl ca-certificates file
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cache/tools"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE":/src \
+            -v "$RUNNER_TEMP/cache":/cache \
+            -e HOME=/cache/home -e CARGO_HOME=/cache/cargo -e CARGO_TARGET_DIR=/cache/target \
+            -e APPIMAGETOOL=/cache/tools/appimagetool-x86_64.AppImage \
+            -e WAIFU_UPDATE_PUBKEY -e CARGO_TERM_COLOR \
+            -w /src/desktop waifu-build:debian12 bash -euo pipefail -c '
+              mkdir -p "$HOME"
+              cargo build --release --locked
+              cargo clippy --all-targets --locked -- -D warnings
+              cargo test --locked
+              bash packaging/build-appimage.sh
+            '
 
-      - name: Chaîne Rust
+      # Garde-fou : le plancher glibc du binaire distribué doit rester <= 2.39 (mesuré sur le binaire extrait de l'AppImage).
+      - name: Plancher glibc <= 2.39
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          rustup default stable
-          rustc --version
-          cargo --version
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            desktop/target
-          key: desktop-rust-${{ runner.os }}-${{ hashFiles('desktop/Cargo.lock') }}
-          restore-keys: desktop-rust-${{ runner.os }}-
-
-      - name: cargo build --release
-        run: cargo build --release --locked
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      # Les tests d'intégration contre un homeserver sont #[ignore] : ils ne tournent pas ici (aucun Synapse sur le runner).
-      - name: cargo test
-        run: cargo test --locked
-
-      - name: AppImage
-        run: bash packaging/build-appimage.sh
+          set -euo pipefail
+          cd packaging
+          chmod +x WaifuChat-*-x86_64.AppImage
+          ./WaifuChat-*-x86_64.AppImage --appimage-extract >/dev/null
+          FLOOR="$(objdump -T squashfs-root/usr/bin/waifu-desktop | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
+          echo "plancher glibc : $FLOOR"
+          [ "$(printf '%s\n' "$FLOOR" GLIBC_2.39 | sort -V | tail -1)" = "GLIBC_2.39" ] || { echo "plancher trop haut : $FLOOR" >&2; exit 1; }
+          rm -rf squashfs-root
 
       - name: Empreinte
-        run: sha256sum packaging/WaifuChat-*-x86_64.AppImage | tee packaging/WaifuChat.AppImage.sha256
+        working-directory: desktop/packaging
+        run: sha256sum WaifuChat-*-x86_64.AppImage | tee WaifuChat.AppImage.sha256
+
+      # Le manifeste n'est pas un binaire distribué : il peut être produit avec la toolchain du runner (la contrainte
+      # glibc ne porte que sur l'AppImage, déjà construite et vérifiée ci-dessus). Uniquement sur tag.
+      - name: Chaîne Rust (manifeste uniquement, tag desktop-v*)
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
 
       # Manifeste signé : uniquement sur un tag, avec le secret. La clé n'est écrite que dans un fichier temporaire du runner.
       - name: Manifeste signé (tag desktop-v*)

@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Toolchain installée hors de $HOME pour rester lisible avec --userns=keep-id.
+# clippy est inclus ici : dans le conteneur lancé en `--user`, /opt/rustup n'est pas inscriptible, donc
+# `rustup component add clippy` y est impossible. La CI (.github/workflows/desktop-rust.yml) en dépend.
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component clippy \
     && chmod -R a+rX /opt/rustup /opt/cargo
