@@ -17,7 +17,8 @@ OUT="$HERE/WaifuChat-${VERSION}-x86_64.AppImage"
 
 echo "==> cargo build --release"
 (cd "$DESKTOP" && cargo build --release --locked)
-BIN="$DESKTOP/target/release/waifu-desktop"
+TARGET_DIR="${CARGO_TARGET_DIR:-$DESKTOP/target}"
+BIN="$TARGET_DIR/release/waifu-desktop"
 [ -x "$BIN" ] || { echo "binaire release absent : $BIN" >&2; exit 1; }
 
 echo "==> AppDir"
