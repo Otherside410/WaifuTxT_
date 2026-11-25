@@ -46,6 +46,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache chaud : le registre vivait déjà dans ~/.cargo avant le passage au conteneur ; il est maintenant dans
+      # $RUNNER_TEMP/cache/cargo (CARGO_HOME). Sans ça, chaque run repart à froid (~18 min de compilation).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/cache/cargo
+            desktop/target
+          key: desktop-rust-${{ runner.os }}-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: desktop-rust-${{ runner.os }}-
+
       # Build + tests + AppImage dans un conteneur debian:12-slim (glibc 2.36) : un binaire n'est exécutable que sur une
       # glibc >= à celle de compilation. `ubuntu-latest` a glissé sur Ubuntu 26.04 (glibc 2.43) et a produit une AppImage
       # inutilisable sur Fedora/Nobara (récidive du 16/11 puis du 25/11, t_936d72cd). Ne jamais compiler l'AppImage sur le runner.
@@ -64,11 +74,12 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$GITHUB_WORKSPACE":/src \
             -v "$RUNNER_TEMP/cache":/cache \
-            -e HOME=/cache/home -e CARGO_HOME=/cache/cargo -e CARGO_TARGET_DIR=/cache/target \
+            -e HOME=/cache/home -e CARGO_HOME=/cache/cargo \
             -e APPIMAGETOOL=/cache/tools/appimagetool-x86_64.AppImage \
             -e WAIFU_UPDATE_PUBKEY -e CARGO_TERM_COLOR \
             -w /src/desktop waifu-build:debian12 bash -euo pipefail -c '
               mkdir -p "$HOME"
+              # Cible = /src/desktop/target : build-appimage.sh y cherche target/release/waifu-desktop.
               cargo build --release --locked
               cargo clippy --all-targets --locked -- -D warnings
               cargo test --locked
